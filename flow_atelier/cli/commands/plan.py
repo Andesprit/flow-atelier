@@ -5,7 +5,7 @@ import typer
 from pydantic import ValidationError
 from rich.markup import escape
 
-from flow_atelier.cli._shared import console
+from flow_atelier.cli._shared import _exit_unknown_conduit, console
 from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import format_conduit_error, render_plan
 from flow_atelier.core.atelier import Atelier
@@ -28,11 +28,7 @@ def plan_cmd(
     atelier = Atelier()
     sources = dict(atelier.store.list_conduits_with_source())
     if conduit_name not in sources:
-        console.print(
-            f"[red]unknown conduit:[/red] {conduit_name} "
-            f"— try 'atelier list conduits'"
-        )
-        raise typer.Exit(code=1)
+        _exit_unknown_conduit(conduit_name, list(sources))
 
     try:
         conduit = atelier.store.read_conduit(conduit_name)

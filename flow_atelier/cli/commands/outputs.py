@@ -12,7 +12,7 @@ from flow_atelier.core.atelier import Atelier
 
 @app.command("outputs")
 def outputs_cmd(
-    flow_id: str = typer.Argument(..., help="Flow id (or unique prefix) to inspect."),
+    flow_id: str = typer.Argument(..., help="Flow id to inspect (unique prefix or 'latest' ok)."),
     task: str | None = typer.Option(
         None, "--task", "-t", help="Print only this task's raw output (pipe-friendly)."
     ),

@@ -15,6 +15,7 @@ from flow_atelier.modules.engine import (
     FlowStartedCallback,
     TaskEventCallback,
     TaskStartingCallback,
+    check_unknown_inputs,
 )
 from flow_atelier.modules.liveness import is_runner_alive
 from flow_atelier.schemas.api import (
@@ -626,19 +627,25 @@ class Atelier:
         """Persist a new schedule and return it.
 
         Validates that ``conduit_name`` resolves to a known conduit (in the
-        same store the fire will use) and that the schedule supplies every
-        required (default-less) input the conduit declares, so a typo or a
-        missing input fails loudly here instead of silently at fire time via
-        a swallowed exception.
+        same store the fire will use), that every input the schedule supplies
+        is one the conduit declares or references, and that the schedule
+        supplies every required (default-less) input the conduit declares, so
+        a typo or a missing input fails loudly here instead of silently at
+        fire time via a swallowed exception. Unknown keys are checked before
+        missing ones so a typo of a required key is reported as the typo.
 
         :param payload: validated :class:`CreateScheduleInput`
         :returns: the new :class:`ScheduledJob`
-        :raises ValueError: if ``conduit_name`` is not a known conduit, or the
+        :raises ValueError: if ``conduit_name`` is not a known conduit, the
+            schedule supplies an input the conduit cannot use, or the
             schedule omits a required (default-less) conduit input
         """
         if payload.conduit_name not in self.store.list_conduits():
             raise ValueError(f"unknown conduit: {payload.conduit_name!r}")
         conduit = self.store.read_conduit(payload.conduit_name)
+        check_unknown_inputs(
+            conduit, payload.inputs, subject=f"schedule for {payload.conduit_name!r}"
+        )
         required = {
             key for key, spec in conduit.inputs.items() if spec.default is None
         }

@@ -295,7 +295,7 @@ overrides the registry (see `.env.example`).
 ```bash
 atelier init                                # creates .atelier/conduits/hello/
 atelier run hello --input name=world        # runs it
-atelier status <flow_id>                    # shows progress
+atelier status latest                       # shows progress of the newest run
 atelier list flows --conduit hello          # lists previous runs
 ```
 
@@ -441,6 +441,8 @@ numbered blocks. Only valid on a looping task (`repeat > 1`).
 
 A missing `{{inputs.x}}` fails the task immediately; a reference to a
 task that was skipped or hasn't completed skips the referencing task.
+`atelier run` rejects an `--input` key the conduit neither declares nor
+references, so a mistyped key fails before the run starts.
 
 ### Conditional dependencies
 
@@ -597,6 +599,7 @@ atelier create <name> [--description <text>]           # scaffold a new empty co
 atelier check [<conduit>]                              # validate conduit(s) without running
 atelier plan <conduit>                                 # print the DAG as ordered waves, run nothing
 
+# <flow_id> below accepts a unique prefix, or 'latest' for the most recently started flow
 # running
 atelier run <conduit> [--input key=value ...] [--show-steps/--hide-steps]
 atelier ask <query> --path <directory>                 # interactive Claude session
@@ -705,7 +708,10 @@ One-shots use `mode: once` with a `run_at` ISO datetime instead of
 `days` / `times`. Fixed intervals use `mode: interval` with
 `every_minutes` (e.g. `every_minutes: 30` for every half hour, `120`
 for every two hours) — these repeat forever. `atelier schedule add`
-also accepts the same shape in JSON if you prefer that format.
+also accepts the same shape in JSON if you prefer that format. Like
+`atelier run --input`, it rejects an `inputs` key the conduit neither
+declares nor references, so a mistyped key fails at install time instead
+of silently running with the default on every fire.
 
 - New or removed schedules are picked up on the next reload tick
 (default 30s).
@@ -750,7 +756,10 @@ Conduits and flows resolve exactly as they do on the CLI — `./.atelier`
 first, then `~/.atelier` — so the conduits `atelier init` created in the
 directory you started the server from are the ones the UI shows.
 Schedules are the exception: they live in `~/.atelier/schedules/`, since
-one daemon serves every project.
+one daemon serves every project. Like `atelier run --input`, a `run`
+envelope on `/ws/run-conduit` whose `inputs` carry a key the conduit
+neither declares nor references comes back as `flow_failed` naming the
+key and its closest match, instead of starting the flow.
 
 ## Security
 

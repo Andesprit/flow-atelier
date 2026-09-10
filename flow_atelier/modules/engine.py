@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 import os
 import signal
 import socket
 import sys
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
@@ -133,6 +134,40 @@ def accepted_input_keys(conduit: Conduit) -> set[str]:
         for template in (t.task, *(v for v in t.inputs.values() if isinstance(v, str))):
             accepted |= {r.value for r in extract_template_refs(template) if r.kind == "input"}
     return accepted
+
+
+def check_unknown_inputs(
+    conduit: Conduit, inputs: Mapping[str, Any], *, subject: str
+) -> None:
+    """Raise when ``inputs`` carries a key ``conduit`` can never use.
+
+    The engine drops such a key, so a typo of a required key would fail as
+    *missing* without naming what was sent, and a typo of a key with a
+    default would quietly run with the default. The message names every
+    bad key, suggests the closest accepted key, and lists what the conduit
+    accepts.
+
+    :param conduit: the parsed conduit the inputs are meant for.
+    :param inputs: the supplied input map.
+    :param subject: what carried the inputs, e.g. ``"schedule for 'hello'"``;
+        it leads the message.
+    :raises ValueError: when a key is neither declared nor referenced.
+    """
+    accepted = accepted_input_keys(conduit)
+    unknown = sorted(set(inputs) - accepted)
+    if not unknown:
+        return
+    hint = "".join(
+        f" (did you mean {close[0]!r} for {key!r}?)"
+        for key in unknown
+        if (close := difflib.get_close_matches(key, sorted(accepted), n=1))
+    )
+    accepts = (
+        f"{conduit.name!r} accepts inputs: {sorted(accepted)}"
+        if accepted
+        else f"{conduit.name!r} accepts no inputs"
+    )
+    raise ValueError(f"{subject} has unknown inputs: {unknown}{hint}; {accepts}")
 
 
 def validate_conduit(conduit: Conduit) -> dict[str, list[Dependency]]:

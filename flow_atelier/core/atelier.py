@@ -1,7 +1,6 @@
 """Facade: wires store + executors + engine and exposes the public API."""
 from __future__ import annotations
 
-import difflib
 import logging
 import subprocess
 import sys
@@ -16,7 +15,7 @@ from flow_atelier.modules.engine import (
     FlowStartedCallback,
     TaskEventCallback,
     TaskStartingCallback,
-    accepted_input_keys,
+    check_unknown_inputs,
 )
 from flow_atelier.modules.liveness import is_runner_alive
 from flow_atelier.schemas.api import (
@@ -644,23 +643,9 @@ class Atelier:
         if payload.conduit_name not in self.store.list_conduits():
             raise ValueError(f"unknown conduit: {payload.conduit_name!r}")
         conduit = self.store.read_conduit(payload.conduit_name)
-        accepted = accepted_input_keys(conduit)
-        unknown = sorted(set(payload.inputs) - accepted)
-        if unknown:
-            hint = "".join(
-                f" (did you mean {close[0]!r} for {key!r}?)"
-                for key in unknown
-                if (close := difflib.get_close_matches(key, sorted(accepted), n=1))
-            )
-            accepts = (
-                f"{payload.conduit_name!r} accepts inputs: {sorted(accepted)}"
-                if accepted
-                else f"{payload.conduit_name!r} accepts no inputs"
-            )
-            raise ValueError(
-                f"schedule for {payload.conduit_name!r} has unknown inputs: "
-                f"{unknown}{hint}; {accepts}"
-            )
+        check_unknown_inputs(
+            conduit, payload.inputs, subject=f"schedule for {payload.conduit_name!r}"
+        )
         required = {
             key for key, spec in conduit.inputs.items() if spec.default is None
         }

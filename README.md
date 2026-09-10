@@ -756,7 +756,10 @@ Conduits and flows resolve exactly as they do on the CLI — `./.atelier`
 first, then `~/.atelier` — so the conduits `atelier init` created in the
 directory you started the server from are the ones the UI shows.
 Schedules are the exception: they live in `~/.atelier/schedules/`, since
-one daemon serves every project.
+one daemon serves every project. Like `atelier run --input`, a `run`
+envelope on `/ws/run-conduit` whose `inputs` carry a key the conduit
+neither declares nor references comes back as `flow_failed` naming the
+key and its closest match, instead of starting the flow.
 
 ## Security
 

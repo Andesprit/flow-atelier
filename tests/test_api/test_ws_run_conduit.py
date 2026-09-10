@@ -39,6 +39,33 @@ tasks:
 """
 
 
+DECLARED_YAML = """name: greet
+description: declared inputs, one with a default
+inputs:
+  name: Who to greet
+  tone:
+    description: how warmly
+    default: warm
+tasks:
+  - greet:
+      description: greet
+      task: "echo {{inputs.name}} {{inputs.tone}}"
+      tool: tool:bash
+      depends_on: []
+"""
+
+
+REFERENCED_YAML = """name: echo
+description: input referenced but never declared
+tasks:
+  - say:
+      description: say
+      task: "echo {{inputs.word}}"
+      tool: tool:bash
+      depends_on: []
+"""
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """Build an Atelier + FastAPI app pair with seeded conduits.
@@ -49,7 +76,13 @@ def env(tmp_path, monkeypatch):
     global_dir = tmp_path / ".atelier-global"
     monkeypatch.setenv("ATELIER_GLOBAL_ATELIER_DIR", str(global_dir))
     atelier = Atelier(base_dir=tmp_path / ".atelier")
-    for name, yaml_str in [("hello", HELLO_YAML), ("human", HITL_YAML)]:
+    seeded = [
+        ("hello", HELLO_YAML),
+        ("human", HITL_YAML),
+        ("greet", DECLARED_YAML),
+        ("echo", REFERENCED_YAML),
+    ]
+    for name, yaml_str in seeded:
         (atelier.store.global_dir / "conduits" / name).mkdir(
             parents=True, exist_ok=True
         )
@@ -229,6 +262,79 @@ def test_ws_run_unknown_conduit_emits_flow_failed(env, tmp_path):
                 ws, lambda e: e["type"] in ("flow_failed", "error")
             )
     assert envelopes[-1]["type"] in ("flow_failed", "error")
+
+
+def _run_to_end(app, conduit_name: str, inputs: dict, run_path) -> list[dict]:
+    """Send one ``run`` envelope and drain until the flow completes or fails.
+
+    :param app: FastAPI app under test.
+    :param conduit_name: conduit to run.
+    :param inputs: ``inputs`` map for the envelope.
+    :param run_path: working directory for the run.
+    :returns: every envelope received, last one terminal.
+    """
+    with TestClient(app, base_url="http://127.0.0.1", headers={"host": "127.0.0.1"}) as client:
+        with client.websocket_connect("/ws/run-conduit") as ws:
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "run",
+                        "conduit_name": conduit_name,
+                        "inputs": inputs,
+                        "run_path": str(run_path),
+                    }
+                )
+            )
+            return _drain_until(
+                ws, lambda e: e["type"] in ("flow_complete", "flow_failed")
+            )
+
+
+def test_ws_run_typo_of_defaulted_input_fails_instead_of_using_default(env, tmp_path):
+    """A near-miss of a key with a default is refused, not silently defaulted.
+
+    :param env: env fixture providing (atelier, app).
+    :param tmp_path: pytest temp directory fixture.
+    """
+    atelier, app = env
+    envelopes = _run_to_end(app, "greet", {"name": "world", "tonee": "cold"}, tmp_path)
+    last = envelopes[-1]
+    assert last["type"] == "flow_failed", envelopes
+    assert "unknown inputs: ['tonee']" in last["error"]
+    assert "did you mean 'tone' for 'tonee'?" in last["error"]
+    assert "'greet' accepts inputs: ['name', 'tone']" in last["error"]
+    assert atelier.list_flows() == []
+
+
+def test_ws_run_typo_of_required_input_names_the_typo(env, tmp_path):
+    """A near-miss of a required key is reported as the typo, not as missing.
+
+    :param env: env fixture providing (atelier, app).
+    :param tmp_path: pytest temp directory fixture.
+    """
+    _, app = env
+    envelopes = _run_to_end(app, "greet", {"nmae": "world"}, tmp_path)
+    last = envelopes[-1]
+    assert last["type"] == "flow_failed", envelopes
+    assert "run of 'greet' has unknown inputs: ['nmae']" in last["error"]
+    assert "did you mean 'name' for 'nmae'?" in last["error"]
+    assert "missing required" not in last["error"]
+
+
+def test_ws_run_accepts_referenced_but_undeclared_input(env, tmp_path):
+    """A key only referenced as ``{{inputs.word}}`` still runs, as on the CLI.
+
+    :param env: env fixture providing (atelier, app).
+    :param tmp_path: pytest temp directory fixture.
+    """
+    _, app = env
+    envelopes = _run_to_end(app, "echo", {"word": "word-from-ws"}, tmp_path)
+    assert envelopes[-1]["type"] == "flow_complete", envelopes[-1]
+    assert any(
+        "word-from-ws" in (e["entry"].get("stdout") or "")
+        for e in envelopes
+        if e["type"] == "log"
+    )
 
 
 def test_ws_rejects_bad_token(env):

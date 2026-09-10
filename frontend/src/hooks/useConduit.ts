@@ -93,6 +93,8 @@ export function backendLogToLines(entry: BackendLogEntry): LogEntry[] {
 export function taskToLine(detail: BackendTask, task?: string): LogEntry | null {
   const t = Date.parse(detail.timestamp) || Date.now();
   switch (detail.kind) {
+    case "interaction":
+      return detail.text ? { t, text: detail.text, level: "info", task } : null;
     case "thinking":
       return detail.text ? { t, text: detail.text, level: "info", task } : null;
     case "tool_call":

@@ -530,8 +530,8 @@ same conversation travels over `/ws/run-conduit`: the agent's prose is
 streamed to the client as it is written, and the client sends the reply
 back on the same socket.
 
-If the AI asks for permission to run a tool, you'll see a numbered
-menu on the terminal; your choice is sent back as the answer.
+Tool permission requests are automatically approved by default. Add a
+conduit-level `interaction` policy to choose human or supervisor decisions.
 
 Non-interactive tasks run one turn and stop.
 
@@ -546,6 +546,35 @@ atelier ask "Help me write a specification" --path /absolute/path/to/project
 questions are read from stdin just like any other interactive harness task.
 The resulting flow is still recorded under the `.atelier/flows/` directory
 from which you invoked `atelier`.
+
+#### Conduit-wide human and supervisor policies
+
+Choose the behavior once for every harness task in a conduit:
+
+```yaml
+interaction:
+  questions: hybrid       # human | supervisor | hybrid
+  permissions: approve_all # approve_all | human | supervisor | hybrid
+  supervisor:
+    tool: harness:codex
+    instructions: |
+      Follow existing project conventions.
+      Escalate scope changes and unspecified product preferences.
+```
+
+`human` always asks you. `supervisor` always delegates and fails if the
+supervisor cannot decide. `hybrid` lets it answer or escalate to you.
+`approve_all` automatically allows tool permissions. The supervisor receives
+the full worker session exposed through ACP, including prior replies and tool
+activity. Answers are attributed and recorded.
+
+Adding `interaction` enables conversations for all harness tasks. Omitting it
+preserves existing task-level `interactive` behavior and automatic permissions.
+The designer exposes these controls in the conduit panel. Explicit `tool:hitl`
+gates remain human; nested conduits use their own policy.
+
+See [interaction policies](docs/interaction.md) for limits, failure handling,
+permission boundaries, and the complete configuration.
 
 #### Interactive turns over the WebSocket
 

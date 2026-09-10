@@ -160,7 +160,9 @@ def _render_step(step: IntermediateStep, task: str = "") -> Text:
         t.append(f"  {task} ", style="cyan")
     else:
         t.append("  ")
-    if step.kind == StepKind.thinking:
+    if step.kind == StepKind.interaction:
+        t.append(step.text)
+    elif step.kind == StepKind.thinking:
         truncated = step.text[:120] + ("..." if len(step.text) > 120 else "")
         t.append("💭 ", style="dim italic")
         t.append(truncated, style="dim italic")

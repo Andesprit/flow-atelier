@@ -77,6 +77,7 @@ class FakeAgent:
         modes: dict[str, Any] | None = None,
         auth_methods: list[dict[str, Any]] | None = None,
         fail_session: str | None = None,
+        record_path: str | None = None,
     ) -> None:
         """Initialize the fake agent with a scripted turn list.
 
@@ -91,6 +92,7 @@ class FakeAgent:
         self._modes_spec = modes
         self._auth_methods = auth_methods or []
         self._fail_session = fail_session
+        self._record_path = record_path
         self._conn: acp.Client | None = None
 
     def on_connect(self, conn: acp.Client) -> None:
@@ -157,6 +159,9 @@ class FakeAgent:
         :param session_id: session identifier the client is interacting with.
         :param kwargs: additional keyword arguments accepted by the protocol.
         """
+        if self._record_path:
+            with Path(self._record_path).open("a") as file:
+                file.write(json.dumps([p.model_dump(mode="json") for p in prompt]) + "\n")
         if not self._turns:
             return PromptResponse(stop_reason="end_turn")
         turn = self._turns.pop(0)
@@ -182,6 +187,7 @@ class FakeAgent:
                 title=ask.get("summary", "permission"),
                 kind="execute",
                 status="pending",
+                raw_input=ask.get("raw_input"),
             )
             resp = await self._conn.request_permission(
                 options=options,
@@ -339,6 +345,7 @@ async def _main() -> None:
         modes=script.get("modes"),
         auth_methods=script.get("auth_methods"),
         fail_session=script.get("fail_session"),
+        record_path=script.get("record_path"),
     )
     await acp.run_agent(agent)
 

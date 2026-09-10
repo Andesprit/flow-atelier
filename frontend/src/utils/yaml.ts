@@ -16,6 +16,20 @@ export function renderConduitYaml(c: Conduit): string {
   lines.push(`description: ${JSON.stringify(c.description)}`);
   if (c.timeout) lines.push(`timeout: ${c.timeout}`);
   if (c.maxConcurrency) lines.push(`max_concurrency: ${c.maxConcurrency}`);
+  if (c.interaction) {
+    lines.push("interaction:");
+    lines.push(`  questions: ${c.interaction.questions}`);
+    lines.push(`  permissions: ${c.interaction.permissions}`);
+    if (c.interaction.supervisor) {
+      const supervisor = c.interaction.supervisor;
+      lines.push("  supervisor:");
+      lines.push(`    tool: ${yamlScalar(supervisor.tool)}`);
+      if (supervisor.instructions) lines.push(`    instructions: ${JSON.stringify(supervisor.instructions)}`);
+      if (supervisor.maxReplies !== undefined) lines.push(`    max_replies: ${supervisor.maxReplies}`);
+      if (supervisor.timeout !== undefined) lines.push(`    timeout: ${supervisor.timeout}`);
+      if (supervisor.maxContextChars !== undefined) lines.push(`    max_context_chars: ${supervisor.maxContextChars}`);
+    }
+  }
   lines.push(`inputs:`);
   for (const [key, hint] of Object.entries(c.inputs)) {
     lines.push(`  ${yamlScalar(key)}: ${JSON.stringify(hint)}`);

@@ -51,7 +51,7 @@ export interface WsStartedMessage {
 }
 
 export interface BackendTask {
-  kind: "thinking" | "tool_call" | "tool_result";
+  kind: "thinking" | "tool_call" | "tool_result" | "interaction";
   timestamp: string;
   text: string;
   toolCallId: string;

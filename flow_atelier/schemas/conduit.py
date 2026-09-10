@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from flow_atelier.schemas.interaction import InteractionPolicy
+
 _TASK_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 # Conduit names become a single filesystem path component (conduits/<name>/),
 # so they must reject "/", ".", ".." to prevent path traversal on write/delete.
@@ -214,6 +216,7 @@ class Conduit(BaseModel):
     max_concurrency: int = Field(default=3, ge=1)
     inputs: dict[str, InputSpec] = Field(default_factory=dict)
     tasks: list[TaskDefinition]
+    interaction: InteractionPolicy | None = None
 
     @field_validator("name")
     @classmethod

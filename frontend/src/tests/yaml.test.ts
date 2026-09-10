@@ -132,3 +132,20 @@ describe("renderConduitYaml", () => {
     expect(result).not.toContain("time #1: ");
   });
 });
+
+
+it("exports the conduit interaction policy including supervisor limits", () => {
+  const result = renderConduitYaml({
+    ...minimalConduit,
+    interaction: {
+      questions: "hybrid", permissions: "human",
+      supervisor: { tool: "harness:codex", instructions: "Ask about scope\nKeep API stable",
+        maxReplies: 4, timeout: 60, maxContextChars: 90000 },
+    },
+  });
+  expect(result).toContain("interaction:\n  questions: hybrid\n  permissions: human");
+  expect(result).toContain("    max_replies: 4");
+  expect(result).toContain("    max_context_chars: 90000");
+  expect(result).toContain(JSON.stringify("Ask about scope\nKeep API stable"));
+  expect(renderConduitYaml(minimalConduit)).not.toContain("interaction:");
+});

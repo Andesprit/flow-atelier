@@ -58,7 +58,7 @@ function initConduit(conduits: Conduit[]): Conduit {
 }
 
 export function Designer() {
-  const { conduits: allConduits } = useConduits();
+  const { conduits: allConduits, refresh } = useConduits();
   const [conduit, setConduitRaw, undo, redo] = useUndoState<Conduit>(() => initConduit(allConduits));
   const [saving, setSaving] = useState(false);
 
@@ -263,6 +263,7 @@ export function Designer() {
       inputs: conduit.inputs,
       timeout: conduit.timeout,
       maxConcurrency: conduit.maxConcurrency,
+      interaction: conduit.interaction,
       // Fold the conditions map back into `depends_on` DSL strings — the
       // backend has no `conditional_on` field and would silently drop it,
       // turning every gate the designer drew into a plain dependency.
@@ -275,6 +276,7 @@ export function Designer() {
       } else {
         await createConduit(payload);
       }
+      refresh();
       clearDraftConduit();
       toast.success(`Saved conduit ${conduit.name}`);
       // Navigate straight away rather than on a timer: the toast outlives the
@@ -457,7 +459,7 @@ export function Designer() {
           </aside>
         ) : (
           <aside className="w-[280px] shrink-0 overflow-auto border-l border-border">
-            <ToolPanel conduit={conduit} conduitInputs={conduit.inputs} onAddTask={addTask} onAddInput={addInput} onRemoveInput={removeInput} />
+            <ToolPanel conduit={conduit} conduitInputs={conduit.inputs} onAddTask={addTask} onAddInput={addInput} onRemoveInput={removeInput} onInteractionChange={(interaction) => setConduit((prev) => ({ ...prev, interaction }))} />
           </aside>
         )
       )}
@@ -468,7 +470,7 @@ export function Designer() {
           <SheetHeader>
             <SheetTitle>tools</SheetTitle>
           </SheetHeader>
-          <ToolPanel conduit={conduit} conduitInputs={conduit.inputs} onAddTask={(task) => { addTask(task); setToolPanelOpen(false); }} onAddInput={addInput} onRemoveInput={removeInput} />
+          <ToolPanel conduit={conduit} conduitInputs={conduit.inputs} onAddTask={(task) => { addTask(task); setToolPanelOpen(false); }} onAddInput={addInput} onRemoveInput={removeInput} onInteractionChange={(interaction) => setConduit((prev) => ({ ...prev, interaction }))} />
         </SheetContent>
       </Sheet>
 

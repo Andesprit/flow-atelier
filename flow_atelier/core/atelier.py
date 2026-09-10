@@ -171,16 +171,22 @@ class Atelier:
         :returns: ordered, de-duplicated problem messages; ``[]`` when ready.
         """
         problems: list[str] = []
-        for task in conduit.tasks:
-            tool = task.tool
+        tools = [(f"task {task.name!r}", task.tool) for task in conduit.tasks]
+        if (
+            conduit.interaction and conduit.interaction.supervisor is not None
+            and {conduit.interaction.questions, conduit.interaction.permissions}
+            & {"supervisor", "hybrid"}
+        ):
+            tools.append(("supervisor", conduit.interaction.supervisor.tool))
+        for label, tool in tools:
             executor = self.executors.get(tool)
             if executor is None:
-                msg = f"task {task.name!r}: no executor registered for tool {tool!r}"
+                msg = f"{label}: no executor registered for tool {tool!r}"
             else:
                 ok, reason = executor.is_available()
                 if ok:
                     continue
-                msg = f"task {task.name!r} [{tool}]: {reason}"
+                msg = f"{label} [{tool}]: {reason}"
             if msg not in problems:
                 problems.append(msg)
         return problems
@@ -420,6 +426,8 @@ class Atelier:
         """
         existing = self.store.read_conduit(name)
         merged = existing.model_dump()
+        if "interaction" in payload.model_fields_set:
+            merged["interaction"] = payload.interaction
         for key, value in payload.model_dump(exclude_none=True).items():
             merged[key] = value
         merged["name"] = merged.get("name") or name

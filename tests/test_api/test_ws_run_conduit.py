@@ -406,3 +406,56 @@ def test_ws_accepts_valid_token(env, tmp_path):
             )
             envelopes = _drain_until(ws, lambda e: e["type"] == "flow_complete")
     assert envelopes[-1]["type"] == "flow_complete"
+
+
+def test_ws_hybrid_permission_escalates_and_preserves_request_identity(tmp_path):
+    """Exercise supervisor escalation through the production WebSocket sink."""
+    import yaml
+
+    def launch(script):
+        return [sys.executable, str(FAKE_AGENT), "--script", json.dumps(script)]
+
+    atelier = Atelier(settings=AtelierSettings(
+        atelier_dir=tmp_path / '.atelier', global_atelier_dir=tmp_path / 'global',
+        harnesses={
+            'worker': launch({'turns': [{'ask_permission': {
+                'summary': 'Publish package', 'options': [
+                    {'id': 'allow', 'label': 'Allow', 'kind': 'allow_once'},
+                    {'id': 'deny', 'label': 'Reject', 'kind': 'reject_once'},
+                ],
+            }, 'chunks': ['Finished [ATELIER_DONE]']}]}),
+            'supervisor': launch({'turns': [{'chunks': [json.dumps({
+                'action': 'escalate', 'question': 'Publish this version?',
+            })]}]}),
+        },
+    ))
+    folder = atelier.store.base_dir / 'conduits' / 'chat'
+    folder.mkdir(parents=True)
+    (folder / 'conduit.yaml').write_text(yaml.safe_dump({
+        'name': 'chat', 'description': 'Review publication',
+        'interaction': {'permissions': 'hybrid', 'supervisor': {'tool': 'harness:supervisor'}},
+        'tasks': [{'name': 'worker', 'description': 'Publish', 'task': 'Publish the package',
+                   'tool': 'harness:worker'}],
+    }))
+    app = FastApiServer().create_app(atelier)
+    with TestClient(app, base_url='http://127.0.0.1', headers={'host': '127.0.0.1'}) as client:
+        with client.websocket_connect('/ws/run-conduit') as ws:
+            ws.send_json({'type': 'run', 'conduit_name': 'chat', 'inputs': {},
+                          'run_path': str(tmp_path)})
+            events = _drain_until(ws, lambda e: e['type'] in (
+                'agent_input_request', 'flow_failed'), max_messages=80)
+            request = events[-1]
+            assert request['type'] == 'agent_input_request', events
+            assert request['task'] == 'worker'
+            assert 'Publish this version?' in request['prompt']
+            assert 'Publish package' in request['prompt']
+            assert 'deny: Reject' in request['prompt']
+            ws.send_json({'type': 'agent_input_answer', 'flow_id': request['flow_id'],
+                          'request_id': request['request_id'], 'answer': 'deny'})
+            events += _drain_until(ws, lambda e: e['type'] in (
+                'flow_complete', 'flow_failed'), max_messages=80)
+    assert events[-1]['type'] == 'flow_complete', events
+    decisions = [e['step']['text'] for e in events
+                 if e['type'] == 'step' and e['step']['kind'] == 'interaction']
+    assert any('supervisor escalate:' in text for text in decisions)
+    assert 'human answer: deny' in decisions

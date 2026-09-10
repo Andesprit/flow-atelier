@@ -13,8 +13,8 @@ two the user still has to do.
 Non-interactive mode sends one prompt turn and returns whatever the agent
 streams before ``stop_reason``. Interactive mode keeps the session open
 and loops: after each turn, if the accumulated output has not contained
-the done marker, the executor asks the :class:`PromptSink` for the user's
-next message and sends another ``session/prompt``. The loop terminates
+the done marker, the executor routes the next reply through the conduit
+interaction policy and sends another ``session/prompt``. The loop terminates
 when the marker appears or when :attr:`MAX_INTERACTIVE_TURNS` is reached.
 """
 from __future__ import annotations
@@ -56,6 +56,7 @@ from flow_atelier.schemas.log import (
     TurnUsage,
 )
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext
+from flow_atelier.services.executor.interaction import InteractionRouter
 from flow_atelier.services.executor.prompt_sink import (
     PromptSink,
     TerminalPromptSink,
@@ -320,10 +321,8 @@ class _BufferingClient:
     """ACP :class:`acp.Client` that buffers agent output and routes user I/O.
 
     Agent message chunks are appended to ``buffer`` and mirrored to the
-    :class:`PromptSink`. Tool-permission requests are answered here, never
-    delegated to the sink: runs are unattended, so the session is switched
-    into the agent's most permissive mode up front and this is only the
-    backstop for an agent that asks anyway.
+    :class:`PromptSink`. Tool permissions use the conduit interaction router
+    when configured; legacy runs keep automatic approval.
 
     The harness capabilities default to "no filesystem, no terminal" so the
     agent should not call the file/terminal methods — if it does, they raise
@@ -366,6 +365,11 @@ class _BufferingClient:
         self._done_marker = done_marker
         self._on_step = on_step
         self.buffer: list[str] = []
+        self.session: list[dict[str, Any]] = []
+        self.router: InteractionRouter | None = None
+        self.approve_all = True
+        self.supervisor_run = False
+        self.interaction_error: Exception | None = None
         # Set when an agent message chunk carried only non-text content
         # (image/resource); lets an empty-but-successful turn be flagged.
         self._saw_nontext_content = False
@@ -403,8 +407,11 @@ class _BufferingClient:
                 await self._on_step(step)
             except Exception:  # noqa: BLE001
                 logger.debug("step persistence failed", exc_info=True)
-        if self._stream_steps and hasattr(self._sink, "display_step"):
-            await self._sink.display_step(step)
+        if self._stream_steps or step.kind == StepKind.interaction:
+            if hasattr(self._sink, "display_step"):
+                await self._sink.display_step(step)
+            elif step.kind == StepKind.interaction:
+                await self._sink.display(f"\n{step.text}\n")
 
     async def _flush_thinking(self) -> None:
         """Emit any buffered thought chunks as one merged ``thinking`` step.
@@ -471,6 +478,7 @@ class _BufferingClient:
             and event.message.get("method") == "session/update"
         ):
             self._updates_received += 1
+            self.session.append({"source": "worker", "update": event.message.get("params", {})})
 
     async def await_pending_updates(
         self, timeout: float = UPDATE_DRAIN_TIMEOUT_SECONDS
@@ -600,15 +608,41 @@ class _BufferingClient:
     async def request_permission(
         self, options, session_id: str, tool_call, **kwargs
     ) -> RequestPermissionResponse:
-        """Auto-approve a tool permission request with the most permissive option.
+        """Route tool permissions, retaining automatic approval for legacy runs.
 
         :param options: list of permission options offered by the agent.
         :param session_id: id of the requesting session (unused).
-        :param tool_call: the pending tool call (unused).
+        :param tool_call: the complete pending tool call.
         :param kwargs: additional ACP fields (unused).
         :returns: an :class:`AllowedOutcome` selecting the chosen option, or
             a :class:`DeniedOutcome` if no allow option is available.
         """
+        self.session.append({
+            "source": "permission_request", "tool_call": tool_call.model_dump(mode="json"),
+            "options": [o.model_dump(mode="json") for o in options],
+        })
+        if self.supervisor_run or self.interaction_error is not None:
+            return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+        if not self.approve_all:
+            try:
+                if self.router is None:
+                    raise RuntimeError("permission router unavailable")
+                await self.await_pending_updates()
+                await self.flush_pending()
+                choice = await self.router.resolve(
+                    "permission", tool_call.model_dump_json(exclude_none=True),
+                    [o.model_dump(mode="json") for o in options],
+                )
+                if choice == "cancel":
+                    return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+                return RequestPermissionResponse(
+                    outcome=AllowedOutcome(outcome="selected", option_id=choice)
+                )
+            except Exception as exc:
+                # Some agents recover from a rejected permission callback.
+                # Remember the failure so they cannot turn it into success.
+                self.interaction_error = exc
+                return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
         # Backstop for any agent that still asks despite the permissive
         # session mode: silently pick the most permissive allow option.
         # Tool activity is still surfaced to the user via display_step.
@@ -622,6 +656,7 @@ class _BufferingClient:
         )
         if chosen is None:
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+        self.session.append({"source": "approve_all", "option_id": chosen.option_id})
         return RequestPermissionResponse(
             outcome=AllowedOutcome(outcome="selected", option_id=chosen.option_id)
         )
@@ -719,6 +754,17 @@ class _BufferingClient:
         :param conn: the ACP connection handed to the client on attach.
         """
         self._conn = conn
+
+
+class _SilentSink:
+    """Keep a supervisor's internal JSON response out of the worker stream."""
+
+    async def display(self, text: str) -> None:
+        """Discard internal agent output."""
+
+    async def request_input(self, prompt: str) -> str:
+        """A supervisor cannot recursively ask for input."""
+        raise RuntimeError("supervisor cannot request human input")
 
 
 class AcpHarnessExecutor(ExecutorBase):
@@ -903,8 +949,12 @@ class AcpHarnessExecutor(ExecutorBase):
         :param context: runtime :class:`FlowContext` providing timeout/step flags.
         :returns: :class:`ExecutionResult` capturing buffered output and steps.
         """
+        interactive = (
+            task.interactive or context.interactive_harnesses
+            or context.interaction.questions != "human"
+        ) and not context.supervisor_run
         prompt_text = resolved_command
-        if task.interactive:
+        if interactive:
             prompt_text = prompt_text + build_interactive_suffix(self.done_marker)
 
         # Absolute: ACP agents reject a relative `cwd` outright ("`cwd` must be
@@ -912,19 +962,22 @@ class AcpHarnessExecutor(ExecutorBase):
         # otherwise fail the whole task at session/new.
         cwd = str(Path(context.working_dir).resolve()) if context.working_dir else str(Path.cwd())
         client = _BufferingClient(
-            self.sink,
-            stream_messages=task.interactive,
-            stream_steps=(task.interactive or context.show_steps),
+            _SilentSink() if context.supervisor_run else self.sink,
+            stream_messages=interactive,
+            stream_steps=(interactive or context.show_steps),
             done_marker=self.done_marker,
             on_step=context.on_step,
         )
 
+        client.supervisor_run = context.supervisor_run
+        client.approve_all = context.interaction.permissions == "approve_all"
+        client.router = InteractionRouter(task, context, self.sink, client.session, client._record)
         agent_stderr: deque[str] = deque(maxlen=AGENT_STDERR_LINES)
 
         try:
             result = await asyncio.wait_for(
                 self._drive_session(
-                    client, prompt_text, task.interactive, cwd, agent_stderr
+                    client, prompt_text, interactive, cwd, agent_stderr
                 ),
                 timeout=context.timeout,
             )
@@ -950,7 +1003,11 @@ class AcpHarnessExecutor(ExecutorBase):
             )
         # Interactive runs stream raw chunks; non-interactive runs stream
         # batched message blocks. Either way the output is already on screen.
-        if client.streamed_message or task.interactive:
+        result.session = client.session
+        if client.interaction_error is not None:
+            result.exit_code = 1
+            result.stderr = f"interaction failed: {client.interaction_error}"
+        if client.streamed_message or interactive:
             result.live_streamed = True
         return _with_agent_stderr(result, agent_stderr)
 
@@ -1002,8 +1059,16 @@ class AcpHarnessExecutor(ExecutorBase):
             try:
                 await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
                 sess = await conn.new_session(cwd=cwd)
-                await self._maybe_switch_to_permissive_mode(conn, sess)
+                if client.approve_all and not client.supervisor_run:
+                    await self._maybe_switch_to_permissive_mode(conn, sess)
+                else:
+                    await self._ensure_prompting_mode(conn, sess)
 
+                if client.supervisor_run:
+                    # Startup/mode announcements are not the decision response.
+                    await client.await_pending_updates()
+                    await client.flush_pending()
+                    client.buffer.clear()
                 if not interactive:
                     return await self._run_single_turn(
                         conn, sess.session_id, initial_prompt, client
@@ -1050,6 +1115,21 @@ class AcpHarnessExecutor(ExecutorBase):
         except Exception as exc:  # noqa: BLE001
             logger.debug("set_session_mode(%s) failed: %s", picked, exc)
 
+    @staticmethod
+    async def _ensure_prompting_mode(conn, sess) -> None:
+        """Leave bypass modes before applying a permission decision policy."""
+        modes = sess.modes
+        if modes is None:
+            return
+        current = modes.current_mode_id.lower()
+        if not any(word in current for word in PERMISSIVE_MODE_KEYWORDS):
+            return
+        for mode in modes.available_modes:
+            if mode.id.lower() in {"default", "normal", "ask", "code"}:
+                await conn.set_session_mode(session_id=sess.session_id, mode_id=mode.id)
+                return
+        raise RuntimeError("permission policy requires a non-bypass harness session mode")
+
     async def _run_single_turn(
         self,
         conn,
@@ -1065,6 +1145,7 @@ class AcpHarnessExecutor(ExecutorBase):
         :param client: buffering client capturing streamed output.
         :returns: :class:`ExecutionResult` built from the agent's stop_reason.
         """
+        client.session.append({"source": "user", "text": prompt_text})
         resp = await conn.prompt(
             prompt=[TextContentBlock(type="text", text=prompt_text)],
             session_id=session_id,
@@ -1100,6 +1181,7 @@ class AcpHarnessExecutor(ExecutorBase):
             if start_turn is not None:
                 await start_turn()
             prev_buffer_len = len(client.buffer)
+            client.session.append({"source": "user", "text": next_prompt})
             resp = await conn.prompt(
                 prompt=[TextContentBlock(type="text", text=next_prompt)],
                 session_id=session_id,
@@ -1110,6 +1192,8 @@ class AcpHarnessExecutor(ExecutorBase):
                 client.usage = resp.usage
             await client.await_pending_updates()
             await client.flush_pending()
+            if client.interaction_error is not None:
+                raise RuntimeError(str(client.interaction_error))
             last_stop = resp.stop_reason
             buffer_text = "".join(client.buffer)
             # Only this turn's chunks count: a marker echoed or quoted in an
@@ -1145,9 +1229,10 @@ class AcpHarnessExecutor(ExecutorBase):
             if resp.stop_reason != "end_turn":
                 break
             try:
-                user_reply = await self.sink.request_input(
-                    "agent is waiting for your reply:"
-                )
+                if client.router is None:
+                    user_reply = await self.sink.request_input(turn_text)
+                else:
+                    user_reply = await client.router.resolve("question", turn_text)
             except (EOFError, KeyboardInterrupt) as exc:
                 return ExecutionResult(
                     exit_code=1,

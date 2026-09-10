@@ -49,6 +49,7 @@ from flow_atelier.schemas.conduit import (
     ToolType,
 )
 from flow_atelier.schemas.flow import parse_flow_id
+from flow_atelier.schemas.interaction import InteractionPolicy
 from flow_atelier.schemas.log import (
     ExecutionResult,
     LogEntry,
@@ -667,6 +668,13 @@ class Engine:
                     flow_id=flow_id,
                     store=self.store,
                     inputs=runtime_inputs,
+                    interaction=conduit.interaction or InteractionPolicy(),
+                    interactive_harnesses=conduit.interaction is not None,
+                    conduit_description=conduit.description,
+                    supervisor_executor=(
+                        self.executors.get(conduit.interaction.supervisor.tool)
+                        if conduit.interaction and conduit.interaction.supervisor else None
+                    ),
                     task_outputs=outputs,
                     timeout=effective_timeout,
                     working_dir=working_dir,
@@ -812,6 +820,7 @@ class Engine:
                                     extra=attempt_extra,
                                     steps=result.steps,
                                     usage=result.usage,
+                                    session=result.session,
                                 ),
                             )
                             emit_event(t, iteration, result, duration)

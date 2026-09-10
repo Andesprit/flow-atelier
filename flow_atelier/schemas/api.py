@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from flow_atelier.schemas.conduit import Conduit, InputSpec, TaskDefinition
+from flow_atelier.schemas.interaction import InteractionPolicy
 from flow_atelier.schemas.log import LogEntry
 
 _HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
@@ -39,6 +40,7 @@ class UpdateConduitInput(BaseModel):
     # `Conduit`, which normalizes either shape.
     inputs: dict[str, InputSpec | str] | None = None
     tasks: list[TaskDefinition] | None = None
+    interaction: InteractionPolicy | None = None
 
 
 class ConduitDTO(Conduit):

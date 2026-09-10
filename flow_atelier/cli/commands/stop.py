@@ -49,7 +49,7 @@ def _other_running_progresses(atelier: Atelier, flow_id: str) -> list:
 
 @app.command("stop")
 def stop_cmd(
-    flow_id: str = typer.Argument(..., help="Flow id (or unique prefix) to stop."),
+    flow_id: str = typer.Argument(..., help="Flow id to stop (unique prefix or 'latest' ok)."),
 ) -> None:
     """Gracefully stop a healthy, locally-running flow.
 

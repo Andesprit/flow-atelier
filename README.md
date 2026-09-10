@@ -295,7 +295,7 @@ overrides the registry (see `.env.example`).
 ```bash
 atelier init                                # creates .atelier/conduits/hello/
 atelier run hello --input name=world        # runs it
-atelier status <flow_id>                    # shows progress
+atelier status latest                       # shows progress of the newest run
 atelier list flows --conduit hello          # lists previous runs
 ```
 
@@ -597,6 +597,7 @@ atelier create <name> [--description <text>]           # scaffold a new empty co
 atelier check [<conduit>]                              # validate conduit(s) without running
 atelier plan <conduit>                                 # print the DAG as ordered waves, run nothing
 
+# <flow_id> below accepts a unique prefix, or 'latest' for the most recently started flow
 # running
 atelier run <conduit> [--input key=value ...] [--show-steps/--hide-steps]
 atelier ask <query> --path <directory>                 # interactive Claude session

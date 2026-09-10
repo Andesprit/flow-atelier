@@ -24,7 +24,7 @@ from flow_atelier.modules.liveness import display_status, is_crashed
 
 @app.command("status")
 def status_cmd(
-    flow_id: str = typer.Argument(..., help="Flow id (or unique prefix) to inspect."),
+    flow_id: str = typer.Argument(..., help="Flow id to inspect (unique prefix or 'latest' ok)."),
     json_mode: bool = typer.Option(
         False, "--json", help="Emit machine-readable JSON instead of a table."
     ),

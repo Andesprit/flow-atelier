@@ -75,9 +75,33 @@ def _exit_unknown_conduit(name: str, known: list[str]) -> None:
     raise typer.Exit(code=1)
 
 
+def _latest_flow_id(atelier: Atelier) -> str | None:
+    """Return the id of the most recently started top-level flow.
+
+    Flow ids sort by date but not by time within a day, so the pick is
+    made on each flow's ``started_at``; a flow whose progress cannot be
+    read sorts first.
+
+    :param atelier: Atelier instance used to enumerate and read flows.
+    :returns: the newest flow id, or None when no flows exist.
+    """
+
+    def _started(fid: str) -> float:
+        try:
+            started = _parse_iso(atelier.store.read_progress(fid).started_at)
+        except (FileNotFoundError, ValueError):
+            started = None
+        return started.timestamp() if started else 0.0
+
+    return max(atelier.list_flows(), key=_started, default=None)
+
+
 def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
     """Resolve ``candidate`` to a full flow id, supporting git-style prefixes.
 
+    - ``latest`` → the most recently started top-level flow. The resolved id
+      is echoed to stderr so stdout pipes and ``--json`` stay clean. Real ids
+      start with an eight-digit date, so the word cannot collide with one.
     - Exact top-level id → returned as-is.
     - Exact id of a nested child flow → resolved via the store (``list_flows``
       only enumerates top-level flows, but the store can address children by
@@ -90,6 +114,13 @@ def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
     :param candidate: full flow id or unique prefix supplied by the user.
     :returns: the resolved full flow id.
     """
+    if candidate == "latest":
+        latest = _latest_flow_id(atelier)
+        if latest is None:
+            console.print("[red]unknown flow:[/red] latest — no flows recorded yet")
+            raise typer.Exit(code=1)
+        typer.echo(f"latest: {latest}", err=True)
+        return latest
     all_flows = atelier.list_flows()
     if candidate in all_flows:
         return candidate
@@ -102,7 +133,10 @@ def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
     if len(matches) == 1:
         return matches[0]
     if len(matches) == 0:
-        console.print(f"[red]unknown flow:[/red] {candidate}")
+        console.print(
+            f"[red]unknown flow:[/red] {escape(candidate)}"
+            " — try 'atelier list flows' or 'latest'"
+        )
         raise typer.Exit(code=1)
     console.print(f"[red]ambiguous flow id:[/red] {candidate} matches:")
     for m in matches[:10]:

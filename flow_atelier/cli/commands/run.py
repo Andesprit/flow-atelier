@@ -143,12 +143,15 @@ def run_cmd(
     resume_from: str | None = typer.Option(
         None,
         "--resume",
-        help="Resume a failed or crashed flow by its id (supports prefix matching).",
+        help="Resume a failed or crashed flow by its id (prefix or 'latest' ok).",
     ),
     again_from: str | None = typer.Option(
         None,
         "--again",
-        help="Start a fresh run of a past flow by id (prefix ok), reusing its saved inputs.",
+        help=(
+            "Start a fresh run of a past flow by id (prefix or 'latest' ok), "
+            "reusing its saved inputs."
+        ),
     ),
 ) -> None:
     """Start a new flow, resume a failed one, or re-run a past one.

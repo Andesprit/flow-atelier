@@ -42,6 +42,8 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { renameConditionSource, toWireTasks } from "@/utils/conditions";
 import { Menu, Undo2, Redo2, Play } from "lucide-react";
 
+import { interactionError } from "./interaction-policy";
+
 const MENU_ITEM =
   "flex h-11 w-full items-center rounded-sm px-3 text-left font-mono text-label text-foreground hover:bg-muted";
 
@@ -253,9 +255,15 @@ export function Designer() {
   const canSave =
     conduit.name.trim() !== "" &&
     conduit.description.trim() !== "" &&
-    conduit.tasks.length > 0;
+    conduit.tasks.length > 0 &&
+    !interactionError(conduit.interaction);
 
   const handleSave = async () => {
+    const policyError = interactionError(conduit.interaction);
+    if (policyError) {
+      toast.error(policyError);
+      return;
+    }
     setSaving(true);
     const payload = {
       name: conduit.name,

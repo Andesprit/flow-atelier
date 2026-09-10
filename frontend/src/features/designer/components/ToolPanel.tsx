@@ -59,7 +59,7 @@ export function ToolPanel({ conduit, conduitInputs, onAddTask, onAddInput, onRem
         )}
       </div>
 
-      <InteractionSettings value={conduit.interaction} onChange={onInteractionChange} />
+      <InteractionSettings key={conduit.name} value={conduit.interaction} onChange={onInteractionChange} />
 
       <div className="px-4 py-4">
         <div className="flex flex-col gap-2">

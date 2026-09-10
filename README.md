@@ -441,6 +441,8 @@ numbered blocks. Only valid on a looping task (`repeat > 1`).
 
 A missing `{{inputs.x}}` fails the task immediately; a reference to a
 task that was skipped or hasn't completed skips the referencing task.
+`atelier run` rejects an `--input` key the conduit neither declares nor
+references, so a mistyped key fails before the run starts.
 
 ### Conditional dependencies
 

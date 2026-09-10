@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 import sys
 import time
 
@@ -29,6 +30,8 @@ from flow_atelier.cli.rendering.render import (
     render_task_start,
 )
 from flow_atelier.core.atelier import Atelier
+from flow_atelier.modules.templating import extract_template_refs
+from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.log import TaskEvent
 from flow_atelier.schemas.progress import TaskStatus
@@ -114,6 +117,37 @@ async def _with_heartbeat(coro, running: _RunningTasks):
         # shutdown sweep, so the task is provably done before the loop closes.
         with contextlib.suppress(asyncio.CancelledError):
             await beat
+
+
+def _reject_unknown_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
+    """Exit 1 when an ``--input`` key is one the conduit can never use.
+
+    A key needs no ``inputs:`` declaration: a ``{{inputs.<key>}}`` reference
+    in any task body or task input map is enough. Anything else the engine
+    silently drops, so a typo would otherwise prompt again for the "missing"
+    key or quietly run with a default.
+
+    :param conduit: the loaded conduit the inputs are meant for.
+    :param inputs: the parsed ``--input`` map.
+    """
+    accepted = set(conduit.inputs)
+    for t in conduit.tasks:
+        for template in (t.task, *(v for v in t.inputs.values() if isinstance(v, str))):
+            accepted |= {r.value for r in extract_template_refs(template) if r.kind == "input"}
+    unknown = [k for k in inputs if k not in accepted]
+    if not unknown:
+        return
+    for key in unknown:
+        close = difflib.get_close_matches(key, sorted(accepted), n=1)
+        hint = f" — did you mean {escape(close[0])}?" if close else ""
+        console.print(f"[red]unknown input:[/red] {escape(key)}{hint}")
+    accepts = (
+        f"accepts --input: {escape(', '.join(sorted(accepted)))}"
+        if accepted
+        else "accepts no --input"
+    )
+    console.print(f"[dim]{escape(conduit.name)} {accepts}[/dim]")
+    raise typer.Exit(code=1)
 
 
 @app.command(
@@ -254,8 +288,10 @@ def run_cmd(
         flow_id = _resolve_flow_id(atelier, again_from)
         again_conduit = parse_flow_id(flow_id)[0]
         total_tasks = 0
+        again_def: Conduit | None = None
         try:
-            total_tasks = len(atelier.store.read_conduit(again_conduit).tasks)
+            again_def = atelier.store.read_conduit(again_conduit)
+            total_tasks = len(again_def.tasks)
         except FileNotFoundError:
             pass
         except (yaml.YAMLError, ValidationError, ValueError) as exc:
@@ -265,6 +301,8 @@ def run_cmd(
             console.print(f"[dim]→ fix conduits/{again_conduit}/conduit.yaml[/dim]")
             raise typer.Exit(code=1)
         overrides = _parse_inputs(inputs_raw)
+        if again_def is not None:
+            _reject_unknown_inputs(again_def, overrides)
         collected_events = []
         captured_flow_id = {"id": None}
         running = _RunningTasks()
@@ -340,6 +378,8 @@ def run_cmd(
         )
         console.print(f"[dim]→ fix conduits/{conduit_name}/conduit.yaml[/dim]")
         raise typer.Exit(code=1)
+
+    _reject_unknown_inputs(conduit, inputs)
 
     # Readiness gate: refuse to start an unrunnable conduit (unregistered tool
     # or a harness CLI missing from PATH) before prompting for inputs or

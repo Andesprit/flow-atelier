@@ -30,7 +30,7 @@ from flow_atelier.cli.rendering.render import (
     render_task_start,
 )
 from flow_atelier.core.atelier import Atelier
-from flow_atelier.modules.templating import extract_template_refs
+from flow_atelier.modules.engine import accepted_input_keys
 from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.log import TaskEvent
@@ -130,10 +130,7 @@ def _reject_unknown_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
     :param conduit: the loaded conduit the inputs are meant for.
     :param inputs: the parsed ``--input`` map.
     """
-    accepted = set(conduit.inputs)
-    for t in conduit.tasks:
-        for template in (t.task, *(v for v in t.inputs.values() if isinstance(v, str))):
-            accepted |= {r.value for r in extract_template_refs(template) if r.kind == "input"}
+    accepted = accepted_input_keys(conduit)
     unknown = [k for k in inputs if k not in accepted]
     if not unknown:
         return

@@ -117,6 +117,24 @@ def current_task(default: str = "") -> str:
     return _current_task_ctx.get(default)
 
 
+def accepted_input_keys(conduit: Conduit) -> set[str]:
+    """Return every input key ``conduit`` can use.
+
+    A key counts when it is declared under ``inputs:`` or referenced as
+    ``{{inputs.<key>}}`` in a task body or a task ``inputs:`` map (a
+    ``tool:conduit`` forward). Any other key the engine silently drops, so
+    callers reject those before a run starts or a schedule is installed.
+
+    :param conduit: the parsed conduit.
+    :returns: the set of input keys the conduit declares or references.
+    """
+    accepted = set(conduit.inputs)
+    for t in conduit.tasks:
+        for template in (t.task, *(v for v in t.inputs.values() if isinstance(v, str))):
+            accepted |= {r.value for r in extract_template_refs(template) if r.kind == "input"}
+    return accepted
+
+
 def validate_conduit(conduit: Conduit) -> dict[str, list[Dependency]]:
     """Validate the conduit DAG and return its parsed dependency map.
 

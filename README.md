@@ -708,7 +708,10 @@ One-shots use `mode: once` with a `run_at` ISO datetime instead of
 `days` / `times`. Fixed intervals use `mode: interval` with
 `every_minutes` (e.g. `every_minutes: 30` for every half hour, `120`
 for every two hours) — these repeat forever. `atelier schedule add`
-also accepts the same shape in JSON if you prefer that format.
+also accepts the same shape in JSON if you prefer that format. Like
+`atelier run --input`, it rejects an `inputs` key the conduit neither
+declares nor references, so a mistyped key fails at install time instead
+of silently running with the default on every fire.
 
 - New or removed schedules are picked up on the next reload tick
 (default 30s).

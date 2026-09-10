@@ -4,11 +4,13 @@ Nothing outside ``flow_atelier.cli`` should import from this module.
 """
 from __future__ import annotations
 
+import difflib
 import time
 from datetime import datetime
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
@@ -56,6 +58,21 @@ def _parse_inputs(pairs: list[str]) -> dict[str, str]:
             raise typer.BadParameter(f"--input has a duplicate key: {key!r}")
         out[key] = value
     return out
+
+
+def _exit_unknown_conduit(name: str, known: list[str]) -> None:
+    """Print the ``unknown conduit`` error, suggest close names, and exit 1.
+
+    :param name: the conduit name the user typed.
+    :param known: every conduit name currently visible to the store.
+    """
+    console.print(
+        f"[red]unknown conduit:[/red] {escape(name)} — try 'atelier list conduits'"
+    )
+    close = difflib.get_close_matches(name, known, n=3)
+    if close:
+        console.print(f"[dim]did you mean: {escape(', '.join(close))}?[/dim]")
+    raise typer.Exit(code=1)
 
 
 def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:

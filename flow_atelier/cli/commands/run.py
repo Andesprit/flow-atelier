@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from rich.markup import escape
 
 from flow_atelier.cli._shared import (
+    _exit_unknown_conduit,
     _parse_inputs,
     _resolve_flow_id,
     console,
@@ -329,11 +330,7 @@ def run_cmd(
     try:
         conduit = atelier.store.read_conduit(conduit_name)
     except FileNotFoundError:
-        console.print(
-            f"[red]unknown conduit:[/red] {conduit_name} "
-            f"— try 'atelier list conduits'"
-        )
-        raise typer.Exit(code=1)
+        _exit_unknown_conduit(conduit_name, atelier.store.list_conduits())
     except (yaml.YAMLError, ValidationError, ValueError) as exc:
         console.print(
             f"[red]invalid conduit:[/red] {escape(format_conduit_error(exc))}"

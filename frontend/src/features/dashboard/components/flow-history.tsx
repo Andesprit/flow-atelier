@@ -40,6 +40,8 @@ interface Props {
   onAnswerAgentInput?: (flowId: string, requestId: string, answer: string) => void;
   onCancelRun?: (flowId: string) => void;
   onResumeRun?: (flowId: string, conduitName?: string) => void;
+  /** Start a fresh run of a finished one, with the same inputs and working directory. */
+  onRunAgain?: (conduitName: string, inputs: Record<string, string>, runPath: string) => void;
 }
 
 export function FlowHistory({
@@ -53,6 +55,7 @@ export function FlowHistory({
   onAnswerAgentInput,
   onCancelRun,
   onResumeRun,
+  onRunAgain,
 }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>("flows");
   const [selectedFlowId, setSelectedFlowId] = useState<string | undefined>();
@@ -279,9 +282,6 @@ export function FlowHistory({
 
   const drawerStartedAt = selectedLiveRun?.startedAt ?? priorFlow?.startedAt;
   const drawerHitl = selectedLiveRun?.hitlRequest ?? priorFlowHitl;
-  const drawerInputCount = selectedLiveRun
-    ? Object.keys(selectedLiveRun.inputs).length
-    : 0;
   const drawerHideCancel = !selectedLiveRun || selectedLiveRun.status !== "running";
 
   // A nested conduit's interactive task prompts under its own child flow id, so
@@ -429,7 +429,15 @@ export function FlowHistory({
                 onAnswerAgentInput(request.flowId, request.requestId, answer)
             : undefined
         }
-        inputCount={drawerInputCount}
+        inputs={selectedLiveRun?.inputs}
+        runPath={selectedLiveRun?.runPath || priorRunPath}
+        onRunAgain={
+          // Only a run this tab started knows its inputs; a prior flow resumed
+          // here carries an empty path and would rerun nowhere.
+          onRunAgain && selectedLiveRun && selectedLiveRun.status !== "running" && selectedLiveRun.runPath
+            ? () => onRunAgain(selectedLiveRun.conduitName, selectedLiveRun.inputs, selectedLiveRun.runPath)
+            : undefined
+        }
         onOpenPath={
           selectedLiveRun?.runPath
             ? () => openPath(selectedLiveRun.conduitName, selectedLiveRun.runPath)

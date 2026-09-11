@@ -104,10 +104,13 @@ export default function Dashboard() {
     });
   };
 
-  const handleRun = (inputs: Record<string, string>, runPath: string) => {
-    run(conduit.name, inputs, runPath);
-    toast.success(`Started ${conduit.name}`);
+  const startRun = (conduitName: string, inputs: Record<string, string>, runPath: string) => {
+    run(conduitName, inputs, runPath);
+    toast.success(`Started ${conduitName}`);
   };
+
+  const handleRun = (inputs: Record<string, string>, runPath: string) =>
+    startRun(conduit.name, inputs, runPath);
 
   const handleResume = (flowId: string, conduitName?: string) => {
     resume(flowId, conduitName);
@@ -200,6 +203,7 @@ export default function Dashboard() {
               onAnswerAgentInput={answerAgentInput}
               onCancelRun={cancel}
               onResumeRun={handleResume}
+              onRunAgain={startRun}
             />
           </section>
         </div>

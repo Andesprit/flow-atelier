@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Sheet,
   SheetContent,
@@ -50,7 +50,11 @@ export interface FlowDrawerProps {
   onCancel?: () => void;
   onResume?: () => void;
   onRemove?: () => void;
-  inputCount?: number;
+  /** Start a fresh run with the same conduit, inputs and working directory. */
+  onRunAgain?: () => void;
+  /** What the run was started with; shown so two runs of one conduit can be told apart. */
+  inputs?: Record<string, string>;
+  runPath?: string;
   onOpenPath?: () => void;
   hideCancel?: boolean;
   childRuns?: LiveRun[];
@@ -158,6 +162,9 @@ export function FlowDrawer({
   onCancel,
   onResume,
   onRemove,
+  onRunAgain,
+  inputs,
+  runPath,
   onOpenPath,
   hideCancel,
   childRuns,
@@ -221,6 +228,8 @@ export function FlowDrawer({
         </SheetHeader>
 
         <ScrollArea className="flex-1 px-6 py-4">
+          <StartedWith runPath={runPath} inputs={inputs} />
+
           {tasks && tasks.length > 0 ? (
             <>
               <ExpandableTasks
@@ -304,6 +313,20 @@ export function FlowDrawer({
               cancel
             </Button>
           )}
+          {onRunAgain && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                onRunAgain();
+                onClose();
+              }}
+              data-testid="drawer-run-again-button"
+              className="font-mono text-micro"
+            >
+              run again
+            </Button>
+          )}
           {onResume && (
             <Button
               variant="outline"
@@ -321,6 +344,46 @@ export function FlowDrawer({
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+/* ── What the run was started with ───────────────────────────────────────── */
+
+/**
+ * The working directory and input values a run was given. Two runs of one
+ * conduit are otherwise identical in the list and the drawer, and the path is
+ * what a developer needs to `cd` to the run. Values are selectable.
+ */
+function StartedWith({
+  runPath,
+  inputs,
+}: {
+  runPath?: string;
+  inputs?: Record<string, string>;
+}) {
+  const entries = Object.entries(inputs ?? {});
+  if (!runPath && entries.length === 0) return null;
+
+  return (
+    <section className="mb-4" data-testid="flow-drawer-started-with">
+      <div className="mb-2 font-mono text-mini uppercase tracking-[0.14em] text-muted-foreground">
+        started with
+      </div>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 font-mono text-label">
+        {runPath && (
+          <>
+            <dt className="text-muted-foreground">working directory</dt>
+            <dd className="break-all select-all text-foreground">{runPath}</dd>
+          </>
+        )}
+        {entries.map(([name, value]) => (
+          <Fragment key={name}>
+            <dt className="text-muted-foreground">{name}</dt>
+            <dd className="whitespace-pre-wrap break-all select-all text-foreground">{value}</dd>
+          </Fragment>
+        ))}
+      </dl>
+    </section>
   );
 }
 

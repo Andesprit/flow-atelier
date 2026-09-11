@@ -202,7 +202,8 @@ export function TaskDrawer({ taskName, onClose, liveRuns = [], onCancelRun, onRe
               : undefined
           : undefined
       }
-      inputCount={Object.keys(task.inputs ?? {}).length}
+      inputs={task.inputs}
+      runPath={task.runPath}
       childRuns={allChildRuns.length > 0 ? allChildRuns : undefined}
     />
   );

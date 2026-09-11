@@ -9,6 +9,7 @@ import { BASE_URL } from "@/config/env";
 import { SELECTED_CONDUIT_STORAGE_KEY } from "@/constants/dashboard";
 import { useConduit } from "@/hooks/useConduit";
 import { useRunTitle } from "@/hooks/useRunTitle";
+import { useRunNotifications } from "@/hooks/useRunNotifications";
 import { fetchSchedules } from "@/services/conduits";
 import { createSchedule, deleteSchedule } from "@/services/api/schedules";
 import { ScheduleDialog } from "@/features/dashboard/components/schedule-dialog";
@@ -39,6 +40,7 @@ export default function Dashboard() {
     onError: (message) => toast.error(message),
   });
   useRunTitle(liveRuns);
+  useRunNotifications(liveRuns);
 
   // When the API is unreachable both fetches fail for the same reason, and the
   // conduits failure already renders a full cause-level message inline; a

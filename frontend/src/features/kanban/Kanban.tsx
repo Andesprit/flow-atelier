@@ -16,6 +16,7 @@ import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useTaskStore } from "@/runner";
 import { useConduit } from "@/hooks/useConduit";
 import { useRunTitle } from "@/hooks/useRunTitle";
+import { useRunNotifications } from "@/hooks/useRunNotifications";
 import { getConduitCached } from "@/services/conduits";
 
 import {
@@ -147,6 +148,7 @@ export function Kanban() {
     onError: (message) => toast.error(message),
   });
   useRunTitle(liveRuns);
+  useRunNotifications(liveRuns);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),

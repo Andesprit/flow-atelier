@@ -63,6 +63,35 @@ export function hintStr(hint: string | InputSpec): string {
   return typeof hint === "string" ? hint : hint.description;
 }
 
+/** The declared default of a conduit input, when it has one. */
+export function inputDefault(hint: string | InputSpec): string | undefined {
+  return typeof hint === "string" ? undefined : hint.default ?? undefined;
+}
+
+/** Hint line for an input field: its description, and its default when it has one. */
+export function inputHint(hint: string | InputSpec): string {
+  const def = inputDefault(hint);
+  return [hintStr(hint), def == null ? "" : `default: ${def}`].filter(Boolean).join(" · ");
+}
+
+/**
+ * What to send for a run, schedule or task: every value the user typed, and
+ * nothing for an input left empty that has a default. The engine fills those
+ * in (and resolves `{{conduit_dir}}` inside a default, which the UI cannot);
+ * sending "" instead would override the default with an empty string.
+ */
+export function submittedInputs(
+  conduit: Pick<Conduit, "inputs">,
+  values: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, hint] of Object.entries(conduit.inputs)) {
+    const value = values[name] ?? "";
+    if (value.trim() || inputDefault(hint) == null) out[name] = value;
+  }
+  return out;
+}
+
 /** Slugify a task name: replace non-alphanumeric chars with underscores. */
 export function slugifyTaskName(name: string): string {
   return name.replace(/[^A-Za-z0-9_]+/g, "_");

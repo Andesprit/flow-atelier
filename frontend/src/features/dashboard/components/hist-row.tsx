@@ -63,6 +63,7 @@ export const HistRow = React.forwardRef<
           "text-right text-mini uppercase tracking-[0.14em]",
           running ? "text-primary" : "text-muted-foreground",
           row.state === "failed" && "text-destructive",
+          row.tag === "waiting" && "text-warning",
         )}
       >
         {row.tag}

@@ -1,3 +1,5 @@
+import type { LogEntry } from "@/types/task";
+
 const MIN = 60_000;
 const HR = 60 * MIN;
 const DAY = 24 * HR;
@@ -53,4 +55,15 @@ export function fmtClock(ms: number): string {
     ":" +
     d.getSeconds().toString().padStart(2, "0")
   );
+}
+
+/**
+ * Render log lines as clipboard text: one `HH:MM:SS [task] text` line per
+ * entry. Task-tagged lines are included even though the drawer's flat log box
+ * hides them: the point is to get the whole run out in one go.
+ */
+export function logsToText(lines: LogEntry[]): string {
+  return lines
+    .map((l) => `${fmtClock(l.t)} ${l.task ? `[${l.task}] ` : ""}${l.text}`)
+    .join("\n");
 }

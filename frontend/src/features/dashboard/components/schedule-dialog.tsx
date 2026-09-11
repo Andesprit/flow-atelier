@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Clock, X } from "lucide-react";
 import type { ScheduleConfig } from "@/types/schedule";
-import { hintStr } from "@/types/conduit";
+import { hintStr, inputDefault, inputHint, submittedInputs } from "@/types/conduit";
 import { useConduits, getConduitSync } from "@/services/ConduitProvider";
 import {
   Dialog,
@@ -123,11 +123,12 @@ export function ScheduleDialog({
 
   const handleConfirm = () => {
     const base = { name: name || undefined };
+    const inputs = selectedConduit ? submittedInputs(selectedConduit, inputValues) : inputValues;
     if (mode === "once") {
       onConfirm(
         { ...base, mode: "once", runAt: toLocalIso(runAt) },
         selectedConduitName,
-        inputValues,
+        inputs,
         runPath,
       );
     } else {
@@ -139,7 +140,7 @@ export function ScheduleDialog({
           times: times.filter(Boolean),
         },
         selectedConduitName,
-        inputValues,
+        inputs,
         runPath,
       );
     }
@@ -255,7 +256,7 @@ export function ScheduleDialog({
                             {inputName}
                           </div>
                           <div className="mt-1 text-mini text-muted-foreground">
-                            {hintStr(hint)}
+                            {inputHint(hint)}
                           </div>
                         </div>
                         <input
@@ -264,7 +265,7 @@ export function ScheduleDialog({
                             handleInputChange(inputName, e.target.value)
                           }
                           className="w-full border-0 border-b border-border-strong bg-transparent pb-2 font-mono text-data text-foreground focus:border-primary"
-                          placeholder={hintStr(hint)}
+                          placeholder={inputDefault(hint) ?? hintStr(hint)}
                         />
                       </div>
                     ),

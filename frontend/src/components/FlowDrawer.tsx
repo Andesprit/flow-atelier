@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Sheet,
   SheetContent,
@@ -10,7 +10,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/cn";
-import { fmtClock, fmtDuration, fmtMSS } from "@/utils/format";
+import { toast } from "sonner";
+import { fmtClock, fmtDuration, fmtMSS, logsToText } from "@/utils/format";
 import { ChevronRight } from "lucide-react";
 import type { LogEntry, HitlRequest, FlowTaskStatus } from "@/types/task";
 import type { Conduit } from "@/types/conduit";
@@ -30,6 +31,8 @@ export interface FlowDrawerProps {
   title: string;
   subtitle?: string;
   badge?: string;
+  /** Shown with a copy button: it is what `atelier logs/status/stop <id>` take. */
+  flowId?: string;
   tasks?: FlowDrawerTask[];
   logLines?: LogEntry[];
   startedAt?: number;
@@ -47,7 +50,11 @@ export interface FlowDrawerProps {
   onCancel?: () => void;
   onResume?: () => void;
   onRemove?: () => void;
-  inputCount?: number;
+  /** Start a fresh run with the same conduit, inputs and working directory. */
+  onRunAgain?: () => void;
+  /** What the run was started with; shown so two runs of one conduit can be told apart. */
+  inputs?: Record<string, string>;
+  runPath?: string;
   onOpenPath?: () => void;
   hideCancel?: boolean;
   childRuns?: LiveRun[];
@@ -142,6 +149,7 @@ export function FlowDrawer({
   title,
   subtitle,
   badge,
+  flowId,
   tasks,
   logLines,
   startedAt,
@@ -154,17 +162,14 @@ export function FlowDrawer({
   onCancel,
   onResume,
   onRemove,
+  onRunAgain,
+  inputs,
+  runPath,
   onOpenPath,
   hideCancel,
   childRuns,
 }: FlowDrawerProps) {
-  const logsRef = useRef<HTMLDivElement>(null);
-  const flatLogsRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = flatLogsRef.current ?? logsRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [logLines?.length]);
+  const hasLogs = (logLines?.length ?? 0) > 0;
 
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
@@ -176,40 +181,66 @@ export function FlowDrawer({
         <SheetHeader>
           <SheetTitle className="font-mono">{title}</SheetTitle>
           {subtitle && <SheetDescription>{subtitle}</SheetDescription>}
-          {badge && (
+          {(badge || hasLogs || onOpenPath) && (
             <div className="flex items-center gap-2 pt-2">
-              <Badge variant="outline" data-testid="flow-drawer-badge">
-                {badge}
-              </Badge>
-              {onOpenPath && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="ml-auto font-mono text-micro"
-                  onClick={onOpenPath}
-                  data-testid="flow-drawer-open-path"
-                >
-                  open path
-                </Button>
+              {badge && (
+                <Badge variant="outline" data-testid="flow-drawer-badge">
+                  {badge}
+                </Badge>
               )}
+              <div className="ml-auto flex items-center gap-2">
+                {hasLogs && (
+                  <CopyButton
+                    label="copy logs"
+                    getText={() => logsToText(logLines ?? [])}
+                    testId="flow-drawer-copy-logs"
+                  />
+                )}
+                {onOpenPath && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="font-mono text-micro"
+                    onClick={onOpenPath}
+                    data-testid="flow-drawer-open-path"
+                  >
+                    open path
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+          {flowId && (
+            <div
+              className="flex items-center gap-2 pt-2 font-mono text-mini text-muted-foreground"
+              data-testid="flow-drawer-id"
+            >
+              <span className="min-w-0 truncate select-all" title={flowId}>
+                {flowId}
+              </span>
+              <CopyButton
+                label="copy id"
+                getText={() => flowId}
+                testId="flow-drawer-copy-id"
+              />
             </div>
           )}
         </SheetHeader>
 
         <ScrollArea className="flex-1 px-6 py-4">
+          <StartedWith runPath={runPath} inputs={inputs} />
+
           {tasks && tasks.length > 0 ? (
             <>
               <ExpandableTasks
                 tasks={tasks}
                 logLines={logLines}
-                logsRef={logsRef}
                 childRuns={childRuns}
               />
 
               {logLines && logLines.length > 0 && (
                 <LogsSection
                   logLines={logLines}
-                  logsRef={flatLogsRef}
                   startedAt={startedAt}
                   duration={duration}
                 />
@@ -227,7 +258,6 @@ export function FlowDrawer({
             logLines && logLines.length > 0 ? (
               <LogsSection
                 logLines={logLines}
-                logsRef={flatLogsRef}
                 startedAt={startedAt}
                 duration={duration}
               />
@@ -283,6 +313,20 @@ export function FlowDrawer({
               cancel
             </Button>
           )}
+          {onRunAgain && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                onRunAgain();
+                onClose();
+              }}
+              data-testid="drawer-run-again-button"
+              className="font-mono text-micro"
+            >
+              run again
+            </Button>
+          )}
           {onResume && (
             <Button
               variant="outline"
@@ -303,17 +347,105 @@ export function FlowDrawer({
   );
 }
 
+/* ── What the run was started with ───────────────────────────────────────── */
+
+/**
+ * The working directory and input values a run was given. Two runs of one
+ * conduit are otherwise identical in the list and the drawer, and the path is
+ * what a developer needs to `cd` to the run. Values are selectable.
+ */
+function StartedWith({
+  runPath,
+  inputs,
+}: {
+  runPath?: string;
+  inputs?: Record<string, string>;
+}) {
+  const entries = Object.entries(inputs ?? {});
+  if (!runPath && entries.length === 0) return null;
+
+  return (
+    <section className="mb-4" data-testid="flow-drawer-started-with">
+      <div className="mb-2 font-mono text-mini uppercase tracking-[0.14em] text-muted-foreground">
+        started with
+      </div>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 font-mono text-label">
+        {runPath && (
+          <>
+            <dt className="text-muted-foreground">working directory</dt>
+            <dd className="break-all select-all text-foreground">{runPath}</dd>
+          </>
+        )}
+        {entries.map(([name, value]) => (
+          <Fragment key={name}>
+            <dt className="text-muted-foreground">{name}</dt>
+            <dd className="whitespace-pre-wrap break-all select-all text-foreground">{value}</dd>
+          </Fragment>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+/* ── Copy to clipboard ────────────────────────────────────────────────────── */
+
+/**
+ * Copies `getText()` on click and flips its label to "copied" for a moment.
+ * `navigator.clipboard` only exists in secure contexts (https or localhost),
+ * so a page served over http on a LAN address gets a toast instead of a silent
+ * no-op; the text next to the button stays selectable for a manual copy.
+ */
+function CopyButton({
+  label,
+  getText,
+  testId,
+}: {
+  label: string;
+  getText: () => string;
+  testId: string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  const copy = () => {
+    if (!navigator.clipboard) {
+      toast.error("Clipboard unavailable here. Select the text and copy it by hand.");
+      return;
+    }
+    navigator.clipboard
+      .writeText(getText())
+      .then(() => setCopied(true))
+      .catch(() => toast.error("Couldn't copy to the clipboard"));
+  };
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="font-mono text-micro"
+      onClick={copy}
+      data-testid={testId}
+    >
+      {copied ? "copied" : label}
+    </Button>
+  );
+}
+
 /* ── Expandable task list ─────────────────────────────────────────────────── */
 
 function ExpandableTasks({
   tasks,
   logLines,
-  logsRef,
   childRuns,
 }: {
   tasks: FlowDrawerTask[];
   logLines?: LogEntry[];
-  logsRef: React.RefObject<HTMLDivElement>;
   childRuns?: LiveRun[];
 }) {
   const logsByTask = useMemo(() => {
@@ -400,34 +532,15 @@ function ExpandableTasks({
                 <span className="text-muted-foreground">{st.status}</span>
               </button>
               {isOpen && childRun && (
-                <NestedConduitTasks
-                  childRun={childRun}
-                  logsRef={logsRef}
-                />
+                <NestedConduitTasks childRun={childRun} />
               )}
               {isOpen && !childRun && taskLogs && taskLogs.length > 0 && (
                 <div className="ml-5 border-l border-border pl-3 pb-1">
-                  <div
-                    ref={isOpen && st.status === "running" ? logsRef : undefined}
+                  <LogLines
+                    lines={taskLogs}
+                    testId="task-logs"
                     className="max-h-[200px] overflow-auto bg-background px-2 py-1.5 font-mono text-label leading-relaxed text-muted-foreground"
-                  >
-                    {taskLogs.map((line, i) => (
-                      <div
-                        key={i}
-                        className={cn(
-                          "whitespace-pre-wrap break-all",
-                          line.level === "ok" && "text-[color:var(--color-ok)]",
-                          line.level === "acc" && "text-primary",
-                          line.level === "err" && "text-destructive",
-                        )}
-                      >
-                        <span className="text-muted-foreground">
-                          {fmtClock(line.t)}{" "}
-                        </span>
-                        {line.text}
-                      </div>
-                    ))}
-                  </div>
+                  />
                 </div>
               )}
             </li>
@@ -440,13 +553,7 @@ function ExpandableTasks({
 
 /* ── Nested sub-conduit task list ───────────────────────────────────────────── */
 
-function NestedConduitTasks({
-  childRun,
-  logsRef,
-}: {
-  childRun: LiveRun;
-  logsRef: React.RefObject<HTMLDivElement>;
-}) {
+function NestedConduitTasks({ childRun }: { childRun: LiveRun }) {
   const childTaskNames = Object.keys(childRun.taskStatuses);
   const childLogsByTask = useMemo(() => {
     const map = new Map<string, LogEntry[]>();
@@ -519,27 +626,11 @@ function NestedConduitTasks({
               </button>
               {isOpen && taskLogs && taskLogs.length > 0 && (
                 <div className="ml-4 border-l border-border pl-2 pb-1">
-                  <div
-                    ref={isOpen && status === "running" ? logsRef : undefined}
+                  <LogLines
+                    lines={taskLogs}
+                    testId="child-task-logs"
                     className="max-h-[160px] overflow-auto bg-background px-2 py-1 font-mono text-mini leading-relaxed text-muted-foreground"
-                  >
-                    {taskLogs.map((line, i) => (
-                      <div
-                        key={i}
-                        className={cn(
-                          "whitespace-pre-wrap break-all",
-                          line.level === "ok" && "text-[color:var(--color-ok)]",
-                          line.level === "acc" && "text-primary",
-                          line.level === "err" && "text-destructive",
-                        )}
-                      >
-                        <span className="text-muted-foreground">
-                          {fmtClock(line.t)}{" "}
-                        </span>
-                        {line.text}
-                      </div>
-                    ))}
-                  </div>
+                  />
                 </div>
               )}
             </li>
@@ -550,18 +641,75 @@ function NestedConduitTasks({
   );
 }
 
+/* ── Log box ──────────────────────────────────────────────────────────────── */
+
+// How close to the bottom (px) still counts as "at the tail". Absorbs the
+// sub-pixel scrollTop browsers report under zoom.
+const TAIL_SLACK_PX = 4;
+
+/**
+ * One scrollable box of log lines that follows its own tail, like a terminal:
+ * a new line scrolls it to the bottom, unless the reader has scrolled up, in
+ * which case it stays put until they scroll back down. Each box owns its pin,
+ * so two tasks streaming at once (max_concurrency > 1) follow independently.
+ */
+function LogLines({
+  lines,
+  className,
+  testId,
+}: {
+  lines: LogEntry[];
+  className: string;
+  testId: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [lines.length]);
+
+  return (
+    <div
+      ref={ref}
+      data-testid={testId}
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight <= TAIL_SLACK_PX;
+      }}
+      className={className}
+    >
+      {lines.map((line, i) => (
+        <div
+          key={i}
+          className={cn(
+            "whitespace-pre-wrap break-all",
+            line.level === "ok" && "text-[color:var(--color-ok)]",
+            line.level === "acc" && "text-primary",
+            line.level === "err" && "text-destructive",
+          )}
+        >
+          <span className="text-muted-foreground">
+            {fmtClock(line.t)}{" "}
+          </span>
+          {line.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ── Flat logs box showing global / marker lines only ──────────────────────── */
 
 const MARKER_RE = /^[▸✓✗]/;
 
 function LogsSection({
   logLines,
-  logsRef,
   startedAt,
   duration,
 }: {
   logLines: LogEntry[];
-  logsRef: React.RefObject<HTMLDivElement>;
   startedAt?: number;
   duration?: number;
 }) {
@@ -578,28 +726,11 @@ function LogsSection({
       <div className="mb-2 font-mono text-mini uppercase tracking-[0.14em] text-muted-foreground">
         logs
       </div>
-      <div
-        ref={logsRef}
-        data-testid="drawer-logs"
+      <LogLines
+        lines={globalLines}
+        testId="drawer-logs"
         className="max-h-[260px] overflow-auto border border-border bg-background px-3 py-2 font-mono text-label leading-relaxed text-muted-foreground"
-      >
-        {globalLines.map((line, i) => (
-          <div
-            key={i}
-            className={cn(
-              "whitespace-pre-wrap break-all",
-              line.level === "ok" && "text-[color:var(--color-ok)]",
-              line.level === "acc" && "text-primary",
-              line.level === "err" && "text-destructive",
-            )}
-          >
-            <span className="text-muted-foreground">
-              {fmtClock(line.t)}{" "}
-            </span>
-            {line.text}
-          </div>
-        ))}
-      </div>
+      />
       {startedAt && (
         <div className="mt-1 font-mono text-mini text-muted-foreground">
           {globalLines.length} lines · {fmtDuration(duration ?? Date.now() - startedAt)} elapsed

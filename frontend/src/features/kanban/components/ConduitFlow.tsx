@@ -1,6 +1,6 @@
 import { useConduits } from "@/services/ConduitProvider";
 import type { Conduit } from "@/types/conduit";
-import { hintStr } from "@/types/conduit";
+import { hintStr, inputDefault, inputHint } from "@/types/conduit";
 import { cn } from "@/lib/cn";
 import { FieldRow } from "./FieldRow";
 import { ProjectSelector } from "./ProjectSelector";
@@ -88,11 +88,11 @@ export function ConduitFlow({
             inputs
           </div>
           {Object.entries(conduit.inputs).map(([name, hint]) => (
-            <FieldRow key={name} label={name} hint={hintStr(hint)}>
+            <FieldRow key={name} label={name} hint={inputHint(hint)}>
               <input
                 value={values[name] ?? ""}
                 onChange={(e) => setValues((v) => ({ ...v, [name]: e.target.value }))}
-                placeholder={hintStr(hint)}
+                placeholder={inputDefault(hint) ?? hintStr(hint)}
                 className="w-full border-0 border-b border-border-strong bg-transparent pb-2 font-mono text-data text-foreground focus:border-primary"
               />
             </FieldRow>

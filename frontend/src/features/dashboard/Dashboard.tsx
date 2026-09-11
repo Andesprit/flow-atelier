@@ -6,7 +6,10 @@ import { FlowHistory } from "@/features/dashboard/components/flow-history";
 import { Button } from "@/components/ui/button";
 import { useConduits, getConduitSync } from "@/services/ConduitProvider";
 import { BASE_URL } from "@/config/env";
+import { SELECTED_CONDUIT_STORAGE_KEY } from "@/constants/dashboard";
 import { useConduit } from "@/hooks/useConduit";
+import { useRunTitle } from "@/hooks/useRunTitle";
+import { useRunNotifications } from "@/hooks/useRunNotifications";
 import { fetchSchedules } from "@/services/conduits";
 import { createSchedule, deleteSchedule } from "@/services/api/schedules";
 import { ScheduleDialog } from "@/features/dashboard/components/schedule-dialog";
@@ -14,7 +17,13 @@ import type { ScheduleConfig, ScheduledJob } from "@/types/schedule";
 
 export default function Dashboard() {
   const { conduits, loading, error, refresh } = useConduits();
-  const [selected, setSelected] = useState(conduits[0]?.name ?? "");
+  // The form remembers each conduit's inputs and working directory, but the
+  // conduit itself was reset to the first one on every reload and every trip
+  // to another screen. The stored name is checked against the list below once
+  // it has loaded.
+  const [selected, setSelected] = useState(
+    () => localStorage.getItem(SELECTED_CONDUIT_STORAGE_KEY) ?? conduits[0]?.name ?? "",
+  );
   const [scheduledJobs, setScheduledJobs] = useState<ScheduledJob[]>([]);
   const [addScheduleOpen, setAddScheduleOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -30,6 +39,8 @@ export default function Dashboard() {
     onFlowStarted: (flowId) => setAutoOpenFlowId(flowId),
     onError: (message) => toast.error(message),
   });
+  useRunTitle(liveRuns);
+  useRunNotifications(liveRuns);
 
   // When the API is unreachable both fetches fail for the same reason, and the
   // conduits failure already renders a full cause-level message inline; a
@@ -72,6 +83,10 @@ export default function Dashboard() {
     }
   }, [conduits, selected]);
 
+  useEffect(() => {
+    if (conduit) localStorage.setItem(SELECTED_CONDUIT_STORAGE_KEY, conduit.name);
+  }, [conduit]);
+
   const handleSchedule = (inputs: Record<string, string>, config: ScheduleConfig, scheduleConduitName?: string, runPath?: string) => {
     const conduitName = scheduleConduitName ?? conduit.name;
 
@@ -102,10 +117,13 @@ export default function Dashboard() {
     });
   };
 
-  const handleRun = (inputs: Record<string, string>, runPath: string) => {
-    run(conduit.name, inputs, runPath);
-    toast.success(`Started ${conduit.name}`);
+  const startRun = (conduitName: string, inputs: Record<string, string>, runPath: string) => {
+    run(conduitName, inputs, runPath);
+    toast.success(`Started ${conduitName}`);
   };
+
+  const handleRun = (inputs: Record<string, string>, runPath: string) =>
+    startRun(conduit.name, inputs, runPath);
 
   const handleResume = (flowId: string, conduitName?: string) => {
     resume(flowId, conduitName);
@@ -198,6 +216,7 @@ export default function Dashboard() {
               onAnswerAgentInput={answerAgentInput}
               onCancelRun={cancel}
               onResumeRun={handleResume}
+              onRunAgain={startRun}
             />
           </section>
         </div>

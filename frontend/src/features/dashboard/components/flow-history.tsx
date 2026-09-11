@@ -21,7 +21,7 @@ import { cn } from "@/lib/cn";
 import type { ScheduledJob } from "@/types/schedule";
 import type { LogEntry } from "@/types/task";
 import type { PriorFlow } from "@/types/flow";
-import type { LiveRun } from "@/hooks/useConduit";
+import { waitingFlowIds, type LiveRun } from "@/hooks/useConduit";
 
 type SortCol = "flow" | "duration" | "started" | "state";
 
@@ -40,6 +40,8 @@ interface Props {
   onAnswerAgentInput?: (flowId: string, requestId: string, answer: string) => void;
   onCancelRun?: (flowId: string) => void;
   onResumeRun?: (flowId: string, conduitName?: string) => void;
+  /** Start a fresh run of a finished one, with the same inputs and working directory. */
+  onRunAgain?: (conduitName: string, inputs: Record<string, string>, runPath: string) => void;
 }
 
 export function FlowHistory({
@@ -53,6 +55,7 @@ export function FlowHistory({
   onAnswerAgentInput,
   onCancelRun,
   onResumeRun,
+  onRunAgain,
 }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>("flows");
   const [selectedFlowId, setSelectedFlowId] = useState<string | undefined>();
@@ -91,6 +94,8 @@ export function FlowHistory({
 
   // ── Row list ──────────────────────────────────────────────────────────────
 
+  const waiting = useMemo(() => waitingFlowIds(liveRuns), [liveRuns]);
+
   const liveRows: Row[] = useMemo(
     () =>
       liveRuns
@@ -104,10 +109,13 @@ export function FlowHistory({
               ? Date.now() - r.startedAt
               : (r.logLines[r.logLines.length - 1]?.t ?? Date.now()) - r.startedAt,
           state: r.status,
-          tag: r.status === "running" ? "live" : r.status === "cancelled" ? "cancelled" : r.status,
+          tag:
+            r.status === "running"
+              ? waiting.has(r.flowId) ? "waiting" : "live"
+              : r.status === "cancelled" ? "cancelled" : r.status,
           isConduit: true,
         })),
-    [liveRuns],
+    [liveRuns, waiting],
   );
 
   // Dedup: exclude prior rows whose flowId matches a live run (exact match only).
@@ -274,9 +282,6 @@ export function FlowHistory({
 
   const drawerStartedAt = selectedLiveRun?.startedAt ?? priorFlow?.startedAt;
   const drawerHitl = selectedLiveRun?.hitlRequest ?? priorFlowHitl;
-  const drawerInputCount = selectedLiveRun
-    ? Object.keys(selectedLiveRun.inputs).length
-    : 0;
   const drawerHideCancel = !selectedLiveRun || selectedLiveRun.status !== "running";
 
   // A nested conduit's interactive task prompts under its own child flow id, so
@@ -384,6 +389,7 @@ export function FlowHistory({
       <FlowDrawer
         open={!!selectedFlowId}
         onClose={handleDrawerClose}
+        flowId={selectedFlowId}
         title={selectedRow?.conduit ?? priorFlow?.conduitName ?? ""}
         subtitle={
           selectedLiveRun
@@ -400,7 +406,7 @@ export function FlowHistory({
         badge={
           selectedLiveRun
             ? selectedLiveRun.status === "running"
-              ? "live"
+              ? waiting.has(selectedLiveRun.flowId) ? "waiting" : "live"
               : selectedLiveRun.status === "cancelled"
                 ? "cancelled"
                 : selectedLiveRun.status
@@ -423,7 +429,15 @@ export function FlowHistory({
                 onAnswerAgentInput(request.flowId, request.requestId, answer)
             : undefined
         }
-        inputCount={drawerInputCount}
+        inputs={selectedLiveRun?.inputs}
+        runPath={selectedLiveRun?.runPath || priorRunPath}
+        onRunAgain={
+          // Only a run this tab started knows its inputs; a prior flow resumed
+          // here carries an empty path and would rerun nowhere.
+          onRunAgain && selectedLiveRun && selectedLiveRun.status !== "running" && selectedLiveRun.runPath
+            ? () => onRunAgain(selectedLiveRun.conduitName, selectedLiveRun.inputs, selectedLiveRun.runPath)
+            : undefined
+        }
         onOpenPath={
           selectedLiveRun?.runPath
             ? () => openPath(selectedLiveRun.conduitName, selectedLiveRun.runPath)

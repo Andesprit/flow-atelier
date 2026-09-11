@@ -15,6 +15,7 @@ import { startTask } from "@/runner/engine";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useTaskStore } from "@/runner";
 import { useConduit } from "@/hooks/useConduit";
+import { useRunTitle } from "@/hooks/useRunTitle";
 import { getConduitCached } from "@/services/conduits";
 
 import {
@@ -145,6 +146,7 @@ export function Kanban() {
     },
     onError: (message) => toast.error(message),
   });
+  useRunTitle(liveRuns);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),

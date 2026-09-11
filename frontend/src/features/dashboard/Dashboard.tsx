@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useConduits, getConduitSync } from "@/services/ConduitProvider";
 import { BASE_URL } from "@/config/env";
 import { useConduit } from "@/hooks/useConduit";
+import { useRunTitle } from "@/hooks/useRunTitle";
 import { fetchSchedules } from "@/services/conduits";
 import { createSchedule, deleteSchedule } from "@/services/api/schedules";
 import { ScheduleDialog } from "@/features/dashboard/components/schedule-dialog";
@@ -30,6 +31,7 @@ export default function Dashboard() {
     onFlowStarted: (flowId) => setAutoOpenFlowId(flowId),
     onError: (message) => toast.error(message),
   });
+  useRunTitle(liveRuns);
 
   // When the API is unreachable both fetches fail for the same reason, and the
   // conduits failure already renders a full cause-level message inline; a

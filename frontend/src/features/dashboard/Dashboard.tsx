@@ -6,6 +6,7 @@ import { FlowHistory } from "@/features/dashboard/components/flow-history";
 import { Button } from "@/components/ui/button";
 import { useConduits, getConduitSync } from "@/services/ConduitProvider";
 import { BASE_URL } from "@/config/env";
+import { SELECTED_CONDUIT_STORAGE_KEY } from "@/constants/dashboard";
 import { useConduit } from "@/hooks/useConduit";
 import { useRunTitle } from "@/hooks/useRunTitle";
 import { fetchSchedules } from "@/services/conduits";
@@ -15,7 +16,13 @@ import type { ScheduleConfig, ScheduledJob } from "@/types/schedule";
 
 export default function Dashboard() {
   const { conduits, loading, error, refresh } = useConduits();
-  const [selected, setSelected] = useState(conduits[0]?.name ?? "");
+  // The form remembers each conduit's inputs and working directory, but the
+  // conduit itself was reset to the first one on every reload and every trip
+  // to another screen. The stored name is checked against the list below once
+  // it has loaded.
+  const [selected, setSelected] = useState(
+    () => localStorage.getItem(SELECTED_CONDUIT_STORAGE_KEY) ?? conduits[0]?.name ?? "",
+  );
   const [scheduledJobs, setScheduledJobs] = useState<ScheduledJob[]>([]);
   const [addScheduleOpen, setAddScheduleOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -73,6 +80,10 @@ export default function Dashboard() {
       setSelected(conduits[0].name);
     }
   }, [conduits, selected]);
+
+  useEffect(() => {
+    if (conduit) localStorage.setItem(SELECTED_CONDUIT_STORAGE_KEY, conduit.name);
+  }, [conduit]);
 
   const handleSchedule = (inputs: Record<string, string>, config: ScheduleConfig, scheduleConduitName?: string, runPath?: string) => {
     const conduitName = scheduleConduitName ?? conduit.name;

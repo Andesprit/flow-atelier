@@ -384,6 +384,7 @@ export function FlowHistory({
       <FlowDrawer
         open={!!selectedFlowId}
         onClose={handleDrawerClose}
+        flowId={selectedFlowId}
         title={selectedRow?.conduit ?? priorFlow?.conduitName ?? ""}
         subtitle={
           selectedLiveRun

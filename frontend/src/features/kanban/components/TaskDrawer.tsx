@@ -153,6 +153,7 @@ export function TaskDrawer({ taskName, onClose, liveRuns = [], onCancelRun, onRe
     <FlowDrawer
       open={!!taskName}
       onClose={onClose}
+      flowId={flowId}
       title={task.name}
       subtitle={subtitle}
       badge={task.column.replace("_", " ")}

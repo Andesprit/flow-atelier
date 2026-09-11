@@ -10,7 +10,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/cn";
-import { fmtClock, fmtDuration, fmtMSS } from "@/utils/format";
+import { toast } from "sonner";
+import { fmtClock, fmtDuration, fmtMSS, logsToText } from "@/utils/format";
 import { ChevronRight } from "lucide-react";
 import type { LogEntry, HitlRequest, FlowTaskStatus } from "@/types/task";
 import type { Conduit } from "@/types/conduit";
@@ -30,6 +31,8 @@ export interface FlowDrawerProps {
   title: string;
   subtitle?: string;
   badge?: string;
+  /** Shown with a copy button: it is what `atelier logs/status/stop <id>` take. */
+  flowId?: string;
   tasks?: FlowDrawerTask[];
   logLines?: LogEntry[];
   startedAt?: number;
@@ -142,6 +145,7 @@ export function FlowDrawer({
   title,
   subtitle,
   badge,
+  flowId,
   tasks,
   logLines,
   startedAt,
@@ -166,6 +170,8 @@ export function FlowDrawer({
     if (el) el.scrollTop = el.scrollHeight;
   }, [logLines?.length]);
 
+  const hasLogs = (logLines?.length ?? 0) > 0;
+
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
       <SheetContent
@@ -176,22 +182,48 @@ export function FlowDrawer({
         <SheetHeader>
           <SheetTitle className="font-mono">{title}</SheetTitle>
           {subtitle && <SheetDescription>{subtitle}</SheetDescription>}
-          {badge && (
+          {(badge || hasLogs || onOpenPath) && (
             <div className="flex items-center gap-2 pt-2">
-              <Badge variant="outline" data-testid="flow-drawer-badge">
-                {badge}
-              </Badge>
-              {onOpenPath && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="ml-auto font-mono text-micro"
-                  onClick={onOpenPath}
-                  data-testid="flow-drawer-open-path"
-                >
-                  open path
-                </Button>
+              {badge && (
+                <Badge variant="outline" data-testid="flow-drawer-badge">
+                  {badge}
+                </Badge>
               )}
+              <div className="ml-auto flex items-center gap-2">
+                {hasLogs && (
+                  <CopyButton
+                    label="copy logs"
+                    getText={() => logsToText(logLines ?? [])}
+                    testId="flow-drawer-copy-logs"
+                  />
+                )}
+                {onOpenPath && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="font-mono text-micro"
+                    onClick={onOpenPath}
+                    data-testid="flow-drawer-open-path"
+                  >
+                    open path
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+          {flowId && (
+            <div
+              className="flex items-center gap-2 pt-2 font-mono text-mini text-muted-foreground"
+              data-testid="flow-drawer-id"
+            >
+              <span className="min-w-0 truncate select-all" title={flowId}>
+                {flowId}
+              </span>
+              <CopyButton
+                label="copy id"
+                getText={() => flowId}
+                testId="flow-drawer-copy-id"
+              />
             </div>
           )}
         </SheetHeader>
@@ -300,6 +332,56 @@ export function FlowDrawer({
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+/* ── Copy to clipboard ────────────────────────────────────────────────────── */
+
+/**
+ * Copies `getText()` on click and flips its label to "copied" for a moment.
+ * `navigator.clipboard` only exists in secure contexts (https or localhost),
+ * so a page served over http on a LAN address gets a toast instead of a silent
+ * no-op; the text next to the button stays selectable for a manual copy.
+ */
+function CopyButton({
+  label,
+  getText,
+  testId,
+}: {
+  label: string;
+  getText: () => string;
+  testId: string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  const copy = () => {
+    if (!navigator.clipboard) {
+      toast.error("Clipboard unavailable here. Select the text and copy it by hand.");
+      return;
+    }
+    navigator.clipboard
+      .writeText(getText())
+      .then(() => setCopied(true))
+      .catch(() => toast.error("Couldn't copy to the clipboard"));
+  };
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="font-mono text-micro"
+      onClick={copy}
+      data-testid={testId}
+    >
+      {copied ? "copied" : label}
+    </Button>
   );
 }
 

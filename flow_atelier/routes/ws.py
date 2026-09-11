@@ -337,6 +337,36 @@ async def _send_children_lifecycle(
         broker.unregister_flow(child_id)
 
 
+async def _send_logs(
+    atelier: Atelier,
+    broker: WebSocketBroker,
+    flow_id: str,
+) -> None:
+    """Stream the persisted log entries of ``flow_id`` as ``log`` envelopes.
+
+    Sent on every exit of a run, not only success: a failed task's command,
+    stdout and stderr are on disk before the engine raises, and without them
+    the client gets ``flow_failed`` with nothing to explain it. A flow that
+    was never persisted (conduit not found, missing inputs) has no entries.
+
+    :param atelier: per-flow Atelier instance.
+    :param broker: WebSocketBroker for fan-out.
+    :param flow_id: flow whose entries to stream.
+    """
+    try:
+        entries = atelier.store.read_logs(flow_id)
+    except FileNotFoundError:
+        return
+    for entry in entries:
+        await broker.send(
+            {
+                "type": "log",
+                "flow_id": flow_id,
+                "entry": entry.model_dump(mode="json"),
+            }
+        )
+
+
 async def _drive_lifecycle(
     atelier: Atelier,
     broker: WebSocketBroker,
@@ -346,7 +376,8 @@ async def _drive_lifecycle(
     """Drive a flow to completion and broadcast lifecycle envelopes.
 
     Sends ``started``, awaits *coro*, then streams logs and sends
-    ``flow_complete``.  On cancellation or error sends ``flow_failed``.
+    ``flow_complete``.  On cancellation or error streams the logs written
+    so far and sends ``flow_failed``.
     Child flow logs and lifecycle are sent before the parent's own.
     Unregisters the flow from the broker on completion.
 
@@ -361,27 +392,21 @@ async def _drive_lifecycle(
             await coro
         except asyncio.CancelledError:
             await _send_children_lifecycle(atelier, broker, flow_id)
+            await _send_logs(atelier, broker, flow_id)
             await broker.send(
                 {"type": "flow_failed", "flow_id": flow_id, "error": "cancelled"}
             )
             raise
         except Exception as e:  # noqa: BLE001
             await _send_children_lifecycle(atelier, broker, flow_id)
+            await _send_logs(atelier, broker, flow_id)
             await broker.send(
                 {"type": "flow_failed", "flow_id": flow_id, "error": str(e)}
             )
             return
 
         await _send_children_lifecycle(atelier, broker, flow_id)
-
-        for entry in atelier.store.read_logs(flow_id):
-            await broker.send(
-                {
-                    "type": "log",
-                    "flow_id": flow_id,
-                    "entry": entry.model_dump(mode="json"),
-                }
-            )
+        await _send_logs(atelier, broker, flow_id)
         await broker.send({"type": "flow_complete", "flow_id": flow_id})
     finally:
         broker.unregister_flow(flow_id)

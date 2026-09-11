@@ -38,6 +38,16 @@ tasks:
         choice: "Pick a value"
 """
 
+BROKEN_YAML = """name: broken
+description: fails on its only task
+tasks:
+  - bad:
+      description: prints then exits non-zero
+      task: "echo before-the-crash; echo it-broke >&2; exit 3"
+      tool: tool:bash
+      depends_on: []
+"""
+
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
@@ -49,7 +59,11 @@ def env(tmp_path, monkeypatch):
     global_dir = tmp_path / ".atelier-global"
     monkeypatch.setenv("ATELIER_GLOBAL_ATELIER_DIR", str(global_dir))
     atelier = Atelier(base_dir=tmp_path / ".atelier")
-    for name, yaml_str in [("hello", HELLO_YAML), ("human", HITL_YAML)]:
+    for name, yaml_str in [
+        ("hello", HELLO_YAML),
+        ("human", HITL_YAML),
+        ("broken", BROKEN_YAML),
+    ]:
         (atelier.store.global_dir / "conduits" / name).mkdir(
             parents=True, exist_ok=True
         )
@@ -229,6 +243,44 @@ def test_ws_run_unknown_conduit_emits_flow_failed(env, tmp_path):
                 ws, lambda e: e["type"] in ("flow_failed", "error")
             )
     assert envelopes[-1]["type"] in ("flow_failed", "error")
+
+
+def test_ws_failed_run_streams_its_logs_before_flow_failed(env, tmp_path):
+    """A failed run's persisted log entries reach the client before ``flow_failed``.
+
+    The engine raises after a task fails, and the failure branch used to send
+    ``flow_failed`` alone, so the UI showed a failed task with no command,
+    stdout or stderr to explain it.
+
+    :param env: env fixture providing (atelier, app).
+    :param tmp_path: pytest temp directory fixture.
+    """
+    _, app = env
+    with TestClient(app, base_url="http://127.0.0.1", headers={"host": "127.0.0.1"}) as client:
+        with client.websocket_connect("/ws/run-conduit") as ws:
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "run",
+                        "conduit_name": "broken",
+                        "inputs": {},
+                        "run_path": str(tmp_path),
+                    }
+                )
+            )
+            envelopes = _drain_until(
+                ws, lambda e: e["type"] in ("flow_complete", "flow_failed")
+            )
+
+    assert envelopes[-1]["type"] == "flow_failed", envelopes[-1]
+    flow_id = next(e["flow_id"] for e in envelopes if e["type"] == "started")
+    logs = [e for e in envelopes if e["type"] == "log" and e["flow_id"] == flow_id]
+    assert len(logs) == 1, envelopes
+    entry = logs[0]["entry"]
+    assert entry["task"] == "bad"
+    assert entry["exit_code"] == 3
+    assert "before-the-crash" in entry["stdout"]
+    assert "it-broke" in entry["stderr"]
 
 
 def test_ws_rejects_bad_token(env):

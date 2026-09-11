@@ -442,6 +442,24 @@ export function useConduit(opts: UseConduitOptions = {}) {
 
   const liveRuns = Array.from(state.runs.values());
 
+  // Closing this socket makes the server cancel every run started on it
+  // (routes/ws.py runs `broker.cancel_all()` on disconnect), and a tab that
+  // closes, reloads or leaves the site closes the socket. So while a run is
+  // in flight, ask first: the browser shows its own leave-page prompt when
+  // this event is cancelled. In-app navigation does not fire it; that path
+  // still kills the runs and is left alone here on purpose.
+  const running = liveRuns.some((r) => r.status === "running");
+  useEffect(() => {
+    if (!running) return;
+    const guard = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // Chrome/Edge before 119 only prompt when returnValue is set as well.
+      e.returnValue = true;
+    };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [running]);
+
   const handleWsMessage = useCallback((msg: ServerWsMessage) => {
     const d = dispatchRef.current;
 

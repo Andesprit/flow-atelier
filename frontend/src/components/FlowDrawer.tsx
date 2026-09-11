@@ -162,14 +162,6 @@ export function FlowDrawer({
   hideCancel,
   childRuns,
 }: FlowDrawerProps) {
-  const logsRef = useRef<HTMLDivElement>(null);
-  const flatLogsRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = flatLogsRef.current ?? logsRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [logLines?.length]);
-
   const hasLogs = (logLines?.length ?? 0) > 0;
 
   return (
@@ -234,14 +226,12 @@ export function FlowDrawer({
               <ExpandableTasks
                 tasks={tasks}
                 logLines={logLines}
-                logsRef={logsRef}
                 childRuns={childRuns}
               />
 
               {logLines && logLines.length > 0 && (
                 <LogsSection
                   logLines={logLines}
-                  logsRef={flatLogsRef}
                   startedAt={startedAt}
                   duration={duration}
                 />
@@ -259,7 +249,6 @@ export function FlowDrawer({
             logLines && logLines.length > 0 ? (
               <LogsSection
                 logLines={logLines}
-                logsRef={flatLogsRef}
                 startedAt={startedAt}
                 duration={duration}
               />
@@ -390,12 +379,10 @@ function CopyButton({
 function ExpandableTasks({
   tasks,
   logLines,
-  logsRef,
   childRuns,
 }: {
   tasks: FlowDrawerTask[];
   logLines?: LogEntry[];
-  logsRef: React.RefObject<HTMLDivElement>;
   childRuns?: LiveRun[];
 }) {
   const logsByTask = useMemo(() => {
@@ -482,34 +469,15 @@ function ExpandableTasks({
                 <span className="text-muted-foreground">{st.status}</span>
               </button>
               {isOpen && childRun && (
-                <NestedConduitTasks
-                  childRun={childRun}
-                  logsRef={logsRef}
-                />
+                <NestedConduitTasks childRun={childRun} />
               )}
               {isOpen && !childRun && taskLogs && taskLogs.length > 0 && (
                 <div className="ml-5 border-l border-border pl-3 pb-1">
-                  <div
-                    ref={isOpen && st.status === "running" ? logsRef : undefined}
+                  <LogLines
+                    lines={taskLogs}
+                    testId="task-logs"
                     className="max-h-[200px] overflow-auto bg-background px-2 py-1.5 font-mono text-label leading-relaxed text-muted-foreground"
-                  >
-                    {taskLogs.map((line, i) => (
-                      <div
-                        key={i}
-                        className={cn(
-                          "whitespace-pre-wrap break-all",
-                          line.level === "ok" && "text-[color:var(--color-ok)]",
-                          line.level === "acc" && "text-primary",
-                          line.level === "err" && "text-destructive",
-                        )}
-                      >
-                        <span className="text-muted-foreground">
-                          {fmtClock(line.t)}{" "}
-                        </span>
-                        {line.text}
-                      </div>
-                    ))}
-                  </div>
+                  />
                 </div>
               )}
             </li>
@@ -522,13 +490,7 @@ function ExpandableTasks({
 
 /* ── Nested sub-conduit task list ───────────────────────────────────────────── */
 
-function NestedConduitTasks({
-  childRun,
-  logsRef,
-}: {
-  childRun: LiveRun;
-  logsRef: React.RefObject<HTMLDivElement>;
-}) {
+function NestedConduitTasks({ childRun }: { childRun: LiveRun }) {
   const childTaskNames = Object.keys(childRun.taskStatuses);
   const childLogsByTask = useMemo(() => {
     const map = new Map<string, LogEntry[]>();
@@ -601,27 +563,11 @@ function NestedConduitTasks({
               </button>
               {isOpen && taskLogs && taskLogs.length > 0 && (
                 <div className="ml-4 border-l border-border pl-2 pb-1">
-                  <div
-                    ref={isOpen && status === "running" ? logsRef : undefined}
+                  <LogLines
+                    lines={taskLogs}
+                    testId="child-task-logs"
                     className="max-h-[160px] overflow-auto bg-background px-2 py-1 font-mono text-mini leading-relaxed text-muted-foreground"
-                  >
-                    {taskLogs.map((line, i) => (
-                      <div
-                        key={i}
-                        className={cn(
-                          "whitespace-pre-wrap break-all",
-                          line.level === "ok" && "text-[color:var(--color-ok)]",
-                          line.level === "acc" && "text-primary",
-                          line.level === "err" && "text-destructive",
-                        )}
-                      >
-                        <span className="text-muted-foreground">
-                          {fmtClock(line.t)}{" "}
-                        </span>
-                        {line.text}
-                      </div>
-                    ))}
-                  </div>
+                  />
                 </div>
               )}
             </li>
@@ -632,18 +578,75 @@ function NestedConduitTasks({
   );
 }
 
+/* ── Log box ──────────────────────────────────────────────────────────────── */
+
+// How close to the bottom (px) still counts as "at the tail". Absorbs the
+// sub-pixel scrollTop browsers report under zoom.
+const TAIL_SLACK_PX = 4;
+
+/**
+ * One scrollable box of log lines that follows its own tail, like a terminal:
+ * a new line scrolls it to the bottom, unless the reader has scrolled up, in
+ * which case it stays put until they scroll back down. Each box owns its pin,
+ * so two tasks streaming at once (max_concurrency > 1) follow independently.
+ */
+function LogLines({
+  lines,
+  className,
+  testId,
+}: {
+  lines: LogEntry[];
+  className: string;
+  testId: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [lines.length]);
+
+  return (
+    <div
+      ref={ref}
+      data-testid={testId}
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight <= TAIL_SLACK_PX;
+      }}
+      className={className}
+    >
+      {lines.map((line, i) => (
+        <div
+          key={i}
+          className={cn(
+            "whitespace-pre-wrap break-all",
+            line.level === "ok" && "text-[color:var(--color-ok)]",
+            line.level === "acc" && "text-primary",
+            line.level === "err" && "text-destructive",
+          )}
+        >
+          <span className="text-muted-foreground">
+            {fmtClock(line.t)}{" "}
+          </span>
+          {line.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ── Flat logs box showing global / marker lines only ──────────────────────── */
 
 const MARKER_RE = /^[▸✓✗]/;
 
 function LogsSection({
   logLines,
-  logsRef,
   startedAt,
   duration,
 }: {
   logLines: LogEntry[];
-  logsRef: React.RefObject<HTMLDivElement>;
   startedAt?: number;
   duration?: number;
 }) {
@@ -660,28 +663,11 @@ function LogsSection({
       <div className="mb-2 font-mono text-mini uppercase tracking-[0.14em] text-muted-foreground">
         logs
       </div>
-      <div
-        ref={logsRef}
-        data-testid="drawer-logs"
+      <LogLines
+        lines={globalLines}
+        testId="drawer-logs"
         className="max-h-[260px] overflow-auto border border-border bg-background px-3 py-2 font-mono text-label leading-relaxed text-muted-foreground"
-      >
-        {globalLines.map((line, i) => (
-          <div
-            key={i}
-            className={cn(
-              "whitespace-pre-wrap break-all",
-              line.level === "ok" && "text-[color:var(--color-ok)]",
-              line.level === "acc" && "text-primary",
-              line.level === "err" && "text-destructive",
-            )}
-          >
-            <span className="text-muted-foreground">
-              {fmtClock(line.t)}{" "}
-            </span>
-            {line.text}
-          </div>
-        ))}
-      </div>
+      />
       {startedAt && (
         <div className="mt-1 font-mono text-mini text-muted-foreground">
           {globalLines.length} lines · {fmtDuration(duration ?? Date.now() - startedAt)} elapsed

@@ -49,6 +49,36 @@ describe("runTitle", () => {
     expect(runTitle([run({ flowId: "a", status: "cancelled" })])).toBe("■ cancelled · goal_loop");
   });
 
+  it("leads with a run that is waiting on a person, even while others are busy", () => {
+    expect(
+      runTitle([
+        run({ flowId: "a", status: "running", conduitName: "busy" }),
+        run({ flowId: "b", status: "running", agentRequests: [{ flowId: "b", requestId: "r1", prompt: "?" }] }),
+      ]),
+    ).toBe("? waiting · goal_loop");
+    expect(
+      runTitle([
+        run({ flowId: "a", status: "running", hitlRequest: { fromTool: "tool:hitl", comment: "" } }),
+        run({ flowId: "b", status: "running", hitlRequest: { fromTool: "tool:hitl", comment: "" } }),
+      ]),
+    ).toBe(`? 2 waiting · ${BASE_TITLE}`);
+  });
+
+  it("credits a nested child's question to its top-level run", () => {
+    expect(
+      runTitle([
+        run({ flowId: "p", status: "running" }),
+        run({
+          flowId: "c",
+          status: "running",
+          parentFlowId: "p",
+          conduitName: "child",
+          agentRequests: [{ flowId: "c", requestId: "r1", prompt: "?" }],
+        }),
+      ]),
+    ).toBe("? waiting · goal_loop");
+  });
+
   it("ignores child flows of a nested conduit", () => {
     expect(runTitle([run({ flowId: "c", status: "running", parentFlowId: "p" })])).toBe(BASE_TITLE);
     expect(

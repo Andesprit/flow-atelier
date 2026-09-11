@@ -21,7 +21,7 @@ import { cn } from "@/lib/cn";
 import type { ScheduledJob } from "@/types/schedule";
 import type { LogEntry } from "@/types/task";
 import type { PriorFlow } from "@/types/flow";
-import type { LiveRun } from "@/hooks/useConduit";
+import { waitingFlowIds, type LiveRun } from "@/hooks/useConduit";
 
 type SortCol = "flow" | "duration" | "started" | "state";
 
@@ -91,6 +91,8 @@ export function FlowHistory({
 
   // ── Row list ──────────────────────────────────────────────────────────────
 
+  const waiting = useMemo(() => waitingFlowIds(liveRuns), [liveRuns]);
+
   const liveRows: Row[] = useMemo(
     () =>
       liveRuns
@@ -104,10 +106,13 @@ export function FlowHistory({
               ? Date.now() - r.startedAt
               : (r.logLines[r.logLines.length - 1]?.t ?? Date.now()) - r.startedAt,
           state: r.status,
-          tag: r.status === "running" ? "live" : r.status === "cancelled" ? "cancelled" : r.status,
+          tag:
+            r.status === "running"
+              ? waiting.has(r.flowId) ? "waiting" : "live"
+              : r.status === "cancelled" ? "cancelled" : r.status,
           isConduit: true,
         })),
-    [liveRuns],
+    [liveRuns, waiting],
   );
 
   // Dedup: exclude prior rows whose flowId matches a live run (exact match only).
@@ -401,7 +406,7 @@ export function FlowHistory({
         badge={
           selectedLiveRun
             ? selectedLiveRun.status === "running"
-              ? "live"
+              ? waiting.has(selectedLiveRun.flowId) ? "waiting" : "live"
               : selectedLiveRun.status === "cancelled"
                 ? "cancelled"
                 : selectedLiveRun.status

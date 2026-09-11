@@ -1,7 +1,7 @@
 import { useConduits, getConduitSync } from "@/services/ConduitProvider";
 import { useTaskStore } from "@/runner";
 import type { Task } from "@/types/task";
-import { hintStr } from "@/types/conduit";
+import { hintStr, inputDefault, inputHint } from "@/types/conduit";
 import {
   Dialog,
   DialogContent,
@@ -131,11 +131,11 @@ export function NewTaskDialog({ open, onOpenChange, editTask, projectId, onRun }
                     inputs
                   </div>
                   {Object.entries(editInputs).map(([name, hint]) => (
-                    <FieldRow key={name} label={name} hint={hintStr(hint)} error={s.fieldErrors[name]}>
+                    <FieldRow key={name} label={name} hint={inputHint(hint)} error={s.fieldErrors[name]}>
                       <input
                         value={s.values[name] ?? ""}
                         onChange={(e) => s.setValues((v) => ({ ...v, [name]: e.target.value }))}
-                        placeholder={hintStr(hint)}
+                        placeholder={inputDefault(hint) ?? hintStr(hint)}
                         className="w-full border-0 border-b border-border-strong bg-transparent pb-2 font-mono text-data text-foreground focus:border-primary"
                       />
                     </FieldRow>

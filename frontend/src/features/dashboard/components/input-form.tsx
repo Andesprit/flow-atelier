@@ -1,6 +1,6 @@
 import { type FormEvent, useMemo, useState, useEffect, useCallback } from "react";
 import type { Conduit } from "@/types/conduit";
-import { hintStr } from "@/types/conduit";
+import { hintStr, inputDefault, inputHint, submittedInputs } from "@/types/conduit";
 import type { ScheduleConfig } from "@/types/schedule";
 import { Button } from "@/components/ui/button";
 import { Play, Clock } from "lucide-react";
@@ -82,12 +82,12 @@ export function InputForm({ conduit, onRun, onSchedule }: Props) {
     e.preventDefault();
     const errs: Record<string, string> = {};
     if (!runPath.trim()) errs.runPath = "Working directory is required";
-    for (const name of Object.keys(conduit.inputs)) {
-      if (!values[name]?.trim()) errs[name] = "Required";
+    for (const [name, hint] of Object.entries(conduit.inputs)) {
+      if (!values[name]?.trim() && inputDefault(hint) == null) errs[name] = "Required";
     }
     if (Object.keys(errs).length) { setErrors(errs); return; }
     setErrors({});
-    onRun(values, runPath);
+    onRun(submittedInputs(conduit, values), runPath);
   };
 
   return (
@@ -134,7 +134,7 @@ export function InputForm({ conduit, onRun, onSchedule }: Props) {
                 {name}
               </label>
               <div className="mt-1 text-label text-muted-foreground">
-                {hintStr(hint)}
+                {inputHint(hint)}
               </div>
             </div>
             <div>
@@ -147,7 +147,7 @@ export function InputForm({ conduit, onRun, onSchedule }: Props) {
                 aria-invalid={!!errors[name]}
                 aria-describedby={errors[name] ? `input-${name}-error` : undefined}
                 className="h-11 w-full border-0 border-b border-border-strong bg-transparent font-mono text-data text-foreground focus:border-primary"
-                placeholder={hintStr(hint)}
+                placeholder={inputDefault(hint) ?? hintStr(hint)}
               />
               {errors[name] && <div id={`input-${name}-error`} className="mt-1 font-mono text-mini text-destructive">{errors[name]}</div>}
             </div>

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from flow_atelier.schemas.conduit import TaskDefinition
+from flow_atelier.schemas.interaction import InteractionPolicy
 from flow_atelier.schemas.log import ExecutionResult, IntermediateStep
 from flow_atelier.services.store.base import StoreBase
 
@@ -53,6 +54,12 @@ class FlowContext:
     """Absolute install dir of the running conduit, backing ``{{conduit_dir}}``
     when an executor resolves its own templates (e.g. nested-conduit inputs).
     ``None`` when the conduit is not registered in the store."""
+
+    interaction: InteractionPolicy = field(default_factory=InteractionPolicy)
+    supervisor_executor: ExecutorBase | None = None
+    supervisor_run: bool = False
+    interactive_harnesses: bool = False
+    conduit_description: str = ""
 
 
 class ExecutorBase(ABC):

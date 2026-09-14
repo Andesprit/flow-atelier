@@ -11,6 +11,7 @@ from flow_atelier.schemas.progress import TaskStatus
 
 
 class StepKind(str, Enum):
+    interaction = "interaction"
     thinking = "thinking"
     tool_call = "tool_call"
     tool_result = "tool_result"
@@ -104,6 +105,7 @@ class ExecutionResult(BaseModel):
     """
     steps: list[IntermediateStep] = Field(default_factory=list)
     usage: TurnUsage | None = None
+    session: list[dict[str, Any]] = Field(default_factory=list)
 
     @property
     def success(self) -> bool:
@@ -133,6 +135,7 @@ class LogEntry(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
     steps: list[IntermediateStep] = Field(default_factory=list)
     usage: TurnUsage | None = None
+    session: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TaskEvent(BaseModel):

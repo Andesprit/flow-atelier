@@ -49,6 +49,7 @@ export interface CreateConduitRequest {
   inputs: Record<string, string | InputSpec>;
   timeout?: number;
   maxConcurrency?: number;
+  interaction?: InteractionPolicy | null;
   tasks: ConduitTask[];
 }
 
@@ -72,7 +73,21 @@ export interface Conduit {
   description: string;
   timeout?: number;
   maxConcurrency?: number;
+  interaction?: InteractionPolicy | null;
   runPath?: string;
   inputs: Record<string, string | InputSpec>;
   tasks: ConduitTask[];
+}
+
+/** Conduit-wide routing for harness conversation and tool permissions. */
+export interface InteractionPolicy {
+  questions: "human" | "supervisor" | "hybrid";
+  permissions: "approve_all" | "human" | "supervisor" | "hybrid";
+  supervisor?: {
+    tool: string;
+    instructions?: string;
+    maxReplies?: number;
+    timeout?: number;
+    maxContextChars?: number;
+  } | null;
 }

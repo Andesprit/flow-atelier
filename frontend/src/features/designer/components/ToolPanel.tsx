@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { X } from "lucide-react";
-import type { Conduit, ConduitTask, InputSpec } from "@/types/conduit";
+import type { Conduit, ConduitTask, InputSpec, InteractionPolicy } from "@/types/conduit";
 import { hintStr } from "@/types/conduit";
+import { InteractionSettings } from "./InteractionSettings";
 import { TOOL_META, type ToolMeta } from "@/constants/tools";
 
 interface Props {
@@ -10,9 +11,10 @@ interface Props {
   onAddTask: (task: ConduitTask) => void;
   onAddInput: (name: string, hint: string) => void;
   onRemoveInput: (name: string) => void;
+  onInteractionChange: (value: InteractionPolicy | null) => void;
 }
 
-export function ToolPanel({ conduit, conduitInputs, onAddTask, onAddInput, onRemoveInput }: Props) {
+export function ToolPanel({ conduit, conduitInputs, onAddTask, onAddInput, onRemoveInput, onInteractionChange }: Props) {
   const [isCreatingInput, setIsCreatingInput] = useState(false);
   const [newInputName, setNewInputName] = useState("");
   const [newInputHint, setNewInputHint] = useState("");
@@ -56,6 +58,8 @@ export function ToolPanel({ conduit, conduitInputs, onAddTask, onAddInput, onRem
           </p>
         )}
       </div>
+
+      <InteractionSettings key={conduit.name} value={conduit.interaction} onChange={onInteractionChange} />
 
       <div className="px-4 py-4">
         <div className="flex flex-col gap-2">

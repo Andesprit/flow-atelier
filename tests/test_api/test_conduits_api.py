@@ -345,3 +345,24 @@ async def test_patch_still_accepts_the_string_shorthand(client):
 
     assert resp.status_code == 200
     assert resp.json()["inputs"]["branch"]["description"] == "Branch to deploy"
+
+
+async def test_interaction_policy_round_trip_patch_and_remove(client):
+    """Keep policies across saves, validate replacements, and allow explicit removal."""
+    policy = {
+        "questions": "hybrid", "permissions": "human",
+        "supervisor": {"tool": "harness:codex", "instructions": "Keep the existing API"},
+    }
+    created = await client.post("/conduits", json={**_payload(), "interaction": policy})
+    assert created.status_code == 201, created.text
+    got = (await client.get("/conduits/release_notes")).json()
+    assert got["interaction"]["supervisor"]["instructions"] == "Keep the existing API"
+    saved = await client.patch("/conduits/release_notes", json={"description": "Updated"})
+    assert saved.json()["interaction"] == got["interaction"]
+    invalid = await client.patch("/conduits/release_notes", json={
+        "interaction": {"questions": "supervisor"},
+    })
+    assert invalid.status_code == 422
+    removed = await client.patch("/conduits/release_notes", json={"interaction": None})
+    assert removed.status_code == 200, removed.text
+    assert (await client.get("/conduits/release_notes")).json()["interaction"] is None

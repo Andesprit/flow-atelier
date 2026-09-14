@@ -746,6 +746,28 @@ def test_schedule_add_rejects_invalid(workdir, tmp_path):
     assert "invalid" in result.output.lower()
 
 
+def test_schedule_add_rejects_unknown_input(workdir, tmp_path, monkeypatch):
+    """Verify `schedule add` refuses an input key the conduit cannot use.
+
+    :param workdir: isolated working directory fixture.
+    :param tmp_path: pytest temp directory fixture.
+    :param monkeypatch: pytest monkeypatch fixture.
+    """
+    monkeypatch.setenv("COLUMNS", "200")
+    src = tmp_path / "typo.json"
+    src.write_text(SCHEDULE_RECURRING_JSON.replace('"name": "world"', '"nmae": "world"'))
+    runner = CliRunner()
+    result = runner.invoke(app, ["schedule", "add", str(src)])
+    assert result.exit_code == 1, result.output
+    assert "invalid schedule:" in result.output
+    assert "unknown inputs: ['nmae']" in result.output
+    assert "did you mean 'name' for 'nmae'?" in result.output
+    assert "'hello' accepts inputs: ['name']" in result.output
+    assert not (workdir / ".atelier" / "schedules").exists() or not list(
+        (workdir / ".atelier" / "schedules").glob("*.yaml")
+    )
+
+
 def test_schedule_remove_by_name(workdir, tmp_path):
     """Verify `schedule remove` deletes the named schedule.
 

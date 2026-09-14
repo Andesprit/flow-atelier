@@ -28,7 +28,7 @@ _LOG_SHOW_CHOICES = ("output", "stdout", "stderr", "steps", "all")
     help="Show recorded stdout/stderr/output for each task in a flow.",
 )
 def logs_cmd(
-    flow_id: str = typer.Argument(..., help="Flow id (or unique prefix) to inspect."),
+    flow_id: str = typer.Argument(..., help="Flow id to inspect (unique prefix or 'latest' ok)."),
     task: str | None = typer.Option(
         None, "--task", "-t", help="Show only entries for this task."
     ),

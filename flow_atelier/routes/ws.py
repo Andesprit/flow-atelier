@@ -14,7 +14,11 @@ from pydantic import TypeAdapter, ValidationError
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from flow_atelier.core.atelier import Atelier
-from flow_atelier.modules.engine import current_flow_id, current_task
+from flow_atelier.modules.engine import (
+    check_unknown_inputs,
+    current_flow_id,
+    current_task,
+)
 from flow_atelier.schemas.flow import new_flow_id, parse_flow_id
 from flow_atelier.schemas.log import TaskEvent
 from flow_atelier.schemas.progress import FlowStatus, TaskStatus
@@ -412,6 +416,11 @@ async def _spawn_run(
 
     async def _run() -> None:
         conduit = atelier.store.read_conduit(message.conduit_name)
+        # Before the engine, which would drop the key: the client gets
+        # flow_failed naming it instead of "missing" or a silent default.
+        check_unknown_inputs(
+            conduit, message.inputs, subject=f"run of {message.conduit_name!r}"
+        )
         await atelier.engine.run(
             conduit,
             dict(message.inputs),

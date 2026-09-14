@@ -16,8 +16,9 @@ def atelier(tmp_path, monkeypatch):
     """
     monkeypatch.delenv("ATELIER_GLOBAL_ATELIER_DIR", raising=False)
     atelier = Atelier(base_dir=tmp_path / ".atelier")
-    # create_schedule validates conduit_name against the store, so the
-    # conduit the fixtures schedule must exist on disk.
+    # create_schedule validates conduit_name against the store and rejects
+    # inputs the conduit cannot use, so the conduit the fixtures schedule
+    # must exist on disk and reference the `foo` input the payloads send.
     conduit_dir = tmp_path / ".atelier" / "conduits" / "report"
     conduit_dir.mkdir(parents=True)
     (conduit_dir / "conduit.yaml").write_text(
@@ -26,7 +27,7 @@ def atelier(tmp_path, monkeypatch):
         "tasks:\n"
         "  - greet:\n"
         "      description: say hi\n"
-        '      task: "echo hi"\n'
+        '      task: "echo {{inputs.foo}}"\n'
         "      tool: tool:bash\n"
         "      depends_on: []\n"
     )
@@ -109,6 +110,70 @@ def test_create_schedule_rejects_missing_required_input(atelier, tmp_path):
     )
     with pytest.raises(ValueError, match="missing required inputs"):
         atelier.create_schedule(_payload(conduit_name="needs_input", inputs={}))
+    assert atelier.list_schedules() == []
+
+
+def test_create_schedule_rejects_unknown_input(atelier, tmp_path):
+    """Verify create_schedule rejects an input key the conduit cannot use.
+
+    A typo of a declared key would otherwise install cleanly and fire with
+    the default forever. It is reported as the typo (with a suggestion), not
+    as a missing required input, even though the real key is absent too.
+
+    :param atelier: Atelier facade fixture.
+    :param tmp_path: pytest temp directory fixture.
+    """
+    conduit_dir = tmp_path / ".atelier" / "conduits" / "needs_input"
+    conduit_dir.mkdir(parents=True)
+    (conduit_dir / "conduit.yaml").write_text(
+        "name: needs_input\n"
+        "description: requires an input\n"
+        "inputs:\n"
+        "  target:\n"
+        "    description: who to greet\n"
+        "tasks:\n"
+        "  - greet:\n"
+        "      description: say hi\n"
+        '      task: "echo {{inputs.target}}"\n'
+        "      tool: tool:bash\n"
+        "      depends_on: []\n"
+    )
+    with pytest.raises(ValueError) as excinfo:
+        atelier.create_schedule(
+            _payload(conduit_name="needs_input", inputs={"targte": "world"})
+        )
+    message = str(excinfo.value)
+    assert "unknown inputs: ['targte']" in message
+    assert "did you mean 'target' for 'targte'?" in message
+    assert "'needs_input' accepts inputs: ['target']" in message
+    assert "missing required" not in message
+    assert atelier.list_schedules() == []
+
+
+def test_create_schedule_rejects_input_for_conduit_without_inputs(atelier, tmp_path):
+    """Verify a conduit that uses no inputs says so instead of guessing.
+
+    :param atelier: Atelier facade fixture.
+    :param tmp_path: pytest temp directory fixture.
+    """
+    conduit_dir = tmp_path / ".atelier" / "conduits" / "plain"
+    conduit_dir.mkdir(parents=True)
+    (conduit_dir / "conduit.yaml").write_text(
+        "name: plain\n"
+        "description: no inputs\n"
+        "tasks:\n"
+        "  - greet:\n"
+        "      description: say hi\n"
+        '      task: "echo hi"\n'
+        "      tool: tool:bash\n"
+        "      depends_on: []\n"
+    )
+    with pytest.raises(ValueError) as excinfo:
+        atelier.create_schedule(_payload(conduit_name="plain", inputs={"foo": "bar"}))
+    message = str(excinfo.value)
+    assert "unknown inputs: ['foo']" in message
+    assert "did you mean" not in message
+    assert "'plain' accepts no inputs" in message
     assert atelier.list_schedules() == []
 
 

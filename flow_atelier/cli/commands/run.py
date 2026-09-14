@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 import sys
 import time
 
@@ -12,6 +13,7 @@ from pydantic import ValidationError
 from rich.markup import escape
 
 from flow_atelier.cli._shared import (
+    _exit_unknown_conduit,
     _parse_inputs,
     _resolve_flow_id,
     console,
@@ -28,6 +30,8 @@ from flow_atelier.cli.rendering.render import (
     render_task_start,
 )
 from flow_atelier.core.atelier import Atelier
+from flow_atelier.modules.engine import accepted_input_keys
+from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.log import TaskEvent
 from flow_atelier.schemas.progress import TaskStatus
@@ -115,6 +119,34 @@ async def _with_heartbeat(coro, running: _RunningTasks):
             await beat
 
 
+def _reject_unknown_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
+    """Exit 1 when an ``--input`` key is one the conduit can never use.
+
+    A key needs no ``inputs:`` declaration: a ``{{inputs.<key>}}`` reference
+    in any task body or task input map is enough. Anything else the engine
+    silently drops, so a typo would otherwise prompt again for the "missing"
+    key or quietly run with a default.
+
+    :param conduit: the loaded conduit the inputs are meant for.
+    :param inputs: the parsed ``--input`` map.
+    """
+    accepted = accepted_input_keys(conduit)
+    unknown = [k for k in inputs if k not in accepted]
+    if not unknown:
+        return
+    for key in unknown:
+        close = difflib.get_close_matches(key, sorted(accepted), n=1)
+        hint = f" — did you mean {escape(close[0])}?" if close else ""
+        console.print(f"[red]unknown input:[/red] {escape(key)}{hint}")
+    accepts = (
+        f"accepts --input: {escape(', '.join(sorted(accepted)))}"
+        if accepted
+        else "accepts no --input"
+    )
+    console.print(f"[dim]{escape(conduit.name)} {accepts}[/dim]")
+    raise typer.Exit(code=1)
+
+
 @app.command(
     "run",
     help=(
@@ -142,12 +174,15 @@ def run_cmd(
     resume_from: str | None = typer.Option(
         None,
         "--resume",
-        help="Resume a failed or crashed flow by its id (supports prefix matching).",
+        help="Resume a failed or crashed flow by its id (prefix or 'latest' ok).",
     ),
     again_from: str | None = typer.Option(
         None,
         "--again",
-        help="Start a fresh run of a past flow by id (prefix ok), reusing its saved inputs.",
+        help=(
+            "Start a fresh run of a past flow by id (prefix or 'latest' ok), "
+            "reusing its saved inputs."
+        ),
     ),
 ) -> None:
     """Start a new flow, resume a failed one, or re-run a past one.
@@ -250,8 +285,10 @@ def run_cmd(
         flow_id = _resolve_flow_id(atelier, again_from)
         again_conduit = parse_flow_id(flow_id)[0]
         total_tasks = 0
+        again_def: Conduit | None = None
         try:
-            total_tasks = len(atelier.store.read_conduit(again_conduit).tasks)
+            again_def = atelier.store.read_conduit(again_conduit)
+            total_tasks = len(again_def.tasks)
         except FileNotFoundError:
             pass
         except (yaml.YAMLError, ValidationError, ValueError) as exc:
@@ -261,6 +298,8 @@ def run_cmd(
             console.print(f"[dim]→ fix conduits/{again_conduit}/conduit.yaml[/dim]")
             raise typer.Exit(code=1)
         overrides = _parse_inputs(inputs_raw)
+        if again_def is not None:
+            _reject_unknown_inputs(again_def, overrides)
         collected_events = []
         captured_flow_id = {"id": None}
         running = _RunningTasks()
@@ -329,17 +368,15 @@ def run_cmd(
     try:
         conduit = atelier.store.read_conduit(conduit_name)
     except FileNotFoundError:
-        console.print(
-            f"[red]unknown conduit:[/red] {conduit_name} "
-            f"— try 'atelier list conduits'"
-        )
-        raise typer.Exit(code=1)
+        _exit_unknown_conduit(conduit_name, atelier.store.list_conduits())
     except (yaml.YAMLError, ValidationError, ValueError) as exc:
         console.print(
             f"[red]invalid conduit:[/red] {escape(format_conduit_error(exc))}"
         )
         console.print(f"[dim]→ fix conduits/{conduit_name}/conduit.yaml[/dim]")
         raise typer.Exit(code=1)
+
+    _reject_unknown_inputs(conduit, inputs)
 
     # Readiness gate: refuse to start an unrunnable conduit (unregistered tool
     # or a harness CLI missing from PATH) before prompting for inputs or

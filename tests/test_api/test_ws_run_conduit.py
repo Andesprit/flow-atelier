@@ -66,6 +66,17 @@ tasks:
 """
 
 
+BROKEN_YAML = """name: broken
+description: fails on its only task
+tasks:
+  - bad:
+      description: prints then exits non-zero
+      task: "echo before-the-crash; echo it-broke >&2; exit 3"
+      tool: tool:bash
+      depends_on: []
+"""
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """Build an Atelier + FastAPI app pair with seeded conduits.
@@ -79,6 +90,7 @@ def env(tmp_path, monkeypatch):
     seeded = [
         ("hello", HELLO_YAML),
         ("human", HITL_YAML),
+        ("broken", BROKEN_YAML),
         ("greet", DECLARED_YAML),
         ("echo", REFERENCED_YAML),
     ]
@@ -565,3 +577,41 @@ def test_ws_hybrid_permission_escalates_and_preserves_request_identity(tmp_path)
                  if e['type'] == 'step' and e['step']['kind'] == 'interaction']
     assert any('supervisor escalate:' in text for text in decisions)
     assert 'human answer: deny' in decisions
+
+
+def test_ws_failed_run_streams_its_logs_before_flow_failed(env, tmp_path):
+    """A failed run's persisted log entries reach the client before ``flow_failed``.
+
+    The engine raises after a task fails, and the failure branch used to send
+    ``flow_failed`` alone, so the UI showed a failed task with no command,
+    stdout or stderr to explain it.
+
+    :param env: env fixture providing (atelier, app).
+    :param tmp_path: pytest temp directory fixture.
+    """
+    _, app = env
+    with TestClient(app, base_url="http://127.0.0.1", headers={"host": "127.0.0.1"}) as client:
+        with client.websocket_connect("/ws/run-conduit") as ws:
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "run",
+                        "conduit_name": "broken",
+                        "inputs": {},
+                        "run_path": str(tmp_path),
+                    }
+                )
+            )
+            envelopes = _drain_until(
+                ws, lambda e: e["type"] in ("flow_complete", "flow_failed")
+            )
+
+    assert envelopes[-1]["type"] == "flow_failed", envelopes[-1]
+    flow_id = next(e["flow_id"] for e in envelopes if e["type"] == "started")
+    logs = [e for e in envelopes if e["type"] == "log" and e["flow_id"] == flow_id]
+    assert len(logs) == 1, envelopes
+    entry = logs[0]["entry"]
+    assert entry["task"] == "bad"
+    assert entry["exit_code"] == 3
+    assert "before-the-crash" in entry["stdout"]
+    assert "it-broke" in entry["stderr"]

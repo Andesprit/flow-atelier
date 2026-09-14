@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmtDuration, fmtRelative, fmtClock, fmtMSS } from "@/utils/format";
+import { fmtDuration, fmtRelative, fmtClock, fmtMSS, logsToText } from "@/utils/format";
 
 const MIN = 60_000;
 const HR = 60 * MIN;
@@ -167,5 +167,21 @@ describe("formatter guards", () => {
 
   it("fmtRelative returns fallback for non-finite input", () => {
     expect(fmtRelative(NaN)).toBe("-");
+  });
+});
+
+describe("logsToText", () => {
+  it("renders one clock-stamped line per entry and tags task lines", () => {
+    const t = new Date(2024, 0, 1, 1, 2, 3).getTime();
+    expect(
+      logsToText([
+        { t, text: "▸ flow started", level: "info" },
+        { t: t + 1000, text: "hello", level: "ok", task: "build" },
+      ]),
+    ).toBe("01:02:03 ▸ flow started\n01:02:04 [build] hello");
+  });
+
+  it("returns an empty string for no lines", () => {
+    expect(logsToText([])).toBe("");
   });
 });

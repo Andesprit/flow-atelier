@@ -51,6 +51,25 @@ export interface LiveRun {
   parentTask?: string;
 }
 
+/**
+ * Top-level flow ids parked on a person: the run itself, or a nested child run
+ * of it, has a HITL gate or an interactive agent turn pending. Each one costs
+ * wall-clock time until someone answers, so it is the state the recent flows
+ * list, the drawer badge and the tab title lead with. Requests left on a run
+ * that already stopped are ignored: nothing is waiting for that answer.
+ */
+export function waitingFlowIds(runs: LiveRun[]): Set<string> {
+  const byId = new Map(runs.map((r) => [r.flowId, r]));
+  const waiting = new Set<string>();
+  for (const r of runs) {
+    if (r.status !== "running" || (!r.hitlRequest && r.agentRequests.length === 0)) continue;
+    let root = r;
+    while (root.parentFlowId && byId.has(root.parentFlowId)) root = byId.get(root.parentFlowId)!;
+    if (root.status === "running") waiting.add(root.flowId);
+  }
+  return waiting;
+}
+
 interface UseConduitOptions {
   onFlowStarted?: (flowId: string, conduitName: string) => void;
   onFlowComplete?: (flowId: string) => void;
@@ -422,6 +441,24 @@ export function useConduit(opts: UseConduitOptions = {}) {
   }, []);
 
   const liveRuns = Array.from(state.runs.values());
+
+  // Closing this socket makes the server cancel every run started on it
+  // (routes/ws.py runs `broker.cancel_all()` on disconnect), and a tab that
+  // closes, reloads or leaves the site closes the socket. So while a run is
+  // in flight, ask first: the browser shows its own leave-page prompt when
+  // this event is cancelled. In-app navigation does not fire it; that path
+  // still kills the runs and is left alone here on purpose.
+  const running = liveRuns.some((r) => r.status === "running");
+  useEffect(() => {
+    if (!running) return;
+    const guard = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // Chrome/Edge before 119 only prompt when returnValue is set as well.
+      e.returnValue = true;
+    };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [running]);
 
   const handleWsMessage = useCallback((msg: ServerWsMessage) => {
     const d = dispatchRef.current;

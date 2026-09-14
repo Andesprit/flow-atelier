@@ -3,7 +3,7 @@ import { useConduits, getConduitSync } from "@/services/ConduitProvider";
 import { useTaskStore } from "@/runner";
 import { createTask, updateTaskData } from "@/runner/engine";
 import { loadProjects } from "@/services/storage/projects";
-import type { ConduitTask, ToolType } from "@/types/conduit";
+import { submittedInputs, type ConduitTask, type ToolType } from "@/types/conduit";
 import type { Task } from "@/types/task";
 
 export type Step = "pick" | "conduit-select" | "conduit-inputs" | "task-nodes" | "node-detail" | "run-task";
@@ -77,11 +77,7 @@ export function useNewTaskDialog({ open, onOpenChange, editTask, projectId, onRu
     createTask({
       name: conduit.name,
       projectId: selectedProjectId,
-      inputs: Object.keys(values).length > 0
-        ? values
-        : Object.fromEntries(
-            Object.entries(conduit.inputs).map(([k, v]) => [k, typeof v === "string" ? v : (v.default ?? "")]),
-          ),
+      inputs: submittedInputs(conduit, values),
       runPath: runPath || undefined,
     });
     onOpenChange(false);
@@ -93,7 +89,7 @@ export function useNewTaskDialog({ open, onOpenChange, editTask, projectId, onRu
     const editConduit = getConduitSync(editTask.name, conduits);
     const isCustom = !editConduit;
     updateTaskData(editTask.name, {
-      inputs: isCustom ? undefined : (Object.keys(values).length > 0 ? values : undefined),
+      inputs: editConduit ? submittedInputs(editConduit, values) : undefined,
       prompt: isCustom ? runPrompt || undefined : undefined,
       runPath: runPath || undefined,
     });

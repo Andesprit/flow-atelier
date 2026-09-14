@@ -69,7 +69,9 @@ async def run_flow(tmp_path, policy, turns, *, decision=None, replies="", config
     config_path = tmp_path / "settings.json"
     config_path.write_text(json.dumps(settings))
     proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-c", RUN, str(config_path), cwd=REPO,
+        # The parent decodes captured output as UTF-8, including terminal glyphs.
+        # Windows pipes otherwise default to a legacy code page.
+        sys.executable, "-X", "utf8", "-c", RUN, str(config_path), cwd=REPO,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

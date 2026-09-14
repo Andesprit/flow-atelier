@@ -30,7 +30,7 @@ def _is_running(atelier: Atelier, flow_id: str) -> bool:
 
 @app.command("rm")
 def rm_cmd(
-    flow_id: str = typer.Argument(..., help="Flow id (or unique prefix) to delete."),
+    flow_id: str = typer.Argument(..., help="Flow id to delete (unique prefix or 'latest' ok)."),
     force: bool = typer.Option(
         False, "--force", help="Delete even if the flow is still running."
     ),

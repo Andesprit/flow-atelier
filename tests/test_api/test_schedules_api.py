@@ -18,8 +18,9 @@ async def fixture(tmp_path, monkeypatch):
     """
     monkeypatch.delenv("ATELIER_GLOBAL_ATELIER_DIR", raising=False)
     atelier = Atelier(base_dir=tmp_path / ".atelier")
-    # create_schedule validates conduit_name, so the scheduled conduit must
-    # exist on disk.
+    # create_schedule validates conduit_name and rejects inputs the conduit
+    # cannot use, so the scheduled conduit must exist on disk and reference
+    # the `foo` input the payloads send.
     conduit_dir = tmp_path / ".atelier" / "conduits" / "report"
     conduit_dir.mkdir(parents=True)
     (conduit_dir / "conduit.yaml").write_text(
@@ -28,7 +29,7 @@ async def fixture(tmp_path, monkeypatch):
         "tasks:\n"
         "  - greet:\n"
         "      description: say hi\n"
-        '      task: "echo hi"\n'
+        '      task: "echo {{inputs.foo}}"\n'
         "      tool: tool:bash\n"
         "      depends_on: []\n"
     )
@@ -139,6 +140,20 @@ async def test_create_schedule_unknown_conduit_returns_400(fixture):
     resp = await client.post("/schedules", json=_payload(conduit_name="ghost"))
     assert resp.status_code == 400, resp.text
     assert "unknown conduit" in resp.text
+
+
+async def test_create_schedule_unknown_input_returns_400(fixture):
+    """Verify POST /schedules with an input the conduit cannot use returns 400.
+
+    :param fixture: client+atelier+tmp_path tuple fixture.
+    """
+    client, atelier, _ = fixture
+    resp = await client.post("/schedules", json=_payload(inputs={"fooo": "bar"}))
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert "unknown inputs: ['fooo']" in detail
+    assert "did you mean 'foo' for 'fooo'?" in detail
+    assert atelier.list_schedules() == []
 
 
 async def test_create_schedule_past_run_at_rejected(fixture):

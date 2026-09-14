@@ -38,6 +38,34 @@ tasks:
         choice: "Pick a value"
 """
 
+
+DECLARED_YAML = """name: greet
+description: declared inputs, one with a default
+inputs:
+  name: Who to greet
+  tone:
+    description: how warmly
+    default: warm
+tasks:
+  - greet:
+      description: greet
+      task: "echo {{inputs.name}} {{inputs.tone}}"
+      tool: tool:bash
+      depends_on: []
+"""
+
+
+REFERENCED_YAML = """name: echo
+description: input referenced but never declared
+tasks:
+  - say:
+      description: say
+      task: "echo {{inputs.word}}"
+      tool: tool:bash
+      depends_on: []
+"""
+
+
 BROKEN_YAML = """name: broken
 description: fails on its only task
 tasks:
@@ -59,11 +87,14 @@ def env(tmp_path, monkeypatch):
     global_dir = tmp_path / ".atelier-global"
     monkeypatch.setenv("ATELIER_GLOBAL_ATELIER_DIR", str(global_dir))
     atelier = Atelier(base_dir=tmp_path / ".atelier")
-    for name, yaml_str in [
+    seeded = [
         ("hello", HELLO_YAML),
         ("human", HITL_YAML),
         ("broken", BROKEN_YAML),
-    ]:
+        ("greet", DECLARED_YAML),
+        ("echo", REFERENCED_YAML),
+    ]
+    for name, yaml_str in seeded:
         (atelier.store.global_dir / "conduits" / name).mkdir(
             parents=True, exist_ok=True
         )
@@ -245,42 +276,77 @@ def test_ws_run_unknown_conduit_emits_flow_failed(env, tmp_path):
     assert envelopes[-1]["type"] in ("flow_failed", "error")
 
 
-def test_ws_failed_run_streams_its_logs_before_flow_failed(env, tmp_path):
-    """A failed run's persisted log entries reach the client before ``flow_failed``.
+def _run_to_end(app, conduit_name: str, inputs: dict, run_path) -> list[dict]:
+    """Send one ``run`` envelope and drain until the flow completes or fails.
 
-    The engine raises after a task fails, and the failure branch used to send
-    ``flow_failed`` alone, so the UI showed a failed task with no command,
-    stdout or stderr to explain it.
-
-    :param env: env fixture providing (atelier, app).
-    :param tmp_path: pytest temp directory fixture.
+    :param app: FastAPI app under test.
+    :param conduit_name: conduit to run.
+    :param inputs: ``inputs`` map for the envelope.
+    :param run_path: working directory for the run.
+    :returns: every envelope received, last one terminal.
     """
-    _, app = env
     with TestClient(app, base_url="http://127.0.0.1", headers={"host": "127.0.0.1"}) as client:
         with client.websocket_connect("/ws/run-conduit") as ws:
             ws.send_text(
                 json.dumps(
                     {
                         "type": "run",
-                        "conduit_name": "broken",
-                        "inputs": {},
-                        "run_path": str(tmp_path),
+                        "conduit_name": conduit_name,
+                        "inputs": inputs,
+                        "run_path": str(run_path),
                     }
                 )
             )
-            envelopes = _drain_until(
+            return _drain_until(
                 ws, lambda e: e["type"] in ("flow_complete", "flow_failed")
             )
 
-    assert envelopes[-1]["type"] == "flow_failed", envelopes[-1]
-    flow_id = next(e["flow_id"] for e in envelopes if e["type"] == "started")
-    logs = [e for e in envelopes if e["type"] == "log" and e["flow_id"] == flow_id]
-    assert len(logs) == 1, envelopes
-    entry = logs[0]["entry"]
-    assert entry["task"] == "bad"
-    assert entry["exit_code"] == 3
-    assert "before-the-crash" in entry["stdout"]
-    assert "it-broke" in entry["stderr"]
+
+def test_ws_run_typo_of_defaulted_input_fails_instead_of_using_default(env, tmp_path):
+    """A near-miss of a key with a default is refused, not silently defaulted.
+
+    :param env: env fixture providing (atelier, app).
+    :param tmp_path: pytest temp directory fixture.
+    """
+    atelier, app = env
+    envelopes = _run_to_end(app, "greet", {"name": "world", "tonee": "cold"}, tmp_path)
+    last = envelopes[-1]
+    assert last["type"] == "flow_failed", envelopes
+    assert "unknown inputs: ['tonee']" in last["error"]
+    assert "did you mean 'tone' for 'tonee'?" in last["error"]
+    assert "'greet' accepts inputs: ['name', 'tone']" in last["error"]
+    assert atelier.list_flows() == []
+
+
+def test_ws_run_typo_of_required_input_names_the_typo(env, tmp_path):
+    """A near-miss of a required key is reported as the typo, not as missing.
+
+    :param env: env fixture providing (atelier, app).
+    :param tmp_path: pytest temp directory fixture.
+    """
+    _, app = env
+    envelopes = _run_to_end(app, "greet", {"nmae": "world"}, tmp_path)
+    last = envelopes[-1]
+    assert last["type"] == "flow_failed", envelopes
+    assert "run of 'greet' has unknown inputs: ['nmae']" in last["error"]
+    assert "did you mean 'name' for 'nmae'?" in last["error"]
+    assert "missing required" not in last["error"]
+
+
+def test_ws_run_accepts_referenced_but_undeclared_input(env, tmp_path):
+    """A key only referenced as ``{{inputs.word}}`` still runs, as on the CLI.
+
+    :param env: env fixture providing (atelier, app).
+    :param tmp_path: pytest temp directory fixture.
+    """
+    _, app = env
+    envelopes = _run_to_end(app, "echo", {"word": "word-from-ws"}, tmp_path)
+    assert envelopes[-1]["type"] == "flow_complete", envelopes[-1]
+    assert any(
+        "word-from-ws" in (e["entry"].get("stdout") or "")
+        for e in envelopes
+        if e["type"] == "log"
+    )
 
 
 def test_ws_rejects_bad_token(env):
@@ -511,3 +577,41 @@ def test_ws_hybrid_permission_escalates_and_preserves_request_identity(tmp_path)
                  if e['type'] == 'step' and e['step']['kind'] == 'interaction']
     assert any('supervisor escalate:' in text for text in decisions)
     assert 'human answer: deny' in decisions
+
+
+def test_ws_failed_run_streams_its_logs_before_flow_failed(env, tmp_path):
+    """A failed run's persisted log entries reach the client before ``flow_failed``.
+
+    The engine raises after a task fails, and the failure branch used to send
+    ``flow_failed`` alone, so the UI showed a failed task with no command,
+    stdout or stderr to explain it.
+
+    :param env: env fixture providing (atelier, app).
+    :param tmp_path: pytest temp directory fixture.
+    """
+    _, app = env
+    with TestClient(app, base_url="http://127.0.0.1", headers={"host": "127.0.0.1"}) as client:
+        with client.websocket_connect("/ws/run-conduit") as ws:
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "run",
+                        "conduit_name": "broken",
+                        "inputs": {},
+                        "run_path": str(tmp_path),
+                    }
+                )
+            )
+            envelopes = _drain_until(
+                ws, lambda e: e["type"] in ("flow_complete", "flow_failed")
+            )
+
+    assert envelopes[-1]["type"] == "flow_failed", envelopes[-1]
+    flow_id = next(e["flow_id"] for e in envelopes if e["type"] == "started")
+    logs = [e for e in envelopes if e["type"] == "log" and e["flow_id"] == flow_id]
+    assert len(logs) == 1, envelopes
+    entry = logs[0]["entry"]
+    assert entry["task"] == "bad"
+    assert entry["exit_code"] == 3
+    assert "before-the-crash" in entry["stdout"]
+    assert "it-broke" in entry["stderr"]

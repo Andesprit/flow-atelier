@@ -92,6 +92,27 @@ def test_check_reports_a_reachable_agent(workdir):
     assert "fake-acp-agent" in result.output
 
 
+def test_check_lists_models_and_how_to_pick_one(workdir):
+    """A reachable agent's models are listed with the `harness:<name>:<model>` hint.
+
+    :param workdir: isolated working directory fixture.
+    """
+    script = json.dumps(
+        {
+            "turns": [],
+            "models": {
+                "current": "m1",
+                "available": [{"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"}],
+            },
+        }
+    )
+    result = CliRunner().invoke(app, ["harness", "check", "--cmd", _fake_cmd(script)])
+    assert result.exit_code == 0, result.output
+    assert "models: m1, m2 (default m1)" in result.output
+    # An ad-hoc --cmd has no harness name to put a model suffix on.
+    assert ":<model>" not in result.output
+
+
 def test_check_tells_the_user_to_install_a_missing_agent(workdir):
     """A missing CLI must say so, and say that installing it is the user's job.
 

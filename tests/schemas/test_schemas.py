@@ -353,10 +353,43 @@ def test_unbundled_harness_name_validates():
 @pytest.mark.parametrize(
     "tool_str",
     [
+        "harness:codex:gpt-5.1-codex",
+        "harness:claude-code:claude-sonnet-4-5",
+        "harness:opencode:anthropic/claude-sonnet-4-5",
+    ],
+)
+def test_harness_model_suffix_validates(tool_str):
+    """A second colon names the model, spelled the way the agent lists it.
+
+    :param tool_str: parametrized ``harness:<name>:<model>`` under test.
+    """
+    from flow_atelier.schemas.conduit import split_harness_tool
+
+    c = Conduit.model_validate(_task_with_tool(tool_str))
+    assert c.tasks[0].tool == tool_str
+    base, model = split_harness_tool(tool_str)
+    assert base == tool_str.rsplit(":", 1)[0]
+    assert model == tool_str.rsplit(":", 1)[1]
+
+
+def test_split_harness_tool_without_model():
+    """A plain harness tool and a built-in tool split to themselves with no model."""
+    from flow_atelier.schemas.conduit import split_harness_tool
+
+    assert split_harness_tool("harness:codex") == ("harness:codex", None)
+    assert split_harness_tool("tool:bash") == ("tool:bash", None)
+
+
+@pytest.mark.parametrize(
+    "tool_str",
+    [
         "tool:rm-rf",       # tool:* executors are code — closed set
         "harness:",         # no name
         "harness:My Agent", # uppercase and a space
         "claude",           # missing the namespace prefix
+        "harness:codex:",         # empty model
+        "harness:codex:gpt 5",    # space in the model
+        "harness:codex:a:b",      # a third segment
     ],
 )
 def test_malformed_tool_is_rejected(tool_str):

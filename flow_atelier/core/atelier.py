@@ -16,6 +16,7 @@ from flow_atelier.modules.engine import (
     TaskEventCallback,
     TaskStartingCallback,
     check_unknown_inputs,
+    resolve_executor,
 )
 from flow_atelier.modules.liveness import is_runner_alive
 from flow_atelier.schemas.api import (
@@ -180,7 +181,7 @@ class Atelier:
         ):
             tools.append(("supervisor", conduit.interaction.supervisor.tool))
         for label, tool in tools:
-            executor = self.executors.get(tool)
+            executor = resolve_executor(self.executors, tool)
             if executor is None:
                 msg = f"{label}: no executor registered for tool {tool!r}"
             else:

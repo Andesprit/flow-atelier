@@ -48,6 +48,7 @@ from flow_atelier.schemas.conduit import (
     Conduit,
     TaskDefinition,
     ToolType,
+    split_harness_tool,
 )
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.interaction import InteractionPolicy
@@ -117,6 +118,23 @@ def current_task(default: str = "") -> str:
     :returns: the current task name, or ``default``.
     """
     return _current_task_ctx.get(default)
+
+
+def resolve_executor(executors: dict[str, ExecutorBase], tool: str) -> ExecutorBase | None:
+    """Look up the executor for ``tool``, binding a harness model when one is named.
+
+    ``harness:<name>:<model>`` shares the ``harness:<name>`` executor; the
+    model suffix yields a copy pinned to that model.
+
+    :param executors: mapping of tool string to executor.
+    :param tool: a task's ``tool`` string.
+    :returns: the executor, or ``None`` when no executor is registered.
+    """
+    base, model = split_harness_tool(tool)
+    executor = executors.get(base)
+    if executor is None or model is None:
+        return executor
+    return executor.with_model(model)  # type: ignore[attr-defined]
 
 
 def accepted_input_keys(conduit: Conduit) -> set[str]:
@@ -702,7 +720,7 @@ class Engine:
                         failure_error = ValueError(f"task {t.name!r}: {reason}")
                     return
 
-                executor = self.executors.get(t.tool)
+                executor = resolve_executor(self.executors, t.tool)
                 if executor is None:
                     reason = f"no executor registered for tool {t.tool!r}"
                     mark_failed(t.name, reason)
@@ -725,7 +743,7 @@ class Engine:
                     interactive_harnesses=conduit.interaction is not None,
                     conduit_description=conduit.description,
                     supervisor_executor=(
-                        self.executors.get(conduit.interaction.supervisor.tool)
+                        resolve_executor(self.executors, conduit.interaction.supervisor.tool)
                         if conduit.interaction and conduit.interaction.supervisor else None
                     ),
                     task_outputs=outputs,

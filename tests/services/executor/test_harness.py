@@ -639,6 +639,88 @@ class TestInteractive:
         assert result.exit_code == 0
         assert "[mode_set:" not in result.output
 
+    async def test_model_selected_through_config_option(self) -> None:
+        """A pinned model is set through the `model` config option before the prompt."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(
+                {
+                    "models": {
+                        "current": "m1",
+                        "available": [{"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"}],
+                    },
+                    "turns": [{"chunks": ["done"], "stop": "end_turn"}],
+                }
+            ),
+            sink=RecordingSink(),
+        ).with_model("m2")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code == 0, result.output
+        assert "[config_set:model=m2]" in result.output
+
+    async def test_model_selected_through_legacy_set_model(self) -> None:
+        """Without a config option the older session/set_model path is used."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(
+                {
+                    "models": {
+                        "via": "legacy",
+                        "current": "m1",
+                        "available": [{"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"}],
+                    },
+                    "turns": [{"chunks": ["done"], "stop": "end_turn"}],
+                }
+            ),
+            sink=RecordingSink(),
+        ).with_model("m2")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code == 0, result.output
+        assert "[model_set:m2]" in result.output
+
+    async def test_model_already_current_is_not_reset(self) -> None:
+        """Asking for the model the session opened on sends no request."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(
+                {
+                    "models": {"current": "m1", "available": [{"id": "m1", "name": "One"}]},
+                    "turns": [{"chunks": ["done"], "stop": "end_turn"}],
+                }
+            ),
+            sink=RecordingSink(),
+        ).with_model("m1")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code == 0, result.output
+        assert "[config_set:" not in result.output
+
+    async def test_unlisted_model_fails_before_the_prompt(self) -> None:
+        """A model the agent does not offer fails the task and names the offer."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(
+                {
+                    "models": {
+                        "current": "m1",
+                        "available": [{"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"}],
+                    },
+                    "turns": [{"chunks": ["done"], "stop": "end_turn"}],
+                }
+            ),
+            sink=RecordingSink(),
+        ).with_model("m9")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code != 0
+        assert "'m9' is not offered" in result.stderr
+        assert "m1, m2" in result.stderr
+        assert "done" not in result.output
+
+    async def test_model_on_agent_without_choice_fails(self) -> None:
+        """An agent that advertises no models cannot honour a pinned one."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd({"turns": [{"chunks": ["done"], "stop": "end_turn"}]}),
+            sink=RecordingSink(),
+        ).with_model("m1")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code != 0
+        assert "does not support model selection" in result.stderr
+
     async def test_session_mode_absent_is_no_op(self) -> None:
         """Verify the harness is a no-op when the agent advertises no modes."""
         sink = RecordingSink()

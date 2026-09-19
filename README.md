@@ -261,6 +261,20 @@ PATH. `atelier list harnesses` names the missing binary when it isn't there.
 
 Either way, logging in is yours to do, with that agent's own CLI.
 
+#### Picking a model
+
+A third segment names the model, spelled the way the agent lists it:
+
+```yaml
+    tool: harness:codex:gpt-5.1-codex
+    tool: harness:claude-code:claude-sonnet-4-5
+```
+
+flow-atelier selects it on the ACP session before the first prompt. A
+model the agent does not offer fails the task at once and prints the
+models it does offer. `atelier harness check <name>` lists them too, as
+`models:`. Without the suffix the agent runs on its own default.
+
 #### Checking a harness before you use it
 
 ```bash

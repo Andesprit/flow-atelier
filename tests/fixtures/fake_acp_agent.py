@@ -52,11 +52,17 @@ from acp.schema import (
     Cost,
     Implementation,
     InitializeResponse,
+    ModelInfo,
     NewSessionResponse,
     PromptCapabilities,
     PromptResponse,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
     SessionMode,
+    SessionModelState,
     SessionModeState,
+    SetSessionConfigOptionResponse,
+    SetSessionModelResponse,
     SetSessionModeResponse,
     TextContentBlock,
     ToolCallUpdate,
@@ -75,6 +81,7 @@ class FakeAgent:
         self,
         turns: list[dict[str, Any]],
         modes: dict[str, Any] | None = None,
+        models: dict[str, Any] | None = None,
         auth_methods: list[dict[str, Any]] | None = None,
         fail_session: str | None = None,
         record_path: str | None = None,
@@ -83,6 +90,9 @@ class FakeAgent:
 
         :param turns: ordered list of turn specs to consume on each prompt.
         :param modes: optional session-modes spec exposed via new_session.
+        :param models: optional model spec ``{"current", "available", "via"}``
+            exposed via new_session; ``via`` is ``config`` (a ``model`` config
+            option, the default) or ``legacy`` (the ``models`` state).
         :param auth_methods: optional auth methods advertised at initialize,
             so connection-check reporting can be exercised.
         :param fail_session: when set, new_session raises with this message —
@@ -90,6 +100,8 @@ class FakeAgent:
         """
         self._turns = list(turns)
         self._modes_spec = modes
+        self._models_spec = models
+        self._config_options: list[SessionConfigOptionSelect] = []
         self._auth_methods = auth_methods or []
         self._fail_session = fail_session
         self._record_path = record_path
@@ -150,7 +162,38 @@ class FakeAgent:
                 available_modes=available,
                 current_mode_id=self._modes_spec["current"],
             )
-        return NewSessionResponse(session_id=self.SESSION_ID, modes=modes)
+        models = None
+        config_options = None
+        if self._models_spec:
+            spec = self._models_spec
+            if spec.get("via", "config") == "legacy":
+                models = SessionModelState(
+                    available_models=[
+                        ModelInfo(model_id=m["id"], name=m["name"]) for m in spec["available"]
+                    ],
+                    current_model_id=spec["current"],
+                )
+            else:
+                self._config_options = [
+                    SessionConfigOptionSelect(
+                        id="model",
+                        name="Model",
+                        category="model",
+                        type="select",
+                        current_value=spec["current"],
+                        options=[
+                            SessionConfigSelectOption(value=m["id"], name=m["name"])
+                            for m in spec["available"]
+                        ],
+                    )
+                ]
+                config_options = list(self._config_options)
+        return NewSessionResponse(
+            session_id=self.SESSION_ID,
+            modes=modes,
+            models=models,
+            config_options=config_options,
+        )
 
     async def prompt(self, prompt, session_id: str, **kwargs) -> PromptResponse:
         """Pop the next scripted turn and emit its chunks via session_update.
@@ -277,21 +320,46 @@ class FakeAgent:
             )
         return SetSessionModeResponse()
 
-    async def set_session_model(self, *args, **kwargs):
-        """Stub set_session_model to satisfy the Agent protocol.
+    async def _echo(self, session_id: str, text: str) -> None:
+        """Emit ``text`` as an agent chunk so tests can assert on it.
 
-        :param args: positional arguments accepted by the protocol.
-        :param kwargs: keyword arguments accepted by the protocol.
+        :param session_id: session identifier the client is interacting with.
+        :param text: the marker text to emit.
         """
-        return None
+        if self._conn is not None:
+            await self._conn.session_update(
+                session_id=session_id,
+                update=AgentMessageChunk(
+                    session_update="agent_message_chunk",
+                    content=TextContentBlock(type="text", text=text),
+                ),
+            )
 
-    async def set_config_option(self, *args, **kwargs):
-        """Stub set_config_option to satisfy the Agent protocol.
+    async def set_session_model(self, model_id: str, session_id: str, **kwargs):
+        """Echo the legacy model switch as ``[model_set:<id>]``.
 
-        :param args: positional arguments accepted by the protocol.
-        :param kwargs: keyword arguments accepted by the protocol.
+        :param model_id: requested model identifier.
+        :param session_id: session identifier the client is interacting with.
+        :param kwargs: additional keyword arguments accepted by the protocol.
         """
-        return None
+        del kwargs
+        await self._echo(session_id, f"[model_set:{model_id}]")
+        return SetSessionModelResponse()
+
+    async def set_config_option(self, config_id: str, session_id: str, value, **kwargs):
+        """Echo a config change as ``[config_set:<id>=<value>]``.
+
+        :param config_id: the option being set.
+        :param session_id: session identifier the client is interacting with.
+        :param value: the requested value.
+        :param kwargs: additional keyword arguments accepted by the protocol.
+        """
+        del kwargs
+        await self._echo(session_id, f"[config_set:{config_id}={value}]")
+        for option in self._config_options:
+            if option.id == config_id:
+                option.current_value = value
+        return SetSessionConfigOptionResponse(config_options=list(self._config_options))
 
     async def fork_session(self, *args, **kwargs):
         """Stub fork_session to satisfy the Agent protocol.
@@ -343,11 +411,14 @@ async def _main() -> None:
     agent = FakeAgent(
         turns=script.get("turns", []),
         modes=script.get("modes"),
+        models=script.get("models"),
         auth_methods=script.get("auth_methods"),
         fail_session=script.get("fail_session"),
         record_path=script.get("record_path"),
     )
-    await acp.run_agent(agent)
+    # `session/set_model` is unstable in ACP; the real adapters serve it, so
+    # the fake must opt in to be routed the request at all.
+    await acp.run_agent(agent, use_unstable_protocol=True)
 
 
 if __name__ == "__main__":

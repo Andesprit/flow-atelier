@@ -20,6 +20,25 @@ CONDUIT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # case or spacing.
 HARNESS_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
+# A model id is whatever the agent advertises (``gpt-5.1-codex``,
+# ``claude-sonnet-4-5``, ``anthropic/claude-sonnet-4-5``), so dots, slashes
+# and underscores are allowed. Colons are not: the tool grammar owns them.
+HARNESS_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+
+
+def split_harness_tool(tool: str) -> tuple[str, str | None]:
+    """Split ``harness:<name>[:<model>]`` into the executor key and the model.
+
+    Anything that is not a harness tool comes back unchanged with no model.
+
+    :param tool: a task's ``tool`` string.
+    :returns: ``("harness:<name>", "<model>" or None)``.
+    """
+    if not tool.startswith("harness:"):
+        return tool, None
+    name, sep, model = tool.removeprefix("harness:").partition(":")
+    return f"harness:{name}", (model if sep else None)
+
 
 class ToolType(str, Enum):
     """The tools shipped in the box.
@@ -99,7 +118,7 @@ class TaskDefinition(BaseModel):
     @field_validator("tool")
     @classmethod
     def _tool_valid(cls, v: str) -> str:
-        """Accept a built-in tool or any well-formed ``harness:<name>``.
+        """Accept a built-in tool or any well-formed ``harness:<name>[:<model>]``.
 
         ``tool:*`` executors are code, so that side stays closed to the
         :class:`ToolType` catalogue. Harnesses are config — a user can point
@@ -113,11 +132,16 @@ class TaskDefinition(BaseModel):
         """
         if v in BUILTIN_TOOLS:
             return v
-        if v.startswith("harness:") and HARNESS_NAME_RE.match(v.removeprefix("harness:")):
-            return v
+        if v.startswith("harness:"):
+            base, model = split_harness_tool(v)
+            name_ok = HARNESS_NAME_RE.match(base.removeprefix("harness:"))
+            model_ok = model is None or HARNESS_MODEL_RE.match(model)
+            if name_ok and model_ok:
+                return v
         raise ValueError(
-            f"invalid tool {v!r}: expected one of {sorted(BUILTIN_TOOLS)} "
-            "or 'harness:<name>' (lowercase letters, digits and hyphens)"
+            f"invalid tool {v!r}: expected one of {sorted(BUILTIN_TOOLS)}, "
+            "'harness:<name>' (lowercase letters, digits and hyphens) or "
+            "'harness:<name>:<model>' (model as the agent lists it)"
         )
 
     @field_validator("repeat")

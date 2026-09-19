@@ -123,6 +123,13 @@ def _render_probe(tool: str, launch: list[str], result) -> None:
             console.print(
                 f"  [dim]modes:[/dim] {escape(', '.join(result.modes))}{escape(picked)}"
             )
+        if result.models:
+            current = f" (default {result.current_model})" if result.current_model else ""
+            console.print(
+                f"  [dim]models:[/dim] {escape(', '.join(result.models))}{escape(current)}"
+            )
+            if tool.startswith("harness:"):
+                console.print(f"  [dim]pick one with[/dim] tool: {escape(tool)}:<model>")
         if result.auth_methods:
             console.print(
                 f"  [dim]auth methods advertised:[/dim] "

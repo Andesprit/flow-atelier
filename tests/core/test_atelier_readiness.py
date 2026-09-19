@@ -91,6 +91,21 @@ def test_configured_harness_overrides_a_bundled_one(
     assert at.executors["harness:codex"].launch_cmd == ["my-codex", "--acp"]
 
 
+def test_model_suffix_resolves_to_the_base_harness(atelier):
+    """`harness:<name>:<model>` is ready whenever `harness:<name>` is."""
+    atelier.executors["harness:claude-code"].is_available = lambda: (True, "")
+    conduit = _conduit(
+        [{"name": "x", "description": "x", "task": "do", "tool": "harness:claude-code:m1"}]
+    )
+    assert atelier.tool_readiness(conduit) == []
+    conduit = _conduit(
+        [{"name": "x", "description": "x", "task": "do", "tool": "harness:nope-9000:m1"}]
+    )
+    assert atelier.tool_readiness(conduit) == [
+        "task 'x': no executor registered for tool 'harness:nope-9000:m1'"
+    ]
+
+
 def test_unconfigured_harness_name_is_reported(atelier):
     """A harness in neither the ACP registry nor settings fails preflight."""
     conduit = _conduit(

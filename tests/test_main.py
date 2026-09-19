@@ -688,7 +688,7 @@ def test_schedule_add_and_list(workdir, tmp_path):
     assert "installed" in result.output
     assert list((workdir / ".atelier" / "schedules").glob("nightly-*.yaml"))
 
-    listing = runner.invoke(app, ["schedule", "list"])
+    listing = runner.invoke(app, ["list", "schedules"])
     assert listing.exit_code == 0, listing.output
     assert "nightly" in listing.output
     assert "hello" in listing.output
@@ -709,7 +709,7 @@ SCHEDULE_BRACKET_NAME_JSON = """{
 
 
 def test_schedule_list_escapes_bracketed_name(workdir, tmp_path, monkeypatch):
-    """`schedule list` renders a bracketed schedule name literally, not markup.
+    """`list schedules` renders a bracketed schedule name literally, not markup.
 
     A schedule name is free text; brackets in it would otherwise be read by
     Rich as a style tag and crash the listing table.
@@ -724,7 +724,7 @@ def test_schedule_list_escapes_bracketed_name(workdir, tmp_path, monkeypatch):
     runner = CliRunner()
     add = runner.invoke(app, ["schedule", "add", str(src)])
     assert add.exit_code == 0, add.output
-    listing = runner.invoke(app, ["schedule", "list"])
+    listing = runner.invoke(app, ["list", "schedules"])
     assert listing.exit_code == 0, listing.output
     assert listing.exception is None
     assert "[A-Z]" in listing.output
@@ -779,12 +779,12 @@ def test_schedule_remove_by_name(workdir, tmp_path):
     runner = CliRunner()
     runner.invoke(app, ["schedule", "add", str(src)])
 
-    result = runner.invoke(app, ["schedule", "remove", "nightly"])
+    result = runner.invoke(app, ["schedule", "rm", "nightly"])
     assert result.exit_code == 0, result.output
     assert "removed" in result.output
 
     # After removal, it should no longer appear in the active list.
-    listing = runner.invoke(app, ["schedule", "list"])
+    listing = runner.invoke(app, ["list", "schedules"])
     assert "nightly" not in listing.output
 
 
@@ -794,18 +794,18 @@ def test_schedule_remove_unknown(workdir):
     :param workdir: isolated working directory fixture.
     """
     runner = CliRunner()
-    result = runner.invoke(app, ["schedule", "remove", "ghost"])
+    result = runner.invoke(app, ["schedule", "rm", "ghost"])
     assert result.exit_code != 0
     assert "not found" in result.output
 
 
 def test_schedule_list_empty(workdir):
-    """Verify `schedule list` reports an empty schedule store.
+    """Verify `list schedules` reports an empty schedule store.
 
     :param workdir: isolated working directory fixture.
     """
     runner = CliRunner()
-    result = runner.invoke(app, ["schedule", "list"])
+    result = runner.invoke(app, ["list", "schedules"])
     assert result.exit_code == 0
     assert "no schedules" in result.output
 
@@ -821,7 +821,7 @@ def test_schedule_list_json_includes_one_shot(workdir, tmp_path):
     runner = CliRunner()
     runner.invoke(app, ["schedule", "add", str(src)])
 
-    result = runner.invoke(app, ["schedule", "list", "--json"])
+    result = runner.invoke(app, ["list", "schedules", "--json"])
     assert result.exit_code == 0, result.output
     payload = _json.loads(result.output)
     assert "schedules" in payload
@@ -860,7 +860,7 @@ def test_schedule_run_now_unknown(workdir):
 
 
 def test_scheduler_status_alias(workdir, tmp_path):
-    """Verify `scheduler status` is an alias for `schedule list`.
+    """Verify `scheduler status` is an alias for `list schedules`.
 
     :param workdir: isolated working directory fixture.
     :param tmp_path: pytest temp directory fixture.
@@ -955,14 +955,14 @@ def test_schedule_history_unknown(workdir):
 
 
 def test_schedule_list_includes_last_run(workdir, tmp_path):
-    """`schedule list` surfaces the most recent run at a glance.
+    """`list schedules` surfaces the most recent run at a glance.
 
     :param workdir: isolated working directory fixture.
     :param tmp_path: pytest temp directory fixture.
     """
     _add_schedule_and_record(tmp_path, "succeeded", "FLOW-glance")
     runner = CliRunner()
-    result = runner.invoke(app, ["schedule", "list"])
+    result = runner.invoke(app, ["list", "schedules"])
     assert result.exit_code == 0, result.output
     # The "last run" column is present; the flow id may be width-truncated in
     # the table, so the full-id round-trip is asserted via --json elsewhere.
@@ -978,7 +978,7 @@ def test_schedule_list_json_includes_last_run(workdir, tmp_path):
     """
     _add_schedule_and_record(tmp_path, "failed", "FLOW-json")
     runner = CliRunner()
-    result = runner.invoke(app, ["schedule", "list", "--json"])
+    result = runner.invoke(app, ["list", "schedules", "--json"])
     assert result.exit_code == 0, result.output
     payload = _json.loads(result.output)
     entry = payload["schedules"][0]
@@ -1405,7 +1405,7 @@ def test_no_prompt_when_all_inputs_provided(prompted_workdir, monkeypatch):
 
 
 def test_no_prompt_when_stdin_not_tty(prompted_workdir, monkeypatch):
-    """Non-TTY stdin → prompting skipped, engine raises ValueError.
+    """Non-TTY stdin → no prompt, a usage error naming the flags, no flow started.
 
     :param prompted_workdir: working directory with prompted conduit fixture.
     :param monkeypatch: pytest monkeypatch fixture.
@@ -1414,8 +1414,10 @@ def test_no_prompt_when_stdin_not_tty(prompted_workdir, monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(app, ["run", "prompted"])
-    assert result.exit_code != 0
+    assert result.exit_code == 2
     assert "missing required inputs" in result.output
+    assert "--input" in result.output
+    assert "flow failed" not in result.output
 
 
 def test_ctrl_c_during_prompt_exits_130(prompted_workdir, monkeypatch):

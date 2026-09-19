@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import sys
 
 import typer
 
@@ -55,7 +56,10 @@ class AtelierTyper(typer.Typer):
 
 
 app = AtelierTyper(
-    help="flow-atelier: run reproducible async DAG workflows (conduits).",
+    help=(
+        "Workflows and loops, configured in one YAML file. The steps are shell "
+        "commands, AI coding agents, and human approvals."
+    ),
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
@@ -87,13 +91,18 @@ def _root(
 
     :param version: eager flag handled by :func:`_version_callback`.
     """
+    # Click runs this callback before rendering a subcommand's --help, and
+    # an update tip has no place in help output.
+    if "--help" in sys.argv:
+        return
+
     from flow_atelier.cli.updater import start_background_update_check
 
     start_background_update_check()
 
 
 list_app = AtelierTyper(
-    help="List conduits or flows.",
+    help="List conduits, flows, schedules or harnesses.",
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
@@ -107,22 +116,21 @@ schedule_app = AtelierTyper(
 app.add_typer(schedule_app, name="schedule")
 
 harness_app = AtelierTyper(
-    help="List and check ACP agents. Installing and logging in stay yours.",
+    help="Check and refresh ACP agents. Installing and logging in stay yours.",
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
 app.add_typer(harness_app, name="harness")
 
-scheduler_app = AtelierTyper(
-    help="Run and inspect the scheduler daemon.",
-    no_args_is_help=True,
-    rich_markup_mode="rich",
-)
-app.add_typer(scheduler_app, name="scheduler")
+# Hidden: kept so scripts written against `atelier scheduler start|status`
+# keep working. The commands live under `schedule daemon` and `list schedules`.
+scheduler_app = AtelierTyper(no_args_is_help=True, rich_markup_mode="rich")
+app.add_typer(scheduler_app, name="scheduler", hidden=True)
 
 # Side-effect imports: each command module decorates its handler against
-# the appropriate Typer instance above. Order matches the original
-# decoration order in app/main.py so --help layout stays byte-identical.
+# the appropriate Typer instance above. Import order is --help order, so
+# `list` goes first to keep conduits and flows at the top of its listing.
+from flow_atelier.cli.commands import list as _list  # noqa: E402, F401, I001
 from flow_atelier.cli.commands import (  # noqa: E402, F401
     add,
     ask,
@@ -137,9 +145,9 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     run,
     schedule,
     scheduler,
+    self_update,
     serve,
     status,
     stop,
     timing,
 )
-from flow_atelier.cli.commands import list as _list  # noqa: E402, F401

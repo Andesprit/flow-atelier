@@ -10,7 +10,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from flow_atelier.cli._shared import _format_clock, _schedule_store, console
-from flow_atelier.cli.main import schedule_app
+from flow_atelier.cli.main import list_app, schedule_app
 from flow_atelier.cli.rendering.render import (
     render_planned_table,
     render_run_footer,
@@ -87,7 +87,8 @@ def schedule_add_cmd(
     console.print(f"[green]installed[/green] {job.id}")
 
 
-@schedule_app.command("list", help="List installed schedules and their next fire times.")
+@list_app.command("schedules", help="List installed schedules and their next fire times.")
+@schedule_app.command("list", hidden=True)
 def schedule_list_cmd(
     json_mode: bool = typer.Option(
         False, "--json", help="Emit machine-readable JSON instead of a table."
@@ -133,7 +134,8 @@ def schedule_list_cmd(
     console.print(render_planned_table(planned))
 
 
-@schedule_app.command("remove", help="Delete a schedule by id or name (hard delete).")
+@schedule_app.command("rm", help="Delete a schedule by id or name (hard delete).")
+@schedule_app.command("remove", hidden=True)
 def schedule_remove_cmd(
     ref: str = typer.Argument(..., help="Schedule id or schedule.name."),
 ) -> None:

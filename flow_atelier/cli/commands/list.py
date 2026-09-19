@@ -101,7 +101,9 @@ def list_conduits_cmd(
 
 @list_app.command("flows")
 def list_flows_cmd(
-    conduit: str | None = typer.Option(None, "--conduit", "-c"),
+    conduit: str | None = typer.Option(
+        None, "--conduit", "-c", help="Show only flows of this conduit."
+    ),
     json_mode: bool = typer.Option(
         False, "--json", help="Emit machine-readable JSON instead of a table."
     ),

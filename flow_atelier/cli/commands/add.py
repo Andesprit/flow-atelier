@@ -1,4 +1,4 @@
-"""`atelier add` command — install a conduit package from a repo or path."""
+"""`atelier install`, `update` and `uninstall` — conduit packages from a repo or path."""
 from __future__ import annotations
 
 import sys
@@ -50,8 +50,9 @@ def _prompt_scope() -> bool:
             return True
 
 
-@app.command("add", help="Install a conduit package from a git repo or local path.")
-def add_cmd(
+@app.command("install", help="Install a conduit package from a git repo or local path.")
+@app.command("add", hidden=True)
+def install_cmd(
     source: str = typer.Argument(
         ..., help="git URL, owner/repo, or a local path."
     ),
@@ -119,8 +120,9 @@ def update_cmd(
     _print_report(report)
 
 
-@app.command("remove", help="Uninstall a package's conduits.")
-def remove_cmd(
+@app.command("uninstall", help="Uninstall a package's conduits.")
+@app.command("remove", hidden=True)
+def uninstall_cmd(
     name: str = typer.Argument(..., help="Installed package name."),
 ) -> None:
     """Delete exactly the conduit dirs a package installed.

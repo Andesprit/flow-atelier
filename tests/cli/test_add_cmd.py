@@ -69,7 +69,7 @@ def env(tmp_path, monkeypatch):
 
 def test_add_installs_conduit_and_lockfile(env):
     """`add <local>` populates the conduit + installed.json, ignoring skills."""
-    result = CliRunner().invoke(app, ["add", str(env["pkg"])])
+    result = CliRunner().invoke(app, ["install", str(env["pkg"])])
     assert result.exit_code == 0, result.output
     assert (env["global"] / "conduits" / "demo" / "conduit.yaml").exists()
     # The manifest's `skills:` key is ignored: nothing is copied to the user.
@@ -83,7 +83,7 @@ def test_add_installs_conduit_and_lockfile(env):
 
 def test_add_project_flag_installs_into_project_store(env):
     """`add --project` installs the conduit into ./.atelier, not global."""
-    result = CliRunner().invoke(app, ["add", str(env["pkg"]), "--project"])
+    result = CliRunner().invoke(app, ["install", str(env["pkg"]), "--project"])
     assert result.exit_code == 0, result.output
     assert (env["proj"] / ".atelier" / "conduits" / "demo" / "conduit.yaml").exists()
     assert not (env["global"] / "conduits" / "demo").exists()
@@ -91,14 +91,14 @@ def test_add_project_flag_installs_into_project_store(env):
 
 def test_add_no_project_flag_installs_global(env):
     """`add --no-project` installs into the global store."""
-    result = CliRunner().invoke(app, ["add", str(env["pkg"]), "--no-project"])
+    result = CliRunner().invoke(app, ["install", str(env["pkg"]), "--no-project"])
     assert result.exit_code == 0, result.output
     assert (env["global"] / "conduits" / "demo" / "conduit.yaml").exists()
 
 
 def test_add_no_flag_non_tty_defaults_global_without_prompt(env):
     """No flag on a non-TTY stdin (CliRunner) installs global, no prompt shown."""
-    result = CliRunner().invoke(app, ["add", str(env["pkg"])])
+    result = CliRunner().invoke(app, ["install", str(env["pkg"])])
     assert result.exit_code == 0, result.output
     assert (env["global"] / "conduits" / "demo" / "conduit.yaml").exists()
     assert "globally" not in result.output  # interactive prompt text absent
@@ -112,7 +112,7 @@ def test_add_no_flag_tty_prompts_and_p_installs_project(env, monkeypatch):
     fake_sys = types.SimpleNamespace(stdin=types.SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("flow_atelier.cli.commands.add.sys", fake_sys)
     monkeypatch.setattr(builtins, "input", lambda prompt="": "p")
-    result = CliRunner().invoke(app, ["add", str(env["pkg"])])
+    result = CliRunner().invoke(app, ["install", str(env["pkg"])])
     assert result.exit_code == 0, result.output
     assert (env["proj"] / ".atelier" / "conduits" / "demo" / "conduit.yaml").exists()
     assert not (env["global"] / "conduits" / "demo").exists()
@@ -131,8 +131,8 @@ def test_prompt_scope_resolves_answers_and_reasks(monkeypatch):
 
 def test_add_collision_skips_without_force_exit_zero(env):
     """A second `add` skips the existing skill, warns, and exits 0."""
-    assert CliRunner().invoke(app, ["add", str(env["pkg"])]).exit_code == 0
-    result = CliRunner().invoke(app, ["add", str(env["pkg"])])
+    assert CliRunner().invoke(app, ["install", str(env["pkg"])]).exit_code == 0
+    result = CliRunner().invoke(app, ["install", str(env["pkg"])])
     assert result.exit_code == 0, result.output
     assert "~" in result.output  # skipped marker
     assert "skipped" in result.output
@@ -140,18 +140,18 @@ def test_add_collision_skips_without_force_exit_zero(env):
 
 def test_add_force_overwrites(env):
     """`add --force` overwrites an existing conduit."""
-    assert CliRunner().invoke(app, ["add", str(env["pkg"])]).exit_code == 0
+    assert CliRunner().invoke(app, ["install", str(env["pkg"])]).exit_code == 0
     installed = env["global"] / "conduits" / "demo" / "conduit.yaml"
     installed.write_text("# clobbered\n")
-    result = CliRunner().invoke(app, ["add", str(env["pkg"]), "--force"])
+    result = CliRunner().invoke(app, ["install", str(env["pkg"]), "--force"])
     assert result.exit_code == 0, result.output
     assert installed.read_text() == CONDUIT_YAML
 
 
 def test_remove_deletes_recorded_dirs(env):
     """`remove` deletes exactly the recorded conduit dir."""
-    assert CliRunner().invoke(app, ["add", str(env["pkg"])]).exit_code == 0
-    result = CliRunner().invoke(app, ["remove", "demo-pkg"])
+    assert CliRunner().invoke(app, ["install", str(env["pkg"])]).exit_code == 0
+    result = CliRunner().invoke(app, ["uninstall", "demo-pkg"])
     assert result.exit_code == 0, result.output
     assert not (env["global"] / "conduits" / "demo").exists()
     assert json.loads((env["global"] / "installed.json").read_text()) == {}
@@ -159,7 +159,7 @@ def test_remove_deletes_recorded_dirs(env):
 
 def test_remove_unknown_package_errors(env):
     """Removing an unknown package exits 1 with a clear message."""
-    result = CliRunner().invoke(app, ["remove", "nope"])
+    result = CliRunner().invoke(app, ["uninstall", "nope"])
     assert result.exit_code == 1
     assert "not installed" in result.output
     assert "Traceback" not in result.output
@@ -167,7 +167,7 @@ def test_remove_unknown_package_errors(env):
 
 def test_update_force_propagates_source_change(env):
     """`update --force` re-installs and propagates a changed source file."""
-    assert CliRunner().invoke(app, ["add", str(env["pkg"])]).exit_code == 0
+    assert CliRunner().invoke(app, ["install", str(env["pkg"])]).exit_code == 0
     # modify the source conduit
     (env["pkg"] / ".atelier" / "conduits" / "demo" / "conduit.yaml").write_text(
         CONDUIT_YAML.replace("echo hi", "echo CHANGED")
@@ -182,7 +182,7 @@ def test_update_force_propagates_source_change(env):
 
 def test_update_without_force_preserves_lockfile_ownership(env):
     """`update` without --force keeps conduits owned in the lockfile."""
-    assert CliRunner().invoke(app, ["add", str(env["pkg"])]).exit_code == 0
+    assert CliRunner().invoke(app, ["install", str(env["pkg"])]).exit_code == 0
     assert CliRunner().invoke(app, ["update", "demo-pkg"]).exit_code == 0
     lock = json.loads((env["global"] / "installed.json").read_text())
     assert lock["demo-pkg"]["conduits"] == ["demo"]
@@ -194,3 +194,11 @@ def test_update_unknown_package_errors(env):
     assert result.exit_code == 1
     assert "not installed" in result.output
     assert "atelier add" in result.output
+
+
+def test_add_and_remove_aliases_still_work(env):
+    """`add` and `remove` stay as hidden aliases of `install` and `uninstall`."""
+    assert CliRunner().invoke(app, ["add", str(env["pkg"]), "--no-project"]).exit_code == 0
+    result = CliRunner().invoke(app, ["remove", "demo-pkg"])
+    assert result.exit_code == 0, result.output
+    assert "add" not in CliRunner().invoke(app, ["--help"]).output.split("Commands")[1]

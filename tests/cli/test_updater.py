@@ -9,12 +9,17 @@ from unittest.mock import patch
 import pytest
 
 import flow_atelier.cli.updater as mod
+from flow_atelier.cli import app
 from flow_atelier.cli.updater import (
-    _do_swap,
+    UpdateError,
+    _announce_available,
+    _background_check,
     _download_and_verify,
     _parse_version,
     _platform_asset_name,
+    _swap_binary,
     is_frozen_binary,
+    self_update,
     start_background_update_check,
 )
 
@@ -91,21 +96,88 @@ def test_background_check_disabled_by_env(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 4. _do_swap noop when nothing pending
+# 4. daily check only announces; nothing is downloaded
 # ---------------------------------------------------------------------------
 
 
-def test_do_swap_noop_when_no_pending():
-    """_do_swap() is safe to call when no update has been downloaded."""
-    import flow_atelier.cli.updater as mod
+def test_background_check_announces_newer_version(monkeypatch, capsys):
+    """A newer tag is reported on stderr with the self-update command, not installed."""
+    monkeypatch.setattr(mod, "_available", None)
+    monkeypatch.setattr(mod, "_latest_release", lambda: {"tag_name": "v99.0.0"})
+    with patch("flow_atelier.cli.updater._fetch_bytes") as fetch:
+        _background_check()
+        fetch.assert_not_called()
+    _announce_available()
+    err = capsys.readouterr().err
+    assert "99.0.0" in err
+    assert "atelier self-update" in err
 
-    # Ensure no pending update.
-    with mod._lock:
-        mod._pending_update = None
-        mod._pending_asset_name = None
 
-    # Should not raise.
-    _do_swap()
+def test_background_check_is_silent_when_current(monkeypatch, capsys):
+    """An equal or older tag prints nothing at exit."""
+    monkeypatch.setattr(mod, "_available", None)
+    monkeypatch.setattr(mod, "_latest_release", lambda: {"tag_name": "v0.0.1"})
+    _background_check()
+    _announce_available()
+    assert capsys.readouterr().err == ""
+
+
+# ---------------------------------------------------------------------------
+# 4b. self_update
+# ---------------------------------------------------------------------------
+
+
+def test_self_update_returns_none_when_current(monkeypatch):
+    """Nothing is downloaded or swapped when the release is not newer."""
+    monkeypatch.setattr(mod, "_latest_release", lambda: {"tag_name": "v0.0.1"})
+    with patch("flow_atelier.cli.updater._swap_binary") as swap:
+        assert self_update() is None
+        swap.assert_not_called()
+
+
+def test_self_update_swaps_verified_binary(monkeypatch):
+    """A newer release with a matching checksum is swapped in and its tag returned."""
+    release = {
+        "tag_name": "v99.0.0",
+        "assets": [
+            {"name": "atelier-linux-x86_64", "browser_download_url": "https://x/bin"},
+            {"name": "SHA256SUMS", "browser_download_url": "https://x/sums"},
+        ],
+    }
+    monkeypatch.setattr(mod, "_latest_release", lambda: release)
+    monkeypatch.setattr(mod, "_platform_asset_name", lambda: "atelier-linux-x86_64")
+    monkeypatch.setattr(mod, "_download_and_verify", lambda *a: b"new binary")
+    with patch("flow_atelier.cli.updater._swap_binary") as swap:
+        assert self_update() == "v99.0.0"
+        swap.assert_called_once_with(b"new binary")
+
+
+def test_self_update_rejects_bad_checksum(monkeypatch):
+    """A failed verification raises UpdateError and swaps nothing."""
+    release = {
+        "tag_name": "v99.0.0",
+        "assets": [
+            {"name": "atelier-linux-x86_64", "browser_download_url": "https://x/bin"},
+            {"name": "SHA256SUMS", "browser_download_url": "https://x/sums"},
+        ],
+    }
+    monkeypatch.setattr(mod, "_latest_release", lambda: release)
+    monkeypatch.setattr(mod, "_platform_asset_name", lambda: "atelier-linux-x86_64")
+    monkeypatch.setattr(mod, "_download_and_verify", lambda *a: None)
+    with patch("flow_atelier.cli.updater._swap_binary") as swap:
+        with pytest.raises(UpdateError):
+            self_update()
+        swap.assert_not_called()
+
+
+def test_self_update_command_points_pip_installs_at_uv(monkeypatch):
+    """Outside a frozen binary the command exits 1 with the uv upgrade hint."""
+    monkeypatch.setenv("ATELIER_NO_UPDATE_CHECK", "1")
+    from typer.testing import CliRunner
+
+    result = CliRunner().invoke(app, ["self-update"])
+    assert result.exit_code == 1
+    assert "uv tool upgrade" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -191,15 +263,8 @@ def test_verify_hash_rejects_mismatch():
 
 
 # ---------------------------------------------------------------------------
-# 7. _do_swap preserves the executable bit
+# 7. _swap_binary preserves the executable bit
 # ---------------------------------------------------------------------------
-
-
-def _stage_pending(mod, binary, asset_name):
-    """Stage a pending update in module state."""
-    with mod._lock:
-        mod._pending_update = binary
-        mod._pending_asset_name = asset_name
 
 
 @pytest.mark.skipif(
@@ -207,41 +272,33 @@ def _stage_pending(mod, binary, asset_name):
     reason="POSIX executable-bit semantics; on Windows executability is "
     "extension-based and os.chmod cannot set S_IXUSR.",
 )
-def test_do_swap_preserves_executable_bit(tmp_path, monkeypatch):
+def test_swap_binary_preserves_executable_bit(tmp_path, monkeypatch):
     """A swapped-in binary must remain executable, not inherit 0600."""
-    import os
     import stat
-
-    import flow_atelier.cli.updater as mod
 
     target = tmp_path / "atelier"
     target.write_bytes(b"old binary")
     target.chmod(0o755)
 
     monkeypatch.setattr(mod.sys, "executable", str(target))
-    _stage_pending(mod, b"new binary", "atelier-linux-x86_64")
-
-    _do_swap()
+    _swap_binary(b"new binary")
 
     assert target.read_bytes() == b"new binary"
     assert os.stat(target).st_mode & stat.S_IXUSR
 
 
 # ---------------------------------------------------------------------------
-# 8. _do_swap rolls back when the final replace fails
+# 8. _swap_binary rolls back when the final replace fails
 # ---------------------------------------------------------------------------
 
 
-def test_do_swap_rolls_back_on_replace_failure(tmp_path, monkeypatch):
+def test_swap_binary_rolls_back_on_replace_failure(tmp_path, monkeypatch):
     """If os.replace fails after the .old rename, the original is restored."""
-    import flow_atelier.cli.updater as mod
-
     target = tmp_path / "atelier"
     target.write_bytes(b"original binary")
     target.chmod(0o755)
 
     monkeypatch.setattr(mod.sys, "executable", str(target))
-    _stage_pending(mod, b"new binary", "atelier-linux-x86_64")
 
     real_replace = mod.os.replace
     calls = {"n": 0}
@@ -255,7 +312,8 @@ def test_do_swap_rolls_back_on_replace_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod.os, "replace", flaky_replace)
 
-    _do_swap()  # must not raise
+    with pytest.raises(OSError):
+        _swap_binary(b"new binary")
 
     assert target.exists()
     assert target.read_bytes() == b"original binary"

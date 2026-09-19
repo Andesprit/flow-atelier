@@ -80,3 +80,23 @@ def _yaml_to_json(text: str) -> str:
     import yaml
 
     return json.dumps(yaml.safe_load(text))
+
+
+def test_create_matches_init_shape(workdir):
+    """`create` and `init` write the same compact YAML, differing only in name and description."""
+    assert CliRunner().invoke(app, ["create", "hello", "-d", "Say hello"]).exit_code == 0
+    created = (workdir / ".atelier" / "conduits" / "hello" / "conduit.yaml").read_text()
+    other = workdir / "other"
+    other.mkdir()
+    import os as _os
+
+    cwd = _os.getcwd()
+    _os.chdir(other)
+    try:
+        assert CliRunner().invoke(app, ["init"]).exit_code == 0
+    finally:
+        _os.chdir(cwd)
+    initialized = (other / ".atelier" / "conduits" / "hello" / "conduit.yaml").read_text()
+    assert created == initialized
+    assert "- greet:" in created
+    assert "retry_backoff" not in created

@@ -109,7 +109,7 @@ def prune_cmd(
             "[red]refusing to prune:[/red] pass --older-than and/or --keep "
             "to select which flows to delete."
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=2)
 
     atelier = Atelier()
     candidates = atelier.list_flows(conduit)  # sorted ascending (oldest first)

@@ -1,4 +1,4 @@
-"""`atelier run` command."""
+"""`atelier run` command, and the terminal driver every flow-running command shares."""
 from __future__ import annotations
 
 import asyncio
@@ -6,6 +6,7 @@ import contextlib
 import difflib
 import sys
 import time
+from collections.abc import Awaitable, Callable
 
 import typer
 import yaml
@@ -119,6 +120,94 @@ async def _with_heartbeat(coro, running: _RunningTasks):
             await beat
 
 
+def drive_flow(
+    start: Callable[..., Awaitable[str]],
+    *,
+    total_tasks: int,
+    verb: str = "running",
+    flow_id: str | None = None,
+    resume_hint: bool = True,
+) -> str:
+    """Run one flow to completion on the terminal and return its id.
+
+    ``start`` receives the engine callbacks ``on_task_event``,
+    ``on_flow_started`` and ``on_task_starting`` as keyword arguments and
+    returns the engine coroutine. Task banners, events, the heartbeat, the
+    footer and the stopped/failed epilogue all render here.
+
+    :param start: builds the engine coroutine from the three callbacks.
+    :param total_tasks: task count for the ``[i/total]`` banner, or 0 to omit it.
+    :param verb: banner verb, ``running`` or ``resuming``.
+    :param flow_id: the id when resuming an existing flow. A fresh run learns
+        its id from the engine and announces it.
+    :param resume_hint: print ``atelier run --resume <id>`` after a failure.
+    :returns: the flow id the engine returned.
+    """
+    collected: list[TaskEvent] = []
+    captured: dict[str, str | None] = {"id": flow_id}
+    running = _RunningTasks()
+
+    def _on_event(event: TaskEvent) -> None:
+        collected.append(event)
+        running.finish(event)
+        mark_activity()
+        render_task_event(event, console)
+
+    def _on_started(fid: str) -> None:
+        captured["id"] = fid
+        if flow_id is None:
+            console.print(_render_orchestration_msg(f"starting flow {fid}"))
+
+    def _on_task_starting(task_name: str, tool: str) -> None:
+        index = running.start(task_name)
+        mark_activity()
+        console.print()
+        console.print(render_task_start(task_name, tool, index, total_tasks, verb=verb))
+
+    coro = start(
+        on_task_event=_on_event,
+        on_flow_started=_on_started,
+        on_task_starting=_on_task_starting,
+    )
+    try:
+        result = asyncio.run(_with_heartbeat(coro, running))
+    except asyncio.CancelledError:
+        # SIGTERM via `atelier stop`: the engine has marked the flow stopped.
+        render_run_footer(collected, console)
+        console.print("[yellow]flow stopped[/yellow]")
+        if captured["id"]:
+            console.print(f"[yellow]flow_id:[/yellow] {captured['id']}")
+        raise typer.Exit(code=0)
+    except Exception as exc:  # noqa: BLE001
+        render_run_footer(collected, console)
+        console.print(f"[red]flow failed:[/red] {escape(str(exc))}")
+        if captured["id"]:
+            console.print(f"[red]flow_id:[/red] {captured['id']}")
+            if resume_hint:
+                console.print(f"[dim]→ atelier run --resume {captured['id']}[/dim]")
+        raise typer.Exit(code=1)
+    render_run_footer(collected, console)
+    console.print(f"[green]flow_id:[/green] {result}")
+    return result
+
+
+def _load_conduit(atelier: Atelier, name: str) -> Conduit | None:
+    """Read conduit ``name``, exiting 1 with a readable message when it is malformed.
+
+    :param atelier: Atelier whose store to read from.
+    :param name: the conduit to load.
+    :returns: the conduit, or ``None`` when no conduit of that name exists.
+    """
+    try:
+        return atelier.store.read_conduit(name)
+    except FileNotFoundError:
+        return None
+    except (yaml.YAMLError, ValidationError, ValueError) as exc:
+        console.print(f"[red]invalid conduit:[/red] {escape(format_conduit_error(exc))}")
+        console.print(f"[dim]→ fix conduits/{name}/conduit.yaml[/dim]")
+        raise typer.Exit(code=1)
+
+
 def _reject_unknown_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
     """Exit 1 when an ``--input`` key is one the conduit can never use.
 
@@ -147,6 +236,36 @@ def _reject_unknown_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
     raise typer.Exit(code=1)
 
 
+def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
+    """Prompt for each required input not yet supplied, or exit 2 off a TTY.
+
+    :param conduit: the conduit about to run.
+    :param inputs: the ``--input`` map, extended in place with typed answers.
+    """
+    missing = [
+        k for k, spec in conduit.inputs.items() if k not in inputs and spec.default is None
+    ]
+    if not missing:
+        return
+    if not sys.stdin.isatty():
+        console.print(f"[red]missing required inputs:[/red] {escape(', '.join(missing))}")
+        flags = " ".join(f"--input {escape(k)}=<value>" for k in missing)
+        console.print(f"[dim]→ atelier run {escape(conduit.name)} {flags}[/dim]")
+        raise typer.Exit(code=2)
+
+    from flow_atelier.cli.rendering.multiline_input import multiline_input_sync
+
+    try:
+        for key in missing:
+            inputs[key] = multiline_input_sync(
+                f"  {key} ({conduit.inputs[key].description}): ",
+                hint="Enter to submit · Alt+Enter for newline",
+            )
+    except KeyboardInterrupt:
+        print()
+        raise typer.Exit(code=130)
+
+
 @app.command(
     "run",
     help=(
@@ -158,7 +277,7 @@ def _reject_unknown_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
 )
 def run_cmd(
     conduit_name: str = typer.Argument(
-        None, help="Name of the conduit to run (not needed with --resume)."
+        None, help="Name of the conduit to run (not needed with --resume or --again)."
     ),
     inputs_raw: list[str] = typer.Option(
         [],
@@ -198,183 +317,59 @@ def run_cmd(
 
     if resume_from is not None and again_from is not None:
         console.print("[red]error:[/red] --resume and --again are mutually exclusive")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=2)
 
-    # --resume path: resolve the old flow, skip input prompts
     if resume_from is not None:
         flow_id = _resolve_flow_id(atelier, resume_from)
         # Surface a malformed conduit with a readable message before resuming,
-        # so a YAML/schema/name error doesn't reach the generic `flow failed:`
-        # handler as a raw exception. read_conduit is the only conduit-load
-        # surface; resume_flow's own ValueError (e.g. "can only resume failed
-        # or crashed flows") is unrelated and must keep its generic handling.
-        resume_conduit = parse_flow_id(flow_id)[0]
-        # No `[i/total]` on resume. `_RunningTasks.count` numbers the tasks
-        # started *by this resume*, so pairing it with the conduit's full task
-        # count reads as "[1/5], just started" for a run that is finishing its
-        # last two tasks. Validate the conduit anyway — the error handling
-        # below is the point of the read.
-        total_tasks = 0
-        try:
-            atelier.store.read_conduit(resume_conduit)
-        except FileNotFoundError:
-            pass
-        except (yaml.YAMLError, ValidationError, ValueError) as exc:
-            console.print(
-                f"[red]invalid conduit:[/red] {escape(format_conduit_error(exc))}"
-            )
-            console.print(f"[dim]→ fix conduits/{resume_conduit}/conduit.yaml[/dim]")
-            raise typer.Exit(code=1)
-        collected_events: list[TaskEvent] = []
-        captured_flow_id: dict[str, str | None] = {"id": flow_id}
-
-        running = _RunningTasks()
-
-        def _on_event(event: TaskEvent) -> None:
-            collected_events.append(event)
-            running.finish(event)
-            mark_activity()
-            render_task_event(event, console)
-
-        def _on_started(fid: str) -> None:
-            captured_flow_id["id"] = fid
-
-        def _on_task_starting(task_name: str, tool: str) -> None:
-            index = running.start(task_name)
-            mark_activity()
-            console.print()
-            console.print(
-                render_task_start(
-                    task_name, tool, index, total_tasks, verb="resuming"
-                )
-            )
-
-        console.print(_render_orchestration_msg(f'resuming flow {flow_id}'))
-        try:
-            result_id = asyncio.run(
-                _with_heartbeat(
-                    atelier.resume_flow(
-                        flow_id,
-                        on_task_event=_on_event,
-                        on_flow_started=_on_started,
-                        on_task_starting=_on_task_starting,
-                        show_steps=show_steps,
-                        stoppable=True,
-                    ),
-                    running,
-                )
-            )
-        except asyncio.CancelledError:
-            # SIGTERM via `atelier stop`: engine has marked the flow stopped.
-            render_run_footer(collected_events, console)
-            console.print("[yellow]flow stopped[/yellow]")
-            stopped_id = captured_flow_id["id"]
-            if stopped_id:
-                console.print(f"[yellow]flow_id:[/yellow] {stopped_id}")
-            raise typer.Exit(code=0)
-        except Exception as e:  # noqa: BLE001
-            render_run_footer(collected_events, console)
-            console.print(f"[red]flow failed:[/red] {escape(str(e))}")
-            raise typer.Exit(code=1)
-        render_run_footer(collected_events, console)
-        console.print(f"[green]flow_id:[/green] {result_id}")
+        # so a YAML or schema error does not reach the generic `flow failed:`
+        # handler as a raw exception.
+        _load_conduit(atelier, parse_flow_id(flow_id)[0])
+        console.print(_render_orchestration_msg(f"resuming flow {flow_id}"))
+        # No `[i/total]` on resume: the counter numbers the tasks this resume
+        # starts, so pairing it with the conduit's full count would read as
+        # "[1/5], just started" for a run finishing its last two tasks.
+        drive_flow(
+            lambda **callbacks: atelier.resume_flow(
+                flow_id, show_steps=show_steps, stoppable=True, **callbacks
+            ),
+            total_tasks=0,
+            verb="resuming",
+            flow_id=flow_id,
+            resume_hint=False,
+        )
         return
 
-    # --again path: start a fresh run reusing a past flow's saved inputs
     if again_from is not None:
         flow_id = _resolve_flow_id(atelier, again_from)
-        again_conduit = parse_flow_id(flow_id)[0]
-        total_tasks = 0
-        again_def: Conduit | None = None
-        try:
-            again_def = atelier.store.read_conduit(again_conduit)
-            total_tasks = len(again_def.tasks)
-        except FileNotFoundError:
-            pass
-        except (yaml.YAMLError, ValidationError, ValueError) as exc:
-            console.print(
-                f"[red]invalid conduit:[/red] {escape(format_conduit_error(exc))}"
-            )
-            console.print(f"[dim]→ fix conduits/{again_conduit}/conduit.yaml[/dim]")
-            raise typer.Exit(code=1)
+        conduit = _load_conduit(atelier, parse_flow_id(flow_id)[0])
         overrides = _parse_inputs(inputs_raw)
-        if again_def is not None:
-            _reject_unknown_inputs(again_def, overrides)
-        collected_events = []
-        captured_flow_id = {"id": None}
-        running = _RunningTasks()
-
-        def _on_event(event: TaskEvent) -> None:
-            collected_events.append(event)
-            running.finish(event)
-            mark_activity()
-            render_task_event(event, console)
-
-        def _on_started(fid: str) -> None:
-            captured_flow_id["id"] = fid
-            console.print(_render_orchestration_msg(f'starting flow {fid}'))
-
-        def _on_task_starting(task_name: str, tool: str) -> None:
-            index = running.start(task_name)
-            mark_activity()
-            console.print()
-            console.print(
-                render_task_start(task_name, tool, index, total_tasks)
-            )
-
-        console.print(_render_orchestration_msg(f're-running flow {flow_id}'))
-        try:
-            result_id = asyncio.run(
-                _with_heartbeat(
-                    atelier.rerun_flow(
-                        flow_id,
-                        overrides=overrides,
-                        on_task_event=_on_event,
-                        on_flow_started=_on_started,
-                        on_task_starting=_on_task_starting,
-                        show_steps=show_steps,
-                        stoppable=True,
-                    ),
-                    running,
-                )
-            )
-        except asyncio.CancelledError:
-            render_run_footer(collected_events, console)
-            console.print("[yellow]flow stopped[/yellow]")
-            stopped_id = captured_flow_id["id"]
-            if stopped_id:
-                console.print(f"[yellow]flow_id:[/yellow] {stopped_id}")
-            raise typer.Exit(code=0)
-        except Exception as e:  # noqa: BLE001
-            render_run_footer(collected_events, console)
-            console.print(f"[red]flow failed:[/red] {escape(str(e))}")
-            fid = captured_flow_id["id"]
-            if fid:
-                console.print(f"[red]flow_id:[/red] {fid}")
-                console.print(f"[dim]→ atelier run --resume {fid}[/dim]")
-            raise typer.Exit(code=1)
-        render_run_footer(collected_events, console)
-        console.print(f"[green]flow_id:[/green] {result_id}")
+        if conduit is not None:
+            _reject_unknown_inputs(conduit, overrides)
+        console.print(_render_orchestration_msg(f"re-running flow {flow_id}"))
+        drive_flow(
+            lambda **callbacks: atelier.rerun_flow(
+                flow_id,
+                overrides=overrides,
+                show_steps=show_steps,
+                stoppable=True,
+                **callbacks,
+            ),
+            total_tasks=len(conduit.tasks) if conduit is not None else 0,
+        )
         return
 
-    # --- normal run path (no --resume) ---
-
     if conduit_name is None:
-        console.print("[red]error:[/red] conduit name is required (unless using --resume)")
-        raise typer.Exit(code=1)
+        console.print(
+            "[red]error:[/red] conduit name is required (unless using --resume or --again)"
+        )
+        raise typer.Exit(code=2)
 
     inputs = _parse_inputs(inputs_raw)
-
-    try:
-        conduit = atelier.store.read_conduit(conduit_name)
-    except FileNotFoundError:
+    conduit = _load_conduit(atelier, conduit_name)
+    if conduit is None:
         _exit_unknown_conduit(conduit_name, atelier.store.list_conduits())
-    except (yaml.YAMLError, ValidationError, ValueError) as exc:
-        console.print(
-            f"[red]invalid conduit:[/red] {escape(format_conduit_error(exc))}"
-        )
-        console.print(f"[dim]→ fix conduits/{conduit_name}/conduit.yaml[/dim]")
-        raise typer.Exit(code=1)
+        return
 
     _reject_unknown_inputs(conduit, inputs)
 
@@ -387,93 +382,12 @@ def run_cmd(
             console.print(f"[red]cannot run:[/red] {escape(problem)}")
         raise typer.Exit(code=1)
 
-    # Prompt for missing inputs when running interactively.
-    missing = [
-        k
-        for k, spec in conduit.inputs.items()
-        if k not in inputs and spec.default is None
-    ]
-    if missing and sys.stdin.isatty():
-        from flow_atelier.cli.rendering.multiline_input import multiline_input_sync
-
-        try:
-            for key in missing:
-                value = multiline_input_sync(
-                    f"  {key} ({conduit.inputs[key].description}): ",
-                    hint="Enter to submit · Alt+Enter for newline",
-                )
-                inputs[key] = value
-        except KeyboardInterrupt:
-            print()
-            raise typer.Exit(code=130)
-
-    collected_events = []
-    captured_flow_id = {"id": None}
-    running = _RunningTasks()
-
-    def _on_event(event: TaskEvent) -> None:
-        """Collect the task event and render it to the console.
-
-        :param event: the emitted task event to record and display.
-        """
-        collected_events.append(event)
-        running.finish(event)
-        mark_activity()
-        render_task_event(event, console)
-
-    def _on_started(fid: str) -> None:
-        """Capture the flow id and print a start banner.
-
-        :param fid: the flow id assigned when the run begins.
-        """
-        captured_flow_id["id"] = fid
-        console.print(_render_orchestration_msg(f'starting flow {fid}'))
-
-    def _on_task_starting(task_name: str, tool: str) -> None:
-        """Announce that a task is about to run.
-
-        :param task_name: name of the task starting.
-        :param tool: tool identifier used to execute the task.
-        """
-        index = running.start(task_name)
-        mark_activity()
-        console.print()
-        console.print(
-            render_task_start(task_name, tool, index, len(conduit.tasks))
-        )
+    _collect_missing_inputs(conduit, inputs)
 
     console.print(_render_orchestration_msg(f'loading conduit "{conduit_name}"'))
-
-    try:
-        flow_id = asyncio.run(
-            _with_heartbeat(
-                atelier.run_conduit(
-                    conduit_name,
-                    inputs,
-                    on_task_event=_on_event,
-                    on_flow_started=_on_started,
-                    on_task_starting=_on_task_starting,
-                    show_steps=show_steps,
-                    stoppable=True,
-                ),
-                running,
-            )
-        )
-    except asyncio.CancelledError:
-        # SIGTERM via `atelier stop`: engine has marked the flow stopped.
-        render_run_footer(collected_events, console)
-        console.print("[yellow]flow stopped[/yellow]")
-        stopped_id = captured_flow_id["id"]
-        if stopped_id:
-            console.print(f"[yellow]flow_id:[/yellow] {stopped_id}")
-        raise typer.Exit(code=0)
-    except Exception as e:  # noqa: BLE001
-        render_run_footer(collected_events, console)
-        console.print(f"[red]flow failed:[/red] {escape(str(e))}")
-        fid = captured_flow_id["id"]
-        if fid:
-            console.print(f"[red]flow_id:[/red] {fid}")
-            console.print(f"[dim]→ atelier run --resume {fid}[/dim]")
-        raise typer.Exit(code=1)
-    render_run_footer(collected_events, console)
-    console.print(f"[green]flow_id:[/green] {flow_id}")
+    drive_flow(
+        lambda **callbacks: atelier.run_conduit(
+            conduit_name, inputs, show_steps=show_steps, stoppable=True, **callbacks
+        ),
+        total_tasks=len(conduit.tasks),
+    )

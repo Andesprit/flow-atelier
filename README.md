@@ -175,6 +175,11 @@ The quickest way. The script downloads a prebuilt `atelier` binary into
 `~/.atelier/bin`, verifies its SHA-256 checksum against the published
 release, and adds it to your `PATH`. It is safe to re-run to upgrade.
 
+Once a day the binary checks GitHub for a newer release and, if one
+exists, says so on stderr. Nothing is installed until you run
+`atelier self-update`. Set `ATELIER_NO_UPDATE_CHECK=1` to silence the
+check.
+
 **macOS (Apple Silicon) / Linux:**
 
 ```bash
@@ -238,8 +243,8 @@ a snapshot of which ships with flow-atelier. To see what you can type and
 what already works on your machine:
 
 ```bash
-atelier harness list           # every agent, and whether it runs here
-atelier harness list --ready   # just the ones you can use right now
+atelier list harnesses           # every agent, and whether it runs here
+atelier list harnesses --ready   # just the ones you can use right now
 atelier harness sync           # refresh the list from the ACP registry
 ```
 
@@ -252,7 +257,7 @@ documents; the `via` column says how it starts:
 - `npx` / `uvx` — the agent's own package manager fetches it on first
 run, at the version the registry pins. Needs Node.js or uv on PATH.
 - `binary` — you install the agent's CLI, and flow-atelier runs it from
-PATH. `atelier harness list` names the missing binary when it isn't there.
+PATH. `atelier list harnesses` names the missing binary when it isn't there.
 
 Either way, logging in is yours to do, with that agent's own CLI.
 
@@ -537,8 +542,9 @@ conduit-level `interaction` policy to choose human or supervisor decisions.
 
 Non-interactive tasks run one turn and stop.
 
-For a direct interactive Claude conversation without writing a conduit,
-use `atelier ask`:
+For a direct interactive agent conversation without writing a conduit,
+use `atelier ask` (Claude Code by default; `--harness <name>` picks
+another agent from `atelier list harnesses`):
 
 ```bash
 atelier ask "Help me write a specification" --path /absolute/path/to/project
@@ -625,13 +631,13 @@ flow folder under `.atelier/flows/` in the current working directory.
 # authoring
 atelier init
 atelier create <name> [--description <text>]           # scaffold a new empty conduit
-atelier check [<conduit>]                              # validate conduit(s) without running
-atelier plan <conduit>                                 # print the DAG as ordered waves, run nothing
+atelier check [<conduit>] [--json]                     # validate conduit(s) without running
+atelier plan <conduit> [--json]                        # print the DAG as ordered waves, run nothing
 
 # <flow_id> below accepts a unique prefix, or 'latest' for the most recently started flow
 # running
 atelier run <conduit> [--input key=value ...] [--show-steps/--hide-steps]
-atelier ask <query> --path <directory>                 # interactive Claude session
+atelier ask <query> --path <directory> [--harness <name>]   # interactive agent session (default: claude-code)
 atelier run --resume <flow_id>                         # resume a failed/crashed flow
 atelier run --again <flow_id>                          # fresh run reusing a past flow's inputs
 atelier stop <flow_id>                                 # gracefully halt a running flow
@@ -643,40 +649,44 @@ atelier outputs <flow_id> [--task <name>] [--json]    # read back a finished flo
 atelier timing <flow_id> [--json]                      # per-task duration, slowest first
 atelier list conduits
 atelier list flows [--conduit <name>]
+atelier list schedules [--json]
+atelier list harnesses [--ready] [--json]
 atelier rm <flow_id> [--force] [--yes]                 # delete one flow run
 atelier prune [--conduit <name>] [--older-than <days>] [--keep <n>]   # bulk-delete old flows
 
 # sharing conduits (see "Installing conduit packages" below)
-atelier add <source> [--ref <git-ref>] [--project] [--force]
+atelier install <source> [--ref <git-ref>] [--project] [--force]
 atelier update <package>                               # re-fetch and re-install from source
-atelier remove <package>                               # uninstall a package's conduits
+atelier uninstall <package>                            # delete a package's conduits
 
 # scheduling
 atelier schedule add <file.{json,yaml}>
-atelier schedule list [--json]
-atelier schedule remove <id-or-name>
+atelier schedule rm <id-or-name>
 atelier schedule run-now <id-or-name>
-atelier scheduler start [--reload-interval 30] [--log-level INFO]
-atelier scheduler status [--json]
+atelier schedule history <id-or-name>
+atelier schedule daemon [--reload-interval 30] [--log-level INFO]
 
 # HTTP + WebSocket server
 atelier serve [--host 127.0.0.1] [--port 8000] \
               [--reload-interval 30] [--cors-origin URL]* \
               [--log-level INFO]
+
+# maintenance
+atelier self-update                                    # prebuilt binary only; uv installs use `uv tool upgrade`
 ```
 
 
 
 ## Installing conduit packages
 
-A conduit is just a folder, so conduits are shareable. `atelier add`
+A conduit is just a folder, so conduits are shareable. `atelier install`
 installs them from a git repo or a local path:
 
 ```bash
-atelier add owner/repo                  # GitHub shorthand
-atelier add https://github.com/owner/repo.git
-atelier add ./some/local/package
-atelier add owner/repo --ref v1.2.0     # pin a branch, tag, or commit
+atelier install owner/repo                  # GitHub shorthand
+atelier install https://github.com/owner/repo.git
+atelier install ./some/local/package
+atelier install owner/repo --ref v1.2.0     # pin a branch, tag, or commit
 ```
 
 You are asked whether to install globally (`~/.atelier`) or into the
@@ -706,13 +716,13 @@ conduits by scanning that directory and warns that it did so. Schedules
 are never installed — they hold machine-specific state.
 
 `atelier update <package>` re-fetches from the recorded source and
-re-installs. `atelier remove <package>` deletes only the conduits that
+re-installs. `atelier uninstall <package>` deletes only the conduits that
 install actually wrote, so a conduit that was skipped on collision is
 left alone.
 
 ## Running on a schedule
 
-`atelier scheduler` runs conduits on a wall-clock schedule. Each
+`atelier schedule daemon` runs conduits on a wall-clock schedule. Each
 schedule is one YAML file under `.atelier/schedules/<name>.yaml`. The
 daemon is one foreground process you can put under `systemd`,
 `launchd`, or any supervisor.

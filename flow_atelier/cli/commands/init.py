@@ -4,19 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from flow_atelier.cli._shared import console
+from flow_atelier.cli.commands.create import starter_conduit_yaml
 from flow_atelier.cli.main import app
-
-HELLO_CONDUIT_YAML = """name: hello
-description: Say hello
-inputs:
-  name: Who to greet
-tasks:
-  - greet:
-      description: greet someone
-      task: "echo hello {{inputs.name}}"
-      tool: tool:bash
-      depends_on: []
-"""
 
 
 @app.command(
@@ -32,7 +21,7 @@ def init_cmd() -> None:
         console.print("[yellow]atelier is already set up in this project[/yellow]")
         return
     hello_dir.mkdir(parents=True, exist_ok=True)
-    conduit_file.write_text(HELLO_CONDUIT_YAML)
+    conduit_file.write_text(starter_conduit_yaml("hello", "Say hello"))
     console.print(
         f"[green]initialized[/green] {atelier_dir}\n"
         "try: [bold]atelier run hello --input name=world[/bold]"

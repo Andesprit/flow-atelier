@@ -1,6 +1,9 @@
 """`atelier plan` command — render a conduit's static execution plan."""
 from __future__ import annotations
 
+import dataclasses
+import json
+
 import typer
 from pydantic import ValidationError
 from rich.markup import escape
@@ -16,6 +19,9 @@ from flow_atelier.modules.plan import build_plan
 @app.command("plan")
 def plan_cmd(
     conduit_name: str = typer.Argument(..., help="Conduit to show the plan for."),
+    json_mode: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of wave blocks."
+    ),
 ) -> None:
     """Show a conduit's static execution plan without running anything.
 
@@ -24,6 +30,7 @@ def plan_cmd(
     predicates, sinks, and short-circuit gates. Read-only: no flow is created.
 
     :param conduit_name: the conduit to render.
+    :param json_mode: when true, emit the plan as JSON instead of wave blocks.
     """
     atelier = Atelier()
     sources = dict(atelier.store.list_conduits_with_source())
@@ -37,4 +44,8 @@ def plan_cmd(
         console.print(f"[red]FAIL: {escape(format_conduit_error(e))}[/red]")
         raise typer.Exit(code=1)
 
-    render_plan(build_plan(conduit, parsed), console)
+    plan = build_plan(conduit, parsed)
+    if json_mode:
+        typer.echo(json.dumps(dataclasses.asdict(plan), indent=2))
+        return
+    render_plan(plan, console)

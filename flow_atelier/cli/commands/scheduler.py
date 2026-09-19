@@ -1,4 +1,4 @@
-"""`atelier scheduler` sub-app commands."""
+"""`atelier schedule daemon` — the scheduler daemon, plus hidden `scheduler` aliases."""
 from __future__ import annotations
 
 import asyncio
@@ -9,15 +9,16 @@ import typer
 
 from flow_atelier.cli._shared import _schedule_store, console
 from flow_atelier.cli.commands.schedule import schedule_list_cmd
-from flow_atelier.cli.main import scheduler_app
+from flow_atelier.cli.main import schedule_app, scheduler_app
 from flow_atelier.services.scheduler import SchedulerDaemon, default_local_zone
 
 
-@scheduler_app.command(
-    "start",
+@schedule_app.command(
+    "daemon",
     help="Run the scheduler daemon in the foreground (Ctrl+C / SIGTERM to stop).",
 )
-def scheduler_start_cmd(
+@scheduler_app.command("start", hidden=True)
+def schedule_daemon_cmd(
     reload_interval: float = typer.Option(
         30.0, "--reload-interval",
         help="Seconds between schedule store rescans."
@@ -55,21 +56,4 @@ def scheduler_start_cmd(
     console.print("[dim]scheduler stopped[/dim]")
 
 
-@scheduler_app.command(
-    "status",
-    help=(
-        "List schedules and their next fire times. "
-        "Reads .atelier/schedules/ directly — does NOT contact a running "
-        "daemon. To confirm the daemon is alive, check the process."
-    ),
-)
-def scheduler_status_cmd(
-    json_mode: bool = typer.Option(
-        False, "--json", help="Emit machine-readable JSON instead of a table."
-    ),
-) -> None:
-    """Compute next fire times from the on-disk store; no daemon contacted.
-
-    :param json_mode: when true, emit machine-readable JSON instead of a table.
-    """
-    schedule_list_cmd(json_mode=json_mode)
+scheduler_app.command("status", hidden=True)(schedule_list_cmd)

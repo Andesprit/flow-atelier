@@ -54,7 +54,7 @@ def test_list_json_includes_registry_and_custom_harnesses(workdir, monkeypatch):
     :param monkeypatch: pytest monkeypatch fixture.
     """
     monkeypatch.setenv("ATELIER_HARNESSES", '{"mine": ["my-agent", "--acp"]}')
-    result = CliRunner().invoke(app, ["harness", "list", "--json"])
+    result = CliRunner().invoke(app, ["list", "harnesses", "--json"])
     assert result.exit_code == 0, result.output
     rows = {row["tool"]: row for row in json.loads(result.output)}
     assert rows["harness:gemini"]["agent"] == "Gemini CLI"
@@ -70,7 +70,7 @@ def test_list_ready_filters_out_missing_clis(workdir):
 
     :param workdir: isolated working directory fixture.
     """
-    result = CliRunner().invoke(app, ["harness", "list", "--ready", "--json"])
+    result = CliRunner().invoke(app, ["list", "harnesses", "--ready", "--json"])
     assert result.exit_code == 0, result.output
     rows = json.loads(result.output)
     assert rows, "expected at least one runnable harness"

@@ -559,6 +559,104 @@ terminal: `atelier schema` for the vocabulary, write the YAML,
 `error`, check again, and run it once `ok` is true. Nothing runs during a
 check — no task, no agent session, no recorded flow.
 
+### Checking a workflow that calls other workflows
+
+A `tool:conduit` step runs another conduit by name, and that child can call
+one of its own. Plain `atelier check` stops at the conduit you named: a child
+is only loaded once the run reaches that step, so a missing or broken child
+surfaces *after* the earlier steps have already done their work.
+`atelier check <name> --recursive` follows those calls first.
+
+Build a two-level workflow in a throwaway directory — a shell step that
+prepares something, then a call to a `summary` conduit that does not exist
+yet:
+
+```bash
+workspace="$(mktemp -d)/composed demo"
+mkdir -p "$workspace/.atelier/conduits/report" && cd "$workspace"
+
+cat > .atelier/conduits/report/conduit.yaml <<'YAML'
+name: report
+description: Prepare a measurement, then hand it to the summary conduit
+tasks:
+  - name: prepare
+    description: record that preparation happened, and measure something
+    task: "echo prepared >> preparation.log && echo 42"
+    tool: tool:bash
+    depends_on: []
+  - name: summarise
+    description: turn the measurement into a summary
+    task: summary
+    tool: tool:conduit
+    depends_on: [prepare]
+    inputs:
+      finding: "{{prepare.output}}"
+YAML
+```
+
+The parent file itself is fine, so the ordinary check passes and the
+recursive one does not:
+
+```bash
+atelier check report              # OK - nothing is wrong with this file
+atelier check report --recursive  # FAIL, exit 1 - `summary` is missing
+```
+
+The failure names the step that makes the call and the name it could not
+resolve:
+
+```
+report [project] — FAIL: report.summarise -> summary — conduit not found
+```
+
+Neither check ran anything: there is no `preparation.log` and no recorded
+flow. Write the child, then gate the run on a passing recursive check:
+
+```bash
+mkdir -p .atelier/conduits/summary
+cat > .atelier/conduits/summary/conduit.yaml <<'YAML'
+name: summary
+description: Write a one-line summary of a finding
+inputs:
+  finding:
+    description: what the caller measured
+tasks:
+  - name: write
+    description: write the summary line
+    task: "echo summary of {{inputs.finding}}"
+    tool: tool:bash
+    depends_on: []
+YAML
+
+atelier check report --recursive \
+  && atelier run report \
+  && flow_id=$(atelier wait latest --timeout 60) \
+  && atelier outputs "$flow_id" --task summarise
+```
+
+The last line prints `summary of 42` — the child's result, read back from
+the parent's saved run — and `preparation.log` holds exactly one line,
+because the two failed checks never executed a step.
+
+What the flag does and does not tell you:
+
+- The report still has one row per conduit you selected, with the same
+  `--json` keys. A nested failure sets that row's `ok` to false and puts the
+  calling chain, the child's file and the real diagnostic into its `error`.
+- `required_inputs` stays the **root's** inputs. `summary` declares `finding`
+  with no default, but the parent supplies it, so `atelier run report` needs
+  no `--input`. Recursive checking follows definitions, not input values.
+- Every `tool:conduit` step is inspected, including one a condition would
+  skip at runtime.
+- A target assembled from a template (`task: "{{inputs.which}}"`) cannot be
+  resolved without running the workflow, so `--recursive` fails and says so.
+  Check that child by its real name instead, or leave the flag off.
+- A conduit that calls itself, or a loop between two conduits, is reported
+  as a cycle instead of recursing — as is a chain deeper than the engine's
+  nesting limit.
+- Passing still only means "these definitions load and their tools are on
+  this machine". It is not a promise that the run will succeed.
+
 ### Waiting for a run from another terminal or agent
 
 A run started in another terminal, by the dashboard, or by the scheduler is
@@ -917,7 +1015,8 @@ flow folder under `.atelier/flows/` in the current working directory.
 atelier init
 atelier create <name> [--description <text>] [--template hello|code-review]
                                                        # scaffold a starter conduit
-atelier check [<conduit>] [--json]                     # validate conduit(s) without running
+atelier check [<conduit>] [--json] [--recursive]        # validate conduit(s) without running
+                                                       # --recursive also checks the conduits they call
 atelier plan <conduit>                                 # print the DAG as ordered waves, run nothing
 atelier show <conduit> [--json]                        # print its definition and inputs, run nothing
 atelier schema                                         # print the conduit.yaml JSON Schema for your editor

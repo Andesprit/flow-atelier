@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 from flow_atelier.schemas.interaction import InteractionPolicy
 
 _TASK_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -19,6 +20,20 @@ CONDUIT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # references and the key `ATELIER_HARNESSES` registers can never disagree over
 # case or spacing.
 HARNESS_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def split_harness_tool(tool: str) -> tuple[str, str | None]:
+    """Split ``harness:<name>[:<model>]`` into the executor key and the model.
+
+    Anything that is not a harness tool comes back unchanged with no model.
+
+    :param tool: a task's ``tool`` string.
+    :returns: ``("harness:<name>", "<model>" or None)``.
+    """
+    if not tool.startswith("harness:"):
+        return tool, None
+    name, sep, model = tool.removeprefix("harness:").partition(":")
+    return f"harness:{name}", (model if sep else None)
 
 
 class ToolType(str, Enum):
@@ -99,7 +114,7 @@ class TaskDefinition(BaseModel):
     @field_validator("tool")
     @classmethod
     def _tool_valid(cls, v: str) -> str:
-        """Accept a built-in tool or any well-formed ``harness:<name>``.
+        """Accept a built-in tool or any well-formed ``harness:<name>[:<model>]``.
 
         ``tool:*`` executors are code, so that side stays closed to the
         :class:`ToolType` catalogue. Harnesses are config — a user can point
@@ -113,11 +128,12 @@ class TaskDefinition(BaseModel):
         """
         if v in BUILTIN_TOOLS:
             return v
-        if v.startswith("harness:") and HARNESS_NAME_RE.match(v.removeprefix("harness:")):
+        if re.fullmatch(HARNESS_TOOL_PATTERN, v):
             return v
         raise ValueError(
-            f"invalid tool {v!r}: expected one of {sorted(BUILTIN_TOOLS)} "
-            "or 'harness:<name>' (lowercase letters, digits and hyphens)"
+            f"invalid tool {v!r}: expected one of {sorted(BUILTIN_TOOLS)}, "
+            "'harness:<name>' (lowercase letters, digits and hyphens) or "
+            "'harness:<name>:<model>' (model as the agent lists it)"
         )
 
     @field_validator("repeat")

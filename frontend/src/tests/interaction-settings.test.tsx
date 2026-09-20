@@ -67,6 +67,15 @@ describe("Interaction settings", () => {
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("accepts the bracketed model IDs advertised by Claude ACP", () => {
+    render(<Editor />);
+    openSettings();
+    const input = screen.getByRole("textbox", { name: "Supervisor harness" });
+    fireEvent.change(input, { target: { value: "harness:claude-code:opus[1m]" } });
+    expect(screen.queryByRole("status")).toBeNull();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("does not submit an unused supervisor but restores it when switching back", () => {
     render(<Editor />);
     openSettings();

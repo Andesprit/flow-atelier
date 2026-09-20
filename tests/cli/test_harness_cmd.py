@@ -54,7 +54,7 @@ def test_list_json_includes_registry_and_custom_harnesses(workdir, monkeypatch):
     :param monkeypatch: pytest monkeypatch fixture.
     """
     monkeypatch.setenv("ATELIER_HARNESSES", '{"mine": ["my-agent", "--acp"]}')
-    result = CliRunner().invoke(app, ["harness", "list", "--json"])
+    result = CliRunner().invoke(app, ["list", "harnesses", "--json"])
     assert result.exit_code == 0, result.output
     rows = {row["tool"]: row for row in json.loads(result.output)}
     assert rows["harness:gemini"]["agent"] == "Gemini CLI"
@@ -70,7 +70,7 @@ def test_list_ready_filters_out_missing_clis(workdir):
 
     :param workdir: isolated working directory fixture.
     """
-    result = CliRunner().invoke(app, ["harness", "list", "--ready", "--json"])
+    result = CliRunner().invoke(app, ["list", "harnesses", "--ready", "--json"])
     assert result.exit_code == 0, result.output
     rows = json.loads(result.output)
     assert rows, "expected at least one runnable harness"
@@ -90,6 +90,27 @@ def test_check_reports_a_reachable_agent(workdir):
     assert result.exit_code == 0, result.output
     assert "ok" in result.output
     assert "fake-acp-agent" in result.output
+
+
+def test_check_lists_models_and_how_to_pick_one(workdir):
+    """A reachable agent's models are listed with the `harness:<name>:<model>` hint.
+
+    :param workdir: isolated working directory fixture.
+    """
+    script = json.dumps(
+        {
+            "turns": [],
+            "models": {
+                "current": "m1",
+                "available": [{"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"}],
+            },
+        }
+    )
+    result = CliRunner().invoke(app, ["harness", "check", "--cmd", _fake_cmd(script)])
+    assert result.exit_code == 0, result.output
+    assert "models: m1, m2 (default m1)" in result.output
+    # An ad-hoc --cmd has no harness name to put a model suffix on.
+    assert ":<model>" not in result.output
 
 
 def test_check_tells_the_user_to_install_a_missing_agent(workdir):

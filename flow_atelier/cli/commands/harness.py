@@ -1,4 +1,4 @@
-"""`atelier harness` sub-app — list, check and refresh ACP agents.
+"""`atelier harness` sub-app and `atelier list harnesses` — check, refresh and list ACP agents.
 
 Nothing here installs an agent or logs into one; that stays with the user
 and the agent's own CLI. These commands only report what is available and
@@ -16,7 +16,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from flow_atelier.cli._shared import console
-from flow_atelier.cli.main import harness_app
+from flow_atelier.cli.main import harness_app, list_app
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.services.executor.acp_registry import (
     LEGACY_HARNESS_ALIASES,
@@ -31,7 +31,8 @@ from flow_atelier.services.executor.harness import (
 )
 
 
-@harness_app.command("list")
+@list_app.command("harnesses")
+@harness_app.command("list", hidden=True)
 def harness_list_cmd(
     ready_only: bool = typer.Option(
         False, "--ready", help="Only show harnesses that can run on this machine."
@@ -122,6 +123,13 @@ def _render_probe(tool: str, launch: list[str], result) -> None:
             console.print(
                 f"  [dim]modes:[/dim] {escape(', '.join(result.modes))}{escape(picked)}"
             )
+        if result.models:
+            current = f" (default {result.current_model})" if result.current_model else ""
+            console.print(
+                f"  [dim]models:[/dim] {escape(', '.join(result.models))}{escape(current)}"
+            )
+            if tool.startswith("harness:"):
+                console.print(f"  [dim]pick one with[/dim] tool: {escape(tool)}:<model>")
         if result.auth_methods:
             console.print(
                 f"  [dim]auth methods advertised:[/dim] "
@@ -198,7 +206,7 @@ def harness_check_cmd(
         if executor is None:
             console.print(
                 f"[red]unknown harness:[/red] {escape(tool)} "
-                "— try 'atelier harness list'"
+                "— try 'atelier list harnesses'"
             )
             raise typer.Exit(code=1)
         label = tool

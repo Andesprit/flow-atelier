@@ -95,6 +95,44 @@ async def test_run_single_task_drives_a_settings_declared_harness(
     assert "custom agent ok" in (out.logs[-1].stdout or "")
 
 
+async def test_run_single_task_pins_a_model_through_the_tool_name(
+    tmp_path, _isolate_global_atelier_dir
+):
+    """`harness:<name>:<model>` reaches the ACP session as a model selection.
+
+    :param tmp_path: pytest temp directory fixture.
+    :param _isolate_global_atelier_dir: isolated global atelier dir fixture.
+    """
+    script = json.dumps(
+        {
+            "models": {
+                "current": "m1",
+                "available": [{"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"}],
+            },
+            "turns": [{"chunks": ["on m2"], "stop": "end_turn"}],
+        }
+    )
+    at = Atelier(
+        settings=AtelierSettings(
+            atelier_dir=tmp_path / ".atelier",
+            global_atelier_dir=_isolate_global_atelier_dir,
+            harnesses={"fake": [sys.executable, str(FAKE_AGENT), "--script", script]},
+        ),
+    )
+    out = await at.run_single_task(
+        RunTaskInput(
+            name="ask",
+            description="pinned model",
+            task="hello",
+            tool="harness:fake:m2",
+            run_path=str(tmp_path),
+        )
+    )
+    assert out.logs[-1].exit_code == 0, out.logs[-1].stderr
+    assert "[config_set:model=m2]" in (out.logs[-1].stdout or "")
+    assert out.logs[-1].tool == "harness:fake:m2"
+
+
 async def test_run_single_task_failure_returns_non_zero_exit(atelier, tmp_path):
     """Verify run_single_task returns a non-zero exit code on failure.
 

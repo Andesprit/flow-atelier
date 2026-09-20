@@ -347,18 +347,30 @@ async def test_patch_still_accepts_the_string_shorthand(client):
     assert resp.json()["inputs"]["branch"]["description"] == "Branch to deploy"
 
 
-async def test_interaction_policy_round_trip_patch_and_remove(client):
+@pytest.mark.parametrize("tool", [
+    "harness:codex",
+    "harness:codex:gpt-5.1-codex",
+    "harness:claude-code:opus[1m]",
+    "harness:opencode:anthropic/claude-sonnet-4-5",
+])
+async def test_interaction_policy_round_trip_patch_and_remove(client, tool):
     """Keep policies across saves, validate replacements, and allow explicit removal."""
     policy = {
         "questions": "hybrid", "permissions": "human",
-        "supervisor": {"tool": "harness:codex", "instructions": "Keep the existing API"},
+        "supervisor": {"tool": tool, "instructions": "Keep the existing API"},
     }
     created = await client.post("/conduits", json={**_payload(), "interaction": policy})
     assert created.status_code == 201, created.text
     got = (await client.get("/conduits/release_notes")).json()
+    assert got["interaction"]["supervisor"]["tool"] == tool
     assert got["interaction"]["supervisor"]["instructions"] == "Keep the existing API"
     saved = await client.patch("/conduits/release_notes", json={"description": "Updated"})
     assert saved.json()["interaction"] == got["interaction"]
+    policy["supervisor"]["tool"] = "harness:codex:updated-model"
+    updated = await client.patch("/conduits/release_notes", json={"interaction": policy})
+    assert updated.status_code == 200, updated.text
+    fetched = (await client.get("/conduits/release_notes")).json()
+    assert fetched["interaction"]["supervisor"]["tool"] == "harness:codex:updated-model"
     invalid = await client.patch("/conduits/release_notes", json={
         "interaction": {"questions": "supervisor"},
     })

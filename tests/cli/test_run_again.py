@@ -91,5 +91,5 @@ def test_run_again_conflicts_with_resume(workdir):
     result = CliRunner().invoke(
         app, ["run", "--resume", "X", "--again", "Y"]
     )
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "mutually exclusive" in result.stdout

@@ -133,6 +133,9 @@ class ProbeResult:
         — logging in is the user's job, done with the agent's own CLI.
     :param modes: session mode ids the agent offers.
     :param permissive_mode: the mode a real run would switch to, if any.
+    :param models: model ids the agent offers, usable as
+        ``harness:<name>:<model>``.
+    :param current_model: the model the agent starts a session on.
     :param stderr: tail of the agent's stderr, the usual place a failing
         agent explains itself.
     """
@@ -145,7 +148,56 @@ class ProbeResult:
     auth_methods: list[str] = field(default_factory=list)
     modes: list[str] = field(default_factory=list)
     permissive_mode: str = ""
+    models: list[str] = field(default_factory=list)
+    current_model: str = ""
     stderr: str = ""
+
+
+@dataclass
+class _ModelChoice:
+    """How a session lets the client pick a model, read off ``new_session``.
+
+    :param available: model ids the agent offers.
+    :param current: the model the session opened on.
+    :param config_id: the ``configOptions`` entry to set, or ``None`` when the
+        agent only speaks the older ``session/set_model``.
+    """
+
+    available: list[str]
+    current: str
+    config_id: str | None
+
+
+def _model_choice(sess) -> _ModelChoice | None:
+    """Find the model selector a ``new_session`` response advertises.
+
+    The stable path is a ``select`` config option in the ``model`` category
+    (codex-acp and claude-agent-acp both use the id ``model``). The older
+    ``models`` state with ``session/set_model`` is the fallback.
+
+    :param sess: the ``NewSessionResponse``.
+    :returns: the selector, or ``None`` when the agent offers no model choice.
+    """
+    for option in getattr(sess, "config_options", None) or []:
+        if getattr(option, "type", None) != "select":
+            continue
+        if option.category != "model" and option.id != "model":
+            continue
+        available: list[str] = []
+        for entry in option.options:
+            # A grouped select nests its values one level down.
+            nested = getattr(entry, "options", None)
+            if nested:
+                available.extend(o.value for o in nested)
+            else:
+                available.append(entry.value)
+        return _ModelChoice(available, option.current_value, option.id)
+    models = getattr(sess, "models", None)
+    if models is not None:
+        return _ModelChoice(
+            [m.model_id for m in models.available_models], models.current_model_id, None
+        )
+    return None
 
 
 class _ProbeClient:
@@ -776,6 +828,8 @@ class AcpHarnessExecutor(ExecutorBase):
     :param done_marker: substring that terminates an interactive loop
     :param env: extra environment variables for the agent process, layered
         over the inherited environment
+    :param model: model id to select on every session, or ``None`` for the
+        agent's default
     """
 
     def __init__(
@@ -784,6 +838,7 @@ class AcpHarnessExecutor(ExecutorBase):
         sink: PromptSink | None = None,
         done_marker: str | None = None,
         env: dict[str, str] | None = None,
+        model: str | None = None,
     ) -> None:
         """Initialize the harness executor.
 
@@ -793,6 +848,7 @@ class AcpHarnessExecutor(ExecutorBase):
         :param done_marker: optional done-token override; defaults to
             :data:`DEFAULT_DONE_MARKER`.
         :param env: optional extra environment variables for the agent.
+        :param model: optional model id to select once a session is open.
         """
         if not launch_cmd:
             raise ValueError("launch_cmd must not be empty")
@@ -800,6 +856,21 @@ class AcpHarnessExecutor(ExecutorBase):
         self.sink = sink if sink is not None else TerminalPromptSink()
         self.done_marker = done_marker or DEFAULT_DONE_MARKER
         self.env = dict(env or {})
+        self.model = model
+
+    def with_model(self, model: str) -> AcpHarnessExecutor:
+        """Return a copy of this executor pinned to ``model``.
+
+        :param model: model id as the agent lists it.
+        :returns: a new executor sharing the sink, marker and environment.
+        """
+        return AcpHarnessExecutor(
+            launch_cmd=self.launch_cmd,
+            sink=self.sink,
+            done_marker=self.done_marker,
+            env=self.env,
+            model=model,
+        )
 
     def _spawn_env(self) -> dict[str, str]:
         """Build the environment the agent subprocess runs with.
@@ -925,6 +996,10 @@ class AcpHarnessExecutor(ExecutorBase):
                 partial.detail = "reachable and ACP-compatible"
                 partial.modes = [m.id for m in (modes.available_modes if modes else [])]
                 partial.permissive_mode = _pick_permissive_mode(modes) or ""
+                choice = _model_choice(sess)
+                if choice is not None:
+                    partial.models = choice.available
+                    partial.current_model = choice.current
                 return partial
             finally:
                 if drain is not None:
@@ -1063,6 +1138,7 @@ class AcpHarnessExecutor(ExecutorBase):
                     await self._maybe_switch_to_permissive_mode(conn, sess)
                 else:
                     await self._ensure_prompting_mode(conn, sess)
+                await self._apply_model(conn, sess)
 
                 if client.supervisor_run:
                     # Startup/mode announcements are not the decision response.
@@ -1114,6 +1190,39 @@ class AcpHarnessExecutor(ExecutorBase):
             await conn.set_session_mode(mode_id=picked, session_id=sess.session_id)
         except Exception as exc:  # noqa: BLE001
             logger.debug("set_session_mode(%s) failed: %s", picked, exc)
+
+    async def _apply_model(self, conn, sess) -> None:
+        """Select :attr:`model` on the session, or fail before the first prompt.
+
+        Unlike the mode switch this is not best-effort: the user named a
+        model, so running on a different one would be a silent substitution.
+
+        :param conn: the ACP connection.
+        :param sess: the new-session response.
+        :raises RuntimeError: when the agent offers no model choice or does
+            not list :attr:`model`.
+        """
+        if self.model is None:
+            return
+        choice = _model_choice(sess)
+        if choice is None:
+            raise RuntimeError(
+                f"this harness does not support model selection; drop ':{self.model}' "
+                "from the tool name"
+            )
+        if self.model not in choice.available:
+            raise RuntimeError(
+                f"model {self.model!r} is not offered by this harness; "
+                f"available: {', '.join(choice.available)}"
+            )
+        if self.model == choice.current:
+            return
+        if choice.config_id is not None:
+            await conn.set_config_option(
+                config_id=choice.config_id, session_id=sess.session_id, value=self.model
+            )
+        else:
+            await conn.set_session_model(model_id=self.model, session_id=sess.session_id)
 
     @staticmethod
     async def _ensure_prompting_mode(conn, sess) -> None:

@@ -85,3 +85,28 @@ def test_check_fails_when_harness_binary_missing(workdir, monkeypatch):
     assert result.exit_code == 1
     assert "FAIL" in result.stdout
     assert "build" in result.stdout
+
+
+def test_check_json_reports_each_conduit(workdir):
+    """`--json` emits one record per conduit and still exits 1 on any failure."""
+    import json
+
+    _write_conduit(
+        workdir,
+        "good",
+        "name: good\ndescription: d\ninputs:\n  who: w\n"
+        "tasks:\n  - name: a\n    description: a\n    task: echo {{inputs.who}}\n    tool: tool:bash\n",
+    )
+    _write_conduit(
+        workdir,
+        "broken",
+        "name: broken\ndescription: d\ntasks:\n"
+        "  - name: a\n    description: a\n    task: x\n    tool: tool:bash\n    depends_on: [a]\n",
+    )
+    result = CliRunner().invoke(app, ["check", "--json"])
+    assert result.exit_code == 1
+    rows = {row["name"]: row for row in json.loads(result.stdout)}
+    assert rows["good"]["ok"] is True
+    assert rows["good"]["required_inputs"] == ["who"]
+    assert rows["broken"]["ok"] is False
+    assert rows["broken"]["error"]

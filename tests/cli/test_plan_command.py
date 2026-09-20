@@ -99,3 +99,22 @@ def test_plan_flags_gate(workdir):
     assert "gate" in result.stdout
     assert "prunes" in result.stdout
     assert "work" in result.stdout
+
+
+def test_plan_json_emits_waves(workdir):
+    """`--json` emits the plan as one JSON document with its waves and sinks."""
+    import json
+
+    _write_conduit(
+        workdir,
+        "pair",
+        "name: pair\ndescription: d\ntasks:\n"
+        "  - name: a\n    description: d\n    task: x\n    tool: tool:bash\n    depends_on: []\n"
+        "  - name: b\n    description: d\n    task: x\n    tool: tool:bash\n    depends_on: [a]\n",
+    )
+    result = CliRunner().invoke(app, ["plan", "pair", "--json"])
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["conduit_name"] == "pair"
+    assert [[t["name"] for t in wave] for wave in payload["waves"]] == [["a"], ["b"]]
+    assert payload["sinks"] == ["b"]

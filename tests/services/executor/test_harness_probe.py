@@ -50,6 +50,21 @@ class TestReachableAgent:
         # Naming the mode a real run would pick makes the check predictive.
         assert result.permissive_mode == "bypassPermissions"
 
+    async def test_models_are_reported(self) -> None:
+        """The probe lists the models a session offers and the default."""
+        result = await _agent(
+            {
+                "turns": [],
+                "models": {
+                    "current": "m1",
+                    "available": [{"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"}],
+                },
+            }
+        ).probe()
+        assert result.ok
+        assert result.models == ["m1", "m2"]
+        assert result.current_model == "m1"
+
     async def test_advertised_auth_methods_are_reported_not_used(self) -> None:
         """Auth methods are surfaced as information; the probe never logs in."""
         result = await _agent(

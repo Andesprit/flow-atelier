@@ -61,22 +61,22 @@ function initConduit(conduits: Conduit[]): Conduit {
 
 export function Designer() {
   const { conduits: allConduits, refresh } = useConduits();
-  const [conduit, setConduitRaw, undo, redo] = useUndoState<Conduit>(() => initConduit(allConduits));
+  const [conduit, setConduit, undo, redo] = useUndoState<Conduit>(() => initConduit(allConduits));
   const [saving, setSaving] = useState(false);
 
-  const setConduit = useCallback(
-    (value: Conduit | ((prev: Conduit) => Conduit)) => {
-      setConduitRaw((prev) => {
-        const next =
-          typeof value === "function"
-            ? (value as (p: Conduit) => Conduit)(prev)
-            : value;
-        saveDraftConduit(next);
-        return next;
-      });
-    },
-    [setConduitRaw],
-  );
+  // Single place the browser draft is written. Persisting inside the setter
+  // instead missed Undo and Redo, which change the canvas without going
+  // through it — so reloading resurrected an edit the user had visibly undone.
+  // Skipping the mount pass keeps "opened the designer and touched nothing"
+  // from leaving a draft behind.
+  const persisted = useRef(false);
+  useEffect(() => {
+    if (!persisted.current) {
+      persisted.current = true;
+      return;
+    }
+    saveDraftConduit(conduit);
+  }, [conduit]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

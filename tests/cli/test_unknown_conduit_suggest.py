@@ -37,11 +37,13 @@ def workdir(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("command", ["run", "check", "plan"])
 def test_typo_suggests_close_conduit(workdir, command):
-    """`<command> helo` exits 1 and points at `hello`."""
+    """`<command> helo` exits 1 and points at `hello`, on stdout as before."""
     result = CliRunner().invoke(app, [command, "helo"])
     assert result.exit_code == 1
-    assert "unknown conduit" in result.output
-    assert "did you mean: hello?" in result.output
+    # These commands print prose, so the guidance stays on stdout even though
+    # `show` now asks the same helper to write to stderr.
+    assert "unknown conduit" in result.stdout
+    assert "did you mean: hello?" in result.stdout
     assert "Traceback" not in result.output
 
 
@@ -49,5 +51,5 @@ def test_no_close_match_prints_no_suggestion(workdir):
     """A name unlike any conduit keeps the old error and adds nothing."""
     result = CliRunner().invoke(app, ["run", "zzzz"])
     assert result.exit_code == 1
-    assert "unknown conduit" in result.output
+    assert "unknown conduit" in result.stdout
     assert "did you mean" not in result.output

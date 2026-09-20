@@ -145,9 +145,12 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     run,
     schedule,
     scheduler,
+    schema,
     self_update,
     serve,
+    show,
     status,
     stop,
     timing,
+    wait,
 )

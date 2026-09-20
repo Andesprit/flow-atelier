@@ -126,6 +126,16 @@ describe("wire round trip", () => {
     expect(fromWireTask(task(["a", "b"])).conditions).toBeUndefined();
   });
 
+  it("drops the canvas position the backend never stored", () => {
+    // The API rejects unknown task fields now, so a leftover `position` in
+    // the payload would 422 every save from the designer.
+    const model: ConduitTask = { ...task(["a"]), position: { x: 12, y: 34 } };
+    const wire = toWireTask(model);
+
+    expect("position" in wire).toBe(false);
+    expect(model.position).toEqual({ x: 12, y: 34 });
+  });
+
   it("collapses a source task listed twice instead of duplicating it", () => {
     // `conditions` is keyed by source task, so both entries cannot survive.
     // Keeping the first is what stops the round trip from emitting the

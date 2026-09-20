@@ -3,6 +3,7 @@ import re
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from flow_atelier.schemas.conduit import Conduit, ToolType
 from flow_atelier.schemas.flow import FLOW_ID_RE, new_flow_id, parse_flow_id
@@ -614,3 +615,120 @@ def test_progress_roundtrip():
     as_json = p.model_dump_json()
     restored = Progress.model_validate_json(as_json)
     assert restored.tasks["a"].status == TaskStatus.completed
+
+
+# --- unknown configuration fields -------------------------------------------
+# Pydantic's default is to discard an extra key, which turns a misspelled
+# control into a silent change of meaning: `depend_on:` becomes a task with no
+# dependencies that validates, plans and runs as if the author wanted that.
+
+
+def _two_tasks(second: dict) -> dict:
+    """Build a conduit whose second task body is ``second``.
+
+    :param second: the task body to place after ``prepare``.
+    :returns: a raw conduit payload ready for ``model_validate``.
+    """
+    return {
+        "name": "typo_demo",
+        "description": "d",
+        "tasks": [
+            {
+                "name": "prepare",
+                "description": "first",
+                "task": "echo one",
+                "tool": "tool:bash",
+            },
+            second,
+        ],
+    }
+
+
+GOOD_SECOND = {
+    "name": "consume",
+    "description": "second",
+    "task": "echo two",
+    "tool": "tool:bash",
+    "depends_on": ["prepare"],
+}
+
+
+@pytest.mark.parametrize(
+    ("document", "loc"),
+    [
+        # A typo on the conduit root.
+        (
+            {**_two_tasks(GOOD_SECOND), "max_concurreny": 5},
+            ("max_concurreny",),
+        ),
+        # A typo in a normalized task body...
+        (
+            _two_tasks({**GOOD_SECOND, "depends_on": [], "depend_on": ["prepare"]}),
+            ("tasks", 1, "depend_on"),
+        ),
+        # ...and the same typo in the wrapped form the YAML also accepts.
+        (
+            _two_tasks({"consume": {
+                "description": "second",
+                "task": "echo two",
+                "tool": "tool:bash",
+                "depend_on": ["prepare"],
+            }}),
+            ("tasks", 1, "depend_on"),
+        ),
+        # A typo beside the correctly spelled field: the real `timeout` cannot
+        # cover for the misspelling.
+        (
+            _two_tasks({**GOOD_SECOND, "timeout": 30, "timout": 60}),
+            ("tasks", 1, "timout"),
+        ),
+        # A typo inside an object-form input specification.
+        (
+            {
+                **_two_tasks(GOOD_SECOND),
+                "inputs": {"topic": {"description": "t", "defaut": "x"}},
+            },
+            ("inputs", "topic", "defaut"),
+        ),
+    ],
+)
+def test_unknown_configuration_fields_are_rejected_where_they_are(document, loc):
+    """A misspelled control fails to load, and the error names it."""
+    with pytest.raises(ValidationError) as ei:
+        Conduit.model_validate(document)
+
+    locations = [e["loc"] for e in ei.value.errors()]
+    assert loc in locations, locations
+
+
+def test_the_repaired_spelling_is_accepted_and_actually_connects_the_tasks():
+    """Fixing only the spelling turns the dropped key into a real edge."""
+    conduit = Conduit.model_validate(_two_tasks(GOOD_SECOND))
+    assert conduit.tasks[1].depends_on == ["prepare"]
+
+
+def test_author_supplied_map_keys_stay_open():
+    """Input names and a task's forwarded bindings are data, not fields."""
+    conduit = Conduit.model_validate({
+        "name": "open_maps",
+        "description": "d",
+        # Keys that look exactly like configuration names, because a caller is
+        # free to name an input anything.
+        "inputs": {"timeout": "how long", "depends_on": "a red herring"},
+        "tasks": [{
+            "name": "call",
+            "description": "d",
+            "task": "child",
+            "tool": "tool:conduit",
+            "inputs": {"retries": "7", "nested": {"any": ["shape"]}},
+        }],
+    })
+    assert set(conduit.inputs) == {"timeout", "depends_on"}
+    assert conduit.tasks[0].inputs == {"retries": "7", "nested": {"any": ["shape"]}}
+
+
+def test_a_conduit_still_round_trips_through_its_own_dump():
+    """`model_dump` output must reload — including the internal `while_` key."""
+    original = Conduit.model_validate(_task_with_while())
+    assert Conduit.model_validate(original.model_dump()) == original
+    assert Conduit.model_validate(original.model_dump(by_alias=True)) == original

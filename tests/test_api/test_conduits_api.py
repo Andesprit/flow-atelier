@@ -378,3 +378,119 @@ async def test_interaction_policy_round_trip_patch_and_remove(client, tool):
     removed = await client.patch("/conduits/release_notes", json={"interaction": None})
     assert removed.status_code == 200, removed.text
     assert (await client.get("/conduits/release_notes")).json()["interaction"] is None
+
+
+# ---------------------------------------------------------------- unknown fields
+
+
+@pytest.mark.parametrize(
+    ("body", "field"),
+    [
+        ({"max_concurreny": 5}, "max_concurreny"),
+        (
+            {"tasks": [{
+                "name": "echo", "description": "echo", "task": "echo hi",
+                "tool": "tool:bash", "depend_on": [],
+            }]},
+            "depend_on",
+        ),
+        (
+            {"inputs": {"topic": {"description": "t", "defaut": "x"}}},
+            "defaut",
+        ),
+    ],
+)
+async def test_create_rejects_an_unknown_field_instead_of_dropping_it(
+    client, tmp_path, body, field
+):
+    """The designer and any agent posting YAML share the loader's vocabulary.
+
+    :param client: httpx client fixture.
+    :param tmp_path: pytest temp directory fixture.
+    :param body: the payload override carrying the misspelled field.
+    :param field: the field name the response has to point at.
+    """
+    resp = await client.post("/conduits", json={**_payload(), **body})
+
+    assert resp.status_code == 422
+    assert field in resp.text
+    assert not (tmp_path / ".atelier/conduits/release_notes").exists()
+
+
+@pytest.mark.parametrize(
+    ("body", "field"),
+    [
+        ({"max_concurreny": 5}, "max_concurreny"),
+        (
+            {"tasks": [{
+                "name": "echo", "description": "echo", "task": "echo hi",
+                "tool": "tool:bash", "depend_on": [],
+            }]},
+            "depend_on",
+        ),
+        (
+            {"inputs": {"topic": {"description": "t", "defaut": "x"}}},
+            "defaut",
+        ),
+    ],
+)
+async def test_update_rejects_an_unknown_field_and_leaves_the_file_alone(
+    client, tmp_path, body, field
+):
+    """A rejected edit must not be a half-applied one.
+
+    :param client: httpx client fixture.
+    :param tmp_path: pytest temp directory fixture.
+    :param body: the patch carrying the misspelled field.
+    :param field: the field name the response has to point at.
+    """
+    await client.post("/conduits", json=_payload())
+    on_disk = tmp_path / ".atelier/conduits/release_notes/conduit.yaml"
+    before = on_disk.read_bytes()
+
+    resp = await client.patch("/conduits/release_notes", json=body)
+
+    assert resp.status_code == 422
+    assert field in resp.text
+    assert on_disk.read_bytes() == before
+
+
+async def test_a_full_definition_still_round_trips_through_create_and_patch(client):
+    """Loops, defaults and a policy survive POST, GET and PATCH unchanged.
+
+    :param client: httpx client fixture.
+    """
+    payload = {
+        **_payload(),
+        "inputs": {
+            "topic": {"description": "no default"},
+            "tone": {"description": "has one", "default": ""},
+        },
+        "interaction": {"questions": "human", "permissions": "approve_all"},
+        "tasks": [{
+            "name": "loop",
+            "description": "keep going",
+            "task": "echo hi",
+            "tool": "tool:bash",
+            "repeat": 3,
+            "while": "output.match(again)",
+            "on_exhaust": "fail",
+            "inputs": {"forwarded": "{{inputs.topic}}"},
+        }],
+    }
+    assert (await client.post("/conduits", json=payload)).status_code == 201
+
+    fetched = (await client.get("/conduits/release_notes")).json()
+    assert fetched["tasks"][0]["while"] == "output.match(again)"
+    assert fetched["inputs"]["tone"] == {"description": "has one", "default": ""}
+    assert fetched["run_path"]
+
+    # What GET returned goes straight back out, response-only field included.
+    assert (await client.post(
+        "/conduits", json={**fetched, "name": "copy"}
+    )).status_code == 201
+    patched = await client.patch(
+        "/conduits/release_notes", json={"tasks": fetched["tasks"]}
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["tasks"][0]["while"] == "output.match(again)"

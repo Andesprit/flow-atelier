@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,7 @@ class FakeAgent:
             so connection-check reporting can be exercised.
         :param fail_session: when set, new_session raises with this message —
             what a logged-out agent does.
+        :param record_path: prompt log file, or an existing directory for per-process logs.
         """
         self._turns = list(turns)
         self._modes_spec = modes
@@ -203,7 +205,10 @@ class FakeAgent:
         :param kwargs: additional keyword arguments accepted by the protocol.
         """
         if self._record_path:
-            with Path(self._record_path).open("a") as file:
+            record = Path(self._record_path)
+            if record.is_dir():
+                record /= f"{os.getpid()}.jsonl"
+            with record.open("a", encoding="utf-8") as file:
                 file.write(json.dumps([p.model_dump(mode="json") for p in prompt]) + "\n")
         if not self._turns:
             return PromptResponse(stop_reason="end_turn")

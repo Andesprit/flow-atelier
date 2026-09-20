@@ -51,8 +51,11 @@ async def run_flow(tmp_path, policy, turns, *, decision=None, replies="", config
                 "tool": "harness:test-supervisor", **(config or {}),
             }
     (directory / "conduit.yaml").write_text(yaml.safe_dump(conduit))
-    supervisor_record = tmp_path / "supervisor-prompts.jsonl"
-    worker_record = tmp_path / "worker-prompts.jsonl"
+    # Separate process logs: concurrent append to one file can lose writes on Windows.
+    supervisor_record = tmp_path / "supervisor-prompts"
+    worker_record = tmp_path / "worker-prompts"
+    supervisor_record.mkdir()
+    worker_record.mkdir()
     def command(script):
         return [sys.executable, str(AGENT), "--script", json.dumps(script)]
     settings = {
@@ -84,8 +87,12 @@ async def run_flow(tmp_path, policy, turns, *, decision=None, replies="", config
             await proc.wait()
     logs = [json.loads(line) for file in (tmp_path / ".atelier/flows").glob("*/logs.jsonl")
             for line in file.read_text().splitlines()]
-    supervisor_prompts = supervisor_record.read_text() if supervisor_record.exists() else ""
-    worker_prompts = worker_record.read_text() if worker_record.exists() else ""
+    supervisor_prompts = "".join(
+        p.read_text(encoding="utf-8") for p in sorted(supervisor_record.glob("*.jsonl"))
+    )
+    worker_prompts = "".join(
+        p.read_text(encoding="utf-8") for p in sorted(worker_record.glob("*.jsonl"))
+    )
     return proc.returncode, out.decode() + err.decode(), logs, supervisor_prompts, worker_prompts
 
 
@@ -136,6 +143,8 @@ async def test_supervisor_receives_complete_history_and_answers_without_human(tm
     )
     assert code == 0, output
     assert len(logs) == 2
+    for log in logs:
+        assert sum(e.get("source") == "supervisor" for e in log["session"]) == 2
     assert "Use the existing convention" in worker
     prompts = [json.loads(line)[0]["text"] for line in supervisor.splitlines()]
     assert len(prompts) == 4
@@ -143,8 +152,6 @@ async def test_supervisor_receives_complete_history_and_answers_without_human(tm
     second = [p for p in prompts if "Second question?" in p]
     assert len(second) == 2
     assert all("First question?" in p and "Use the existing convention" in p for p in second)
-    for log in logs:
-        assert sum(e.get("source") == "supervisor" for e in log["session"]) == 2
 
 
 @pytest.mark.parametrize("model", ["m2", "unavailable"])

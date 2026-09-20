@@ -14,6 +14,7 @@ from rich.markup import escape
 
 from flow_atelier.cli._shared import (
     _exit_unknown_conduit,
+    _parse_input_files,
     _parse_inputs,
     _resolve_flow_id,
     console,
@@ -151,7 +152,8 @@ def _reject_unknown_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
     "run",
     help=(
         "Start a new flow for the named conduit. "
-        "Use --input key=value to pass inputs. "
+        "Use --input key=value to pass inputs, or --input-file key=path to "
+        "pass a text file's contents as one input. "
         "Use --resume <flow_id> to pick up a failed or crashed run. "
         "Use --again <flow_id> to start a fresh run reusing a past flow's inputs."
     ),
@@ -165,6 +167,14 @@ def run_cmd(
         "--input",
         "-i",
         help="key=value input (repeatable).",
+    ),
+    input_files_raw: list[str] = typer.Option(
+        [],
+        "--input-file",
+        help=(
+            "key=path input read from a UTF-8 text file (repeatable). "
+            "The loaded text is saved with the run, so --again replays it."
+        ),
     ),
     show_steps: bool = typer.Option(
         True,
@@ -189,6 +199,8 @@ def run_cmd(
 
     :param conduit_name: name of the conduit to execute.
     :param inputs_raw: list of ``key=value`` input strings collected from ``--input``.
+    :param input_files_raw: list of ``key=path`` strings collected from
+        ``--input-file``; each file's text becomes that key's value.
     :param show_steps: when true, stream intermediate thinking and tool activity live.
     :param resume_from: flow id (or unique prefix) of a failed run to resume.
     :param again_from: flow id (or unique prefix) of a past run to re-run from
@@ -198,6 +210,18 @@ def run_cmd(
 
     if resume_from is not None and again_from is not None:
         console.print("[red]error:[/red] --resume and --again are mutually exclusive")
+        raise typer.Exit(code=1)
+
+    # Resume continues the flow's saved inputs; there is nothing for a new
+    # value to change. Refuse rather than read the file and ignore it.
+    if resume_from is not None and input_files_raw:
+        console.print(
+            "[red]error:[/red] --resume and --input-file are mutually exclusive"
+        )
+        console.print(
+            "[dim]→ --resume reuses the flow's saved inputs;"
+            " use --again <flow_id> to change one[/dim]"
+        )
         raise typer.Exit(code=1)
 
     # --resume path: resolve the old flow, skip input prompts
@@ -298,6 +322,7 @@ def run_cmd(
             console.print(f"[dim]→ fix conduits/{again_conduit}/conduit.yaml[/dim]")
             raise typer.Exit(code=1)
         overrides = _parse_inputs(inputs_raw)
+        overrides.update(_parse_input_files(input_files_raw, overrides))
         if again_def is not None:
             _reject_unknown_inputs(again_def, overrides)
         collected_events = []
@@ -364,6 +389,7 @@ def run_cmd(
         raise typer.Exit(code=1)
 
     inputs = _parse_inputs(inputs_raw)
+    inputs.update(_parse_input_files(input_files_raw, inputs))
 
     try:
         conduit = atelier.store.read_conduit(conduit_name)

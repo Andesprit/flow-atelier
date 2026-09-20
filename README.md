@@ -393,6 +393,48 @@ that. `show` reads whichever copy would run even when that copy is
 broken, so you can see the mistake; `--json` refuses to guess and exits
 non-zero instead.
 
+### Passing a file as an input
+
+A brief, a spec, a failing build log — the material a workflow needs is
+usually already a file. `--input-file key=path` hands that file's text to
+one input, so you never paste a document into the command line:
+
+```bash
+atelier init
+printf 'Ada' > name.txt
+atelier run hello --input-file name=name.txt
+atelier outputs latest
+```
+
+`--input-file` reads the file as UTF-8 and passes the text through
+unchanged — every character, every trailing newline, no stripping, no
+YAML parsing, no template expansion of anything inside it. Relative paths
+are resolved from wherever you typed the command. Both flags mix freely,
+so the long thing comes from a file and the short settings stay literal:
+
+```bash
+atelier run my-review --input-file brief=SPEC.md --input tone=blunt
+```
+
+Use `atelier show <conduit> --json` to see which keys a conduit accepts.
+A key can be given by `--input` **or** `--input-file`, never both: a
+repeated key is a usage error rather than one value silently winning. A
+missing file, a directory, non-UTF-8 bytes or a malformed pair fails
+before the run starts, so nothing is recorded. `-` is rejected too —
+stdin stays free for the questions a `tool:hitl` step asks you.
+
+The loaded text is saved with the run like any other input, not a
+reference to the file. `atelier run --again <flow_id>` therefore replays
+the text the run actually used even if you have since edited or deleted
+the source file; pass `--input-file` again to feed it a new version.
+`--resume` is refused with `--input-file`, because resuming continues a
+flow's saved inputs rather than starting a new run.
+
+File contents are ordinary input values: a conduit that drops an input
+into a `tool:bash` command interpolates it the same way it interpolates
+anything else. `--input-file` is a convenience for passing documents, not
+a sandbox and not secret storage.
+
 ## Examples
 
 The two conduits below are **illustrative, not prescriptive**. A
@@ -531,8 +573,9 @@ numbered blocks. Only valid on a looping task (`repeat > 1`).
 
 A missing `{{inputs.x}}` fails the task immediately; a reference to a
 task that was skipped or hasn't completed skips the referencing task.
-`atelier run` rejects an `--input` key the conduit neither declares nor
-references, so a mistyped key fails before the run starts.
+`atelier run` rejects an `--input` or `--input-file` key the conduit
+neither declares nor references, so a mistyped key fails before the run
+starts.
 
 ### Conditional dependencies
 
@@ -722,7 +765,9 @@ atelier show <conduit> [--json]                        # print its definition an
 
 # <flow_id> below accepts a unique prefix, or 'latest' for the most recently started flow
 # running
-atelier run <conduit> [--input key=value ...] [--show-steps/--hide-steps]
+atelier run <conduit> [--input key=value ...] [--input-file key=path ...]
+                      [--show-steps/--hide-steps]
+                                                       # --input-file loads a UTF-8 text file into one input
 atelier ask <query> --path <directory>                 # interactive Claude session
 atelier run --resume <flow_id>                         # resume a failed/crashed flow
 atelier run --again <flow_id>                          # fresh run reusing a past flow's inputs

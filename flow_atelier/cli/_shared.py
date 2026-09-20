@@ -7,6 +7,7 @@ from __future__ import annotations
 import difflib
 import time
 from datetime import datetime
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -60,6 +61,77 @@ def _parse_inputs(pairs: list[str]) -> dict[str, str]:
         if key in out:
             raise typer.BadParameter(f"--input has a duplicate key: {key!r}")
         out[key] = value
+    return out
+
+
+def _read_input_file(key: str, raw_path: str) -> str:
+    """Read ``raw_path`` as UTF-8 text, or raise a usage error saying why not.
+
+    The text is returned byte-for-byte as decoded — no stripping, no YAML or
+    JSON parsing, no template expansion. Relative paths resolve against the
+    process's current directory, which is where the user typed the command.
+
+    :param key: the input key the file was given for, named in diagnostics.
+    :param raw_path: the path exactly as typed, kept for the message.
+    :returns: the file's decoded contents.
+    :raises typer.BadParameter: the path is not a readable UTF-8 text file.
+    """
+    path = Path(raw_path)
+    try:
+        if not path.is_file():
+            # Directories, devices and FIFOs are rejected rather than opened:
+            # reading a pipe here would block the CLI before the run starts.
+            why = "no such file" if not path.exists() else "not a regular file"
+            raise typer.BadParameter(f"--input-file {key}: {why}: {raw_path}")
+        # newline="" disables universal-newline translation: a CRLF document
+        # must reach the task as CRLF, not silently rewritten to LF.
+        with path.open(encoding="utf-8", newline="") as handle:
+            return handle.read()
+    except UnicodeDecodeError:
+        raise typer.BadParameter(
+            f"--input-file {key}: {raw_path} is not valid UTF-8 text"
+        ) from None
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"--input-file {key}: cannot read {raw_path}: {exc.strerror or exc}"
+        ) from exc
+
+
+def _parse_input_files(pairs: list[str], taken: dict[str, str]) -> dict[str, str]:
+    """Parse ``key=path`` strings into a mapping of key to file contents.
+
+    The file's text becomes an ordinary input value, so it is saved with the
+    run like any other and a later ``--again`` replays the stored text rather
+    than re-reading the file.
+
+    :param pairs: raw ``--input-file`` strings collected from the CLI.
+    :param taken: keys already set by ``--input``; reusing one is an error,
+        because silently preferring either source would drop a value the
+        user asked for.
+    :returns: mapping of input key to the loaded file contents.
+    :raises typer.BadParameter: on a malformed pair, a duplicate key, or a
+        file that cannot be read as UTF-8 text.
+    """
+    out: dict[str, str] = {}
+    for p in pairs:
+        if "=" not in p:
+            raise typer.BadParameter(f"--input-file expects key=path, got {p!r}")
+        key, raw_path = p.split("=", 1)
+        if not key:
+            raise typer.BadParameter(f"--input-file has an empty key: {p!r}")
+        if not raw_path:
+            raise typer.BadParameter(f"--input-file has an empty path: {p!r}")
+        if raw_path == "-":
+            raise typer.BadParameter(
+                f"--input-file {key}: needs a file path, not '-' (stdin is not read)"
+            )
+        if key in out:
+            raise typer.BadParameter(f"--input-file has a duplicate key: {key!r}")
+        if key in taken:
+            raise typer.BadParameter(
+                f"--input-file key {key!r} is already set by --input"
+            )
+        out[key] = _read_input_file(key, raw_path)
     return out
 
 

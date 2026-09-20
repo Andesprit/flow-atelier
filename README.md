@@ -491,6 +491,69 @@ installed — no. `atelier check <name>` still owns all of that, and it is
 still the thing to run before a real workflow. Regenerate the file after
 upgrading Atelier; the schema describes the version that wrote it.
 
+### Checking conduits from a script or an agent
+
+`atelier check --json` answers the same question as `atelier check`, in a
+form a program can act on. It writes one array to stdout, one object per
+conduit it checked, and exits 1 if any of them failed:
+
+```json
+[
+  {
+    "name": "hello",
+    "source": "project",
+    "path": "/home/you/project/.atelier/conduits/hello/conduit.yaml",
+    "ok": true,
+    "error": null,
+    "required_inputs": ["name"]
+  }
+]
+```
+
+- `path` is the file to open to fix the problem — the copy that would
+  actually run, so a broken project conduit is reported instead of the
+  working global one it shadows. It is `null` only when the path could
+  not be resolved at all.
+- `ok` is the verdict. Branch on it; the wording of `error` is for a
+  human to read and may change.
+- `required_inputs` is the `--input` keys a run needs, and only appears
+  when the check passed — a conduit that failed to load has no
+  trustworthy input list, so it is `null`, never `[]`.
+
+Exit status and stdout carry different information, so read both:
+
+```bash
+atelier check --json > check-report.json   # exit 1 when a conduit failed
+status=$?
+
+python3 - <<'PY'
+import json
+for row in json.load(open("check-report.json")):
+    if not row["ok"]:
+        print(row["path"], "->", row["error"])
+PY
+exit $status
+```
+
+Exit 1 with a report on stdout means "checked everything, some failed".
+Exit 1 with *empty* stdout means the check never started — an unknown
+conduit name, or a store that could not be read — explained on stderr.
+An empty `[]` with exit 0 means no conduits are installed here, which is
+not proof that anything was validated.
+
+With no name it checks every conduit **including the global ones** in
+`~/.atelier/conduits/`, so a report can name a file outside this project.
+Results depend on this machine: a conduit that needs an agent CLI you
+have not installed fails here and passes where it is installed. Readiness
+means the tool is available, not that it is logged in or that the run
+will succeed.
+
+So a coding agent can repair a workflow without a human reading the
+terminal: `atelier schema` for the vocabulary, write the YAML,
+`atelier check <name> --json`, open the `path` it returns, fix the
+`error`, check again, and run it once `ok` is true. Nothing runs during a
+check — no task, no agent session, no recorded flow.
+
 ## Examples
 
 The two conduits below are **illustrative, not prescriptive**. A
@@ -815,7 +878,7 @@ flow folder under `.atelier/flows/` in the current working directory.
 atelier init
 atelier create <name> [--description <text>] [--template hello|code-review]
                                                        # scaffold a starter conduit
-atelier check [<conduit>]                              # validate conduit(s) without running
+atelier check [<conduit>] [--json]                     # validate conduit(s) without running
 atelier plan <conduit>                                 # print the DAG as ordered waves, run nothing
 atelier show <conduit> [--json]                        # print its definition and inputs, run nothing
 atelier schema                                         # print the conduit.yaml JSON Schema for your editor

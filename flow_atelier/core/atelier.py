@@ -411,7 +411,7 @@ class Atelier:
             raise FileExistsError(f"conduit already exists: {payload.name}")
         except FileNotFoundError:
             pass
-        conduit = Conduit.model_validate(payload.model_dump())
+        conduit = Conduit.model_validate(payload.model_dump(exclude={"run_path"}))
         self.store.write_conduit(conduit)
         return conduit
 

@@ -4,10 +4,31 @@ then imports each command module for its side-effect decorations.
 from __future__ import annotations
 
 import inspect
+import os
 import re
 import sys
 
 import typer
+
+
+def _use_utf8_streams() -> None:
+    """Re-encode stdout/stderr as UTF-8 on Windows, where they default to cp1252.
+
+    The run stream prints ``▶``, check marks and box-drawing characters, none
+    of which the Windows ANSI code page can encode. Without this, printing a
+    task banner raises ``UnicodeEncodeError`` and ``atelier run`` dies instead
+    of showing its own output. No-op everywhere else, and on any stream that
+    is already UTF-8 or is not a real text stream.
+    """
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None and (getattr(stream, "encoding", "") or "").lower() != "utf-8":
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+_use_utf8_streams()
 
 # Sphinx field list (``:param x:``, ``:returns:``, ``:raises:``) and everything
 # after it. Command docstrings carry these for the API docs, but click renders
@@ -145,9 +166,12 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     run,
     schedule,
     scheduler,
+    schema,
     self_update,
     serve,
+    show,
     status,
     stop,
     timing,
+    wait,
 )

@@ -192,7 +192,10 @@ class FilesystemStore(StoreBase):
         else:
             raise FileNotFoundError(f"conduit not found: {name} ({project_path})")
         try:
-            data = yaml.safe_load(path.read_text())
+            # Explicit utf-8: the locale default is cp1252 on Windows, which
+            # mangles accented conduits and silently accepts binary files that
+            # every other platform rejects as unreadable.
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
         except yaml.YAMLError as e:
             raise ValueError(f"{name}: invalid YAML — {e}") from e
         conduit = Conduit.model_validate(data)

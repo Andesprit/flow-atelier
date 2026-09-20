@@ -322,6 +322,510 @@ atelier list flows --conduit hello          # lists previous runs
 shell command, so this works end-to-end before you install any AI
 tool.
 
+Ready for a real one? [Your first workflow: run it, break it, recover
+it](docs/first-workflow.md) is a 5-minute Bash-only exercise that builds a
+three-step conduit, fails it on purpose, diagnoses it from saved history, and
+shows what `--resume` keeps that `--again` redoes.
+
+### Your first AI workflow: review what you staged
+
+`atelier create --template code-review` writes a two-step conduit that
+captures the patch you have staged and hands it to Claude Code for a
+review. Nothing runs at creation time — you get an ordinary YAML file to
+read, run, and edit.
+
+```bash
+atelier harness check claude-code   # confirms the agent starts and you're logged in
+atelier create my-review --template code-review
+atelier check my-review             # validates it and confirms the harness is usable
+atelier plan my-review              # prints the two waves, runs nothing
+git add -p                          # stage the changes you want reviewed
+atelier run my-review
+atelier outputs latest --task review
+```
+
+You need a Git repository, `bash`, and Claude Code installed and logged in
+(see [Optional: AI harnesses](#optional-ai-harnesses) for its launcher
+prerequisites). The review covers **only what is staged** — `git diff
+--cached`. Unstaged edits and untracked files are left out until you
+`git add` them, and an empty index skips the review step instead of
+calling the agent.
+
+The workflow only reads your repository: it never stages, commits, or
+edits anything for you. The prompt tells the agent to analyse rather than
+act, which is an instruction to the agent, not a sandbox around it.
+
+If a run fails, `atelier status latest` and `atelier logs latest` say which
+step broke and what it printed. `latest` means the most recently started
+run in this project; pass the printed flow id instead when several runs
+overlap. To change the prompt, the harness, or the diff range, edit
+`.atelier/conduits/my-review/conduit.yaml` — it is a normal conduit, and
+`atelier show my-review` prints the exact prompt it will send.
+
+### Reading a conduit before you run it
+
+Conduits arrive from `atelier init`, `atelier create`, a teammate's
+repository, or an installed package. `atelier show` prints one without
+running it — no task starts, no agent is launched, no run is recorded.
+
+```bash
+atelier list conduits --json          # what is installed here
+atelier show hello                    # the exact YAML that would run
+atelier show hello --json             # the same thing, normalized, for tools
+atelier check hello                   # is it valid, and is its agent usable?
+atelier run hello --input name=world  # run it
+```
+
+`atelier show hello` writes the file's own text to stdout — comments,
+templates and multiline prompts exactly as written — and the source and
+path to stderr, so `atelier show hello > copy.yaml` gives you a clean
+copy. A project conduit shadows a global one of the same name here just
+as it does at run time.
+
+`--json` answers the question a script or a coding agent actually has:
+how do I call this? (`conduit` is abbreviated below — the real output
+carries the whole definition.)
+
+```json
+{
+  "source": "project",
+  "path": "/home/you/project/.atelier/conduits/hello/conduit.yaml",
+  "conduit": { "name": "hello", "inputs": { "name": { "description": "Who to greet", "default": null } }, "tasks": [] },
+  "accepted_inputs": ["name"],
+  "required_inputs": ["name"]
+}
+```
+
+- `conduit` is the whole definition — every task body, tool, dependency,
+  loop and default — normalized, but with templates left unresolved.
+- `accepted_inputs` is every key the conduit can use, including keys only
+  referenced as `{{inputs.x}}` in a task and keys forwarded to a nested
+  conduit.
+- `required_inputs` is the subset you must pass: the declared inputs whose
+  `default` is `null`. An input with `default: ""` is optional — an empty
+  string is still a default.
+
+So the `--input` flags a run needs are one command away:
+
+```bash
+atelier show hello --json | jq -r '.required_inputs[]'   # jq is optional
+```
+
+These are the conduit's *declarations*, not a promise that every template
+resolves or that its agent is installed — `atelier check` still answers
+that. `show` reads whichever copy would run even when that copy is
+broken, so you can see the mistake; `--json` refuses to guess and exits
+non-zero instead.
+
+### Passing a file as an input
+
+A brief, a spec, a failing build log — the material a workflow needs is
+usually already a file. `--input-file key=path` hands that file's text to
+one input, so you never paste a document into the command line:
+
+```bash
+atelier init
+printf 'Ada' > name.txt
+atelier run hello --input-file name=name.txt
+atelier outputs latest
+```
+
+`--input-file` reads the file as UTF-8 and passes the text through
+unchanged — every character, every trailing newline, no stripping, no
+YAML parsing, no template expansion of anything inside it. Relative paths
+are resolved from wherever you typed the command. Both flags mix freely,
+so the long thing comes from a file and the short settings stay literal:
+
+```bash
+atelier run my-review --input-file brief=SPEC.md --input tone=blunt
+```
+
+Use `atelier show <conduit> --json` to see which keys a conduit accepts.
+A key can be given by `--input` **or** `--input-file`, never both: a
+repeated key is a usage error rather than one value silently winning. A
+missing file, a directory, non-UTF-8 bytes or a malformed pair fails
+before the run starts, so nothing is recorded. `-` is rejected too —
+stdin stays free for the questions a `tool:hitl` step asks you.
+
+The loaded text is saved with the run like any other input, not a
+reference to the file. `atelier run --again <flow_id>` therefore replays
+the text the run actually used even if you have since edited or deleted
+the source file; pass `--input-file` again to feed it a new version.
+`--resume` is refused with `--input-file`, because resuming continues a
+flow's saved inputs rather than starting a new run.
+
+File contents are ordinary input values: a conduit that drops an input
+into a `tool:bash` command interpolates it the same way it interpolates
+anything else. `--input-file` is a convenience for passing documents, not
+a sandbox and not secret storage.
+
+### Writing a conduit with your editor's help
+
+`atelier schema` prints the JSON Schema of a `conduit.yaml`, generated
+from the models the version you have installed actually loads. Save it
+next to your workflows and an editor with a YAML language server will
+complete the field names and underline the mistakes as you type:
+
+```bash
+atelier init
+atelier schema > .atelier/conduit.schema.json
+```
+
+Then make this the first line of `.atelier/conduits/hello/conduit.yaml`:
+
+```yaml
+# yaml-language-server: $schema=../../conduit.schema.json
+```
+
+The path is relative to the conduit file, so `../../` lands on
+`.atelier/`. You need an editor with the YAML language server for this —
+the VS Code **YAML** extension, or the same server through your own
+LSP client. Nothing is installed for you and nothing is sent anywhere.
+
+Now break something on purpose:
+
+```yaml
+# yaml-language-server: $schema=../../conduit.schema.json
+name: hello
+description: Say hello
+max_concurrency: 0
+```
+
+The editor marks `0` with *Value is below the minimum of 1* before you
+run anything. Delete the line and the mark goes; type `re` inside a task
+body and it offers `repeat`, `retries`, `retry_backoff`, `until`,
+`while` and the rest. Both shorthands are covered, so `name: Who to
+greet` under `inputs:` and `- greet:` with the body indented under it
+are as valid to the editor as the long forms. Then the usual sequence:
+
+```bash
+atelier check hello
+atelier run hello --input name=world
+atelier outputs latest --task greet
+```
+
+A coding agent does not need the file at all — `atelier schema` on its
+own is the whole vocabulary, from the version that is installed.
+
+**It checks shape, not meaning.** A missing `tool`, a `tasks:` that is
+not a list, a `max_concurrency: 0` — yes. A `depends_on` naming a task
+that does not exist, two tasks with the same name, a loop predicate that
+will not parse, a template that resolves to nothing, an agent you never
+installed — no. `atelier check <name>` still owns all of that, and it is
+still the thing to run before a real workflow. Regenerate the file after
+upgrading Atelier; the schema describes the version that wrote it.
+
+### A field Atelier does not know is an error
+
+A `conduit.yaml` may only use the fields Atelier defines. A misspelled
+one used to be dropped in silence, which is the worst possible outcome:
+the file checks, plans and runs, but not as the workflow you wrote.
+
+```yaml
+name: typo_demo
+description: two tasks that are meant to run in order
+tasks:
+  - name: prepare
+    description: write the sentinel
+    task: "printf 'prepared\n' > sentinel.txt"
+    tool: tool:bash
+  - name: consume
+    description: read the sentinel back
+    task: "cat sentinel.txt"
+    tool: tool:bash
+    depend_on: [prepare]      # typo: the field is depends_on
+```
+
+Before, `consume` loaded with no dependencies at all and raced `prepare`
+for a file that did not exist yet. Now:
+
+```bash
+atelier check typo_demo
+```
+
+```
+typo_demo [project] — FAIL: tasks[1].depend_on: Extra inputs are not permitted
+```
+
+Correct it to `depends_on:` and the same file checks, plans `consume`
+into the second wave, and runs. The API rejects the same fields, so the
+designer and a coding agent posting JSON get the identical answer.
+
+**If you kept your own notes inside a conduit:** anything Atelier does
+not define was already being discarded on load, so it never reached a
+run — but it is now an error rather than a silent drop. Move it to a
+YAML comment or a file beside the conduit. And if you exported
+`conduit.schema.json` before upgrading, run `atelier schema` again:
+the old copy still accepts the typo your editor should now be
+underlining.
+
+### Checking conduits from a script or an agent
+
+`atelier check --json` answers the same question as `atelier check`, in a
+form a program can act on. It writes one array to stdout, one object per
+conduit it checked, and exits 1 if any of them failed:
+
+```json
+[
+  {
+    "name": "hello",
+    "source": "project",
+    "path": "/home/you/project/.atelier/conduits/hello/conduit.yaml",
+    "ok": true,
+    "error": null,
+    "required_inputs": ["name"]
+  }
+]
+```
+
+- `path` is the file to open to fix the problem — the copy that would
+  actually run, so a broken project conduit is reported instead of the
+  working global one it shadows. It is `null` only when the path could
+  not be resolved at all.
+- `ok` is the verdict. Branch on it; the wording of `error` is for a
+  human to read and may change.
+- `required_inputs` is the `--input` keys a run needs, and only appears
+  when the check passed — a conduit that failed to load has no
+  trustworthy input list, so it is `null`, never `[]`.
+
+Exit status and stdout carry different information, so read both:
+
+```bash
+atelier check --json > check-report.json   # exit 1 when a conduit failed
+status=$?
+
+python3 - <<'PY'
+import json
+for row in json.load(open("check-report.json")):
+    if not row["ok"]:
+        print(row["path"], "->", row["error"])
+PY
+exit $status
+```
+
+Exit 1 with a report on stdout means "checked everything, some failed".
+Exit 1 with *empty* stdout means the check never started — an unknown
+conduit name, or a store that could not be read — explained on stderr.
+An empty `[]` with exit 0 means no conduits are installed here, which is
+not proof that anything was validated.
+
+With no name it checks every conduit **including the global ones** in
+`~/.atelier/conduits/`, so a report can name a file outside this project.
+Results depend on this machine: a conduit that needs an agent CLI you
+have not installed fails here and passes where it is installed. Readiness
+means the tool is available, not that it is logged in or that the run
+will succeed.
+
+So a coding agent can repair a workflow without a human reading the
+terminal: `atelier schema` for the vocabulary, write the YAML,
+`atelier check <name> --json`, open the `path` it returns, fix the
+`error`, check again, and run it once `ok` is true. Nothing runs during a
+check — no task, no agent session, no recorded flow.
+
+### Checking a workflow that calls other workflows
+
+A `tool:conduit` step runs another conduit by name, and that child can call
+one of its own. Plain `atelier check` stops at the conduit you named: a child
+is only loaded once the run reaches that step, so a missing or broken child
+surfaces *after* the earlier steps have already done their work.
+`atelier check <name> --recursive` follows those calls first.
+
+Build a two-level workflow in a throwaway directory — a shell step that
+prepares something, then a call to a `summary` conduit that does not exist
+yet:
+
+```bash
+workspace="$(mktemp -d)/composed demo"
+mkdir -p "$workspace/.atelier/conduits/report" && cd "$workspace"
+
+cat > .atelier/conduits/report/conduit.yaml <<'YAML'
+name: report
+description: Prepare a measurement, then hand it to the summary conduit
+tasks:
+  - name: prepare
+    description: record that preparation happened, and measure something
+    task: "echo prepared >> preparation.log && echo 42"
+    tool: tool:bash
+    depends_on: []
+  - name: summarise
+    description: turn the measurement into a summary
+    task: summary
+    tool: tool:conduit
+    depends_on: [prepare]
+    inputs:
+      finding: "{{prepare.output}}"
+YAML
+```
+
+The parent file itself is fine, so the ordinary check passes and the
+recursive one does not:
+
+```bash
+atelier check report              # OK - nothing is wrong with this file
+atelier check report --recursive  # FAIL, exit 1 - `summary` is missing
+```
+
+The failure names the step that makes the call and the name it could not
+resolve:
+
+```
+report [project] — FAIL: report.summarise -> summary — conduit not found
+```
+
+Neither check ran anything: there is no `preparation.log` and no recorded
+flow. Write the child, then gate the run on a passing recursive check:
+
+```bash
+mkdir -p .atelier/conduits/summary
+cat > .atelier/conduits/summary/conduit.yaml <<'YAML'
+name: summary
+description: Write a one-line summary of a finding
+inputs:
+  finding:
+    description: what the caller measured
+tasks:
+  - name: write
+    description: write the summary line
+    task: "echo summary of {{inputs.finding}}"
+    tool: tool:bash
+    depends_on: []
+YAML
+
+atelier check report --recursive \
+  && atelier run report \
+  && flow_id=$(atelier wait latest --timeout 60) \
+  && atelier outputs "$flow_id" --task summarise
+```
+
+The last line prints `summary of 42` — the child's result, read back from
+the parent's saved run — and `preparation.log` holds exactly one line,
+because the two failed checks never executed a step.
+
+#### The call's arguments, not only the child's name
+
+A called conduit receives exactly what its calling task forwards under
+`inputs:`. It does **not** inherit the caller's inputs, so that one map is
+the whole interface between the two files — and `--recursive` checks it.
+
+Extend the same example: give `summary` a second input with a default, and
+let the caller misspell it.
+
+```yaml
+name: summary
+description: Write a one-line summary of a finding
+inputs:
+  finding:
+    description: what the caller measured
+  tone:
+    description: how the summary should read
+    default: calm
+tasks:
+  - name: write
+    description: write the summary line
+    task: "echo {{inputs.tone}} summary of {{inputs.finding}}"
+    tool: tool:bash
+    depends_on: []
+```
+
+```yaml
+name: report
+description: Prepare a measurement, then hand it to the summary conduit
+tasks:
+  - name: prepare
+    description: record that preparation happened, and measure something
+    task: "echo prepared >> preparation.log && echo 42"
+    tool: tool:bash
+    depends_on: []
+  - name: summarise
+    description: turn the measurement into a summary
+    task: summary
+    tool: tool:conduit
+    depends_on: [prepare]
+    inputs:
+      finding: "{{prepare.output}}"
+      tonee: direct
+```
+
+The engine drops a key the child cannot use, so this run would have
+succeeded and written a `calm` summary — the default — while the author
+believed they had asked for `direct`. `atelier check report --recursive`
+fails instead, on one line naming the call, the child's file, the bad key
+and the nearest one it does know:
+
+```
+report [project] — FAIL: report.summarise -> summary (/tmp/demo/.atelier/conduits/summary/conduit.yaml) — task 'summarise' has unknown inputs: ['tonee'] (did you mean 'tone' for 'tonee'?); 'summary' accepts inputs: ['finding', 'tone']
+```
+
+Rename `tonee` to `tone` and the check passes. Delete the `finding:` line
+from the corrected file and it fails again, because `finding` has no
+default and nothing else can supply it:
+
+```
+report [project] — FAIL: report.summarise -> summary (...) — task 'summarise' supplies no value for required inputs: ['finding']; add them under the task's own 'inputs:' map, which is all a called conduit receives
+```
+
+Both used to be found only by running the workflow — the second after
+`prepare` had already appended to `preparation.log`, the first not at all.
+
+What the flag does and does not tell you:
+
+- The report still has one row per conduit you selected, with the same
+  `--json` keys. A nested failure sets that row's `ok` to false and puts the
+  calling chain, the child's file and the real diagnostic into its `error`.
+- `required_inputs` stays the **root's** inputs. `summary` declares `finding`
+  with no default, but the calling task supplies it, so `atelier run report`
+  needs no `--input`.
+- Binding **names** are checked: a forwarded key the child can neither
+  declare nor reference, and a child input declared with no default that the
+  call leaves out, both fail. Binding **values** are not. A `{{...}}` you
+  forward is accepted without being resolved, and a key the child only
+  *references* — supplied at run time by a loop, a human answer or an
+  upstream output — is neither required nor rejected here.
+- Every `tool:conduit` step is inspected, including one a condition would
+  skip at runtime.
+- A target assembled from a template (`task: "{{inputs.which}}"`) cannot be
+  resolved without running the workflow, so `--recursive` fails and says so.
+  Check that child by its real name instead, or leave the flag off.
+- A conduit that calls itself, or a loop between two conduits, is reported
+  as a cycle instead of recursing — as is a chain deeper than the engine's
+  nesting limit.
+- Passing still only means "these definitions load and their tools are on
+  this machine". It is not a promise that the run will succeed.
+
+### Waiting for a run from another terminal or agent
+
+A run started in another terminal, by the dashboard, or by the scheduler is
+an ordinary saved flow, so a second session can join it and use its results:
+
+```bash
+flow_id=$(atelier wait latest --timeout 60) && atelier outputs "$flow_id" --json
+```
+
+`atelier wait` watches one run's saved progress and turns the outcome into an
+exit status, so nothing has to poll, re-read `status --json`, or scrape the
+terminal:
+
+| exit | what it means                                                                   |
+| ---- | ------------------------------------------------------------------------------- |
+| 0    | the run saved `completed`; stdout holds the resolved flow id and nothing else     |
+| 1    | it failed, was stopped, its runner died, or its progress could not be read        |
+| 124  | the timeout expired while it was still running                                    |
+| 130  | you pressed Ctrl-C                                                                |
+| 2    | `--timeout` was not a positive number of seconds                                  |
+
+Success prints the id it resolved, and the next command should use that id.
+Resolving `latest` a second time can land on a newer run that started while
+you were waiting.
+
+Waiting only watches. A timeout or a Ctrl-C ends your *observation*, not the
+run: the other process keeps going and `atelier status <flow_id>` still finds
+it. `wait` never starts, stops, resumes or edits anything. A run paused on a
+human gate (`tool:hitl`) counts as still running, so it times out rather than
+failing.
+
+Failures name the state and point at `atelier status` and `atelier logs`; a
+run whose runner died also suggests `atelier run --resume`.
+
 ## Examples
 
 The two conduits below are **illustrative, not prescriptive**. A
@@ -460,8 +964,9 @@ numbered blocks. Only valid on a looping task (`repeat > 1`).
 
 A missing `{{inputs.x}}` fails the task immediately; a reference to a
 task that was skipped or hasn't completed skips the referencing task.
-`atelier run` rejects an `--input` key the conduit neither declares nor
-references, so a mistyped key fails before the run starts.
+`atelier run` rejects an `--input` or `--input-file` key the conduit
+neither declares nor references, so a mistyped key fails before the run
+starts.
 
 ### Conditional dependencies
 
@@ -644,13 +1149,19 @@ flow folder under `.atelier/flows/` in the current working directory.
 ```
 # authoring
 atelier init
-atelier create <name> [--description <text>]           # scaffold a new empty conduit
-atelier check [<conduit>] [--json]                     # validate conduit(s) without running
+atelier create <name> [--description <text>] [--template hello|code-review]
+                                                       # scaffold a starter conduit
+atelier check [<conduit>] [--json] [--recursive]        # validate conduit(s) without running
+                                                       # --recursive also checks the conduits they call
 atelier plan <conduit> [--json]                        # print the DAG as ordered waves, run nothing
+atelier show <conduit> [--json]                        # print its definition and inputs, run nothing
+atelier schema                                         # print the conduit.yaml JSON Schema for your editor
 
 # <flow_id> below accepts a unique prefix, or 'latest' for the most recently started flow
 # running
-atelier run <conduit> [--input key=value ...] [--show-steps/--hide-steps]
+atelier run <conduit> [--input key=value ...] [--input-file key=path ...]
+                      [--show-steps/--hide-steps]
+                                                       # --input-file loads a UTF-8 text file into one input
 atelier ask <query> --path <directory> [--harness <name>]   # interactive agent session (default: claude-code)
 atelier run --resume <flow_id>                         # resume a failed/crashed flow
 atelier run --again <flow_id>                          # fresh run reusing a past flow's inputs
@@ -658,6 +1169,7 @@ atelier stop <flow_id>                                 # gracefully halt a runni
 
 # inspecting
 atelier status <flow_id>
+atelier wait <flow_id> [--timeout 60]                  # block until it finishes; exit 0 only if it did
 atelier logs <flow_id> [--task <name>] [--follow] [--json]
 atelier outputs <flow_id> [--task <name>] [--json]    # read back a finished flow's results
 atelier timing <flow_id> [--json]                      # per-task duration, slowest first

@@ -23,6 +23,14 @@ _HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 class CreateConduitInput(Conduit):
     """Body for ``POST /conduits``: a full conduit definition."""
 
+    # Accepted and dropped, like `OpenPathInput.conduit_name`: `Conduit` now
+    # rejects fields it does not know, and a client that POSTs back the object
+    # a GET handed it carries the response-only `run_path`. It is the server's
+    # own field echoed home, not a misspelled control, so refusing it would
+    # break that round trip for nothing. `create_conduit` excludes it before
+    # the definition is built, so it still never reaches conduit.yaml.
+    run_path: str = ""
+
 
 class UpdateConduitInput(BaseModel):
     """Body for ``PATCH /conduits/:name``: partial update over a conduit."""

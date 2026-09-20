@@ -1092,14 +1092,20 @@ class Engine:
 
             progress.current_tasks = []
             progress.finished_at = _now()
-            progress.status = FlowStatus.failed if failed else FlowStatus.completed
-            self.store.write_progress(flow_id, progress)
-
             if not failed:
+                # Publish the final output map *before* the completed status:
+                # `completed` is what another process waits for (`atelier
+                # wait`), and it must never see it while outputs.yaml still
+                # holds the intermediate map written after the last task.
+                # Leaving the in-memory status at `running` until this write
+                # returns sends a failed write through the failure
+                # finalization below instead of reporting success.
                 self.store.write_outputs(
                     flow_id,
                     {name: outputs.get(name) for name in task_map},
                 )
+            progress.status = FlowStatus.failed if failed else FlowStatus.completed
+            self.store.write_progress(flow_id, progress)
 
             if failed:
                 raise failure_error or RuntimeError("flow failed")

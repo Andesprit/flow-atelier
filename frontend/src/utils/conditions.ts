@@ -102,9 +102,16 @@ export function fromWireTask(task: ConduitTask): ConduitTask {
   return out;
 }
 
-/** Inverse of {@link fromWireTask}: fold `conditions` back into `dependsOn`. */
+/**
+ * Inverse of {@link fromWireTask}: fold `conditions` back into `dependsOn`.
+ *
+ * `position` goes with it. Canvas coordinates are designer state, not part of
+ * a conduit definition — the backend has never stored them — and it now
+ * rejects fields it does not know rather than dropping them, so leaving the
+ * key in the payload would fail every save.
+ */
 export function toWireTask(task: ConduitTask): ConduitTask {
-  const { conditions, ...rest } = task;
+  const { conditions, position, ...rest } = task;
   return {
     ...rest,
     dependsOn: (task.dependsOn ?? []).map((dep) =>

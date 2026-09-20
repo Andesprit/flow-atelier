@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 
 const MAX_HISTORY = 50;
 const DEBOUNCE_MS = 400;
@@ -46,11 +46,22 @@ export function useUndoState<T>(initial: T | (() => T)) {
 
   const undo = useCallback(() => {
     clearTimeout(timer.current);
-    pending.current = null;
-    if (history.current.length === 0) return;
+    // The still-open burst is the most recent entry, so it has to be consumed
+    // before older history. Dropping it (the previous behaviour) made the last
+    // edit permanently un-undoable, or skipped straight past it to an older
+    // state, depending on whether history already held anything.
+    let target: T;
+    if (pending.current !== null) {
+      target = pending.current;
+      pending.current = null;
+    } else if (history.current.length > 0) {
+      target = history.current.pop()!;
+    } else {
+      return;
+    }
     setStateRaw((prev) => {
       future.current.push(prev);
-      return history.current.pop()!;
+      return target;
     });
   }, []);
 
@@ -65,6 +76,9 @@ export function useUndoState<T>(initial: T | (() => T)) {
       return next;
     });
   }, []);
+
+  // A burst left open at unmount must not fire its flush afterwards.
+  useEffect(() => () => clearTimeout(timer.current), []);
 
   return [state, setState, undo, redo] as const;
 }

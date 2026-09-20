@@ -53,26 +53,116 @@ describe("useUndoState", () => {
     expect(result.current[0]).toBe("hello");
   });
 
-  it("clears pending but cannot undo before debounce (history empty)", () => {
+  it("undoes the first edit before the debounce flushes", () => {
     const { result } = renderHook(() => useUndoState("hello"));
     act(() => {
       result.current[1]("world");
     });
-    // Undo immediately — pending is cleared, but history is empty so it's a no-op.
-    // The state change was already committed by setStateRaw.
+    // The open burst is the newest entry: undo must consume it rather than
+    // discard it, even though nothing has reached history yet.
     act(() => {
       result.current[2](); // undo
     });
-    expect(result.current[0]).toBe("world");
-    // The pending entry was discarded, so flushing won't add to history either.
+    expect(result.current[0]).toBe("hello");
+    // The cancelled timer must not push the consumed group back into history.
     act(() => {
       vi.advanceTimersByTime(400);
     });
-    // Undo is still a no-op — no history was ever built.
     act(() => {
       result.current[2]();
     });
+    expect(result.current[0]).toBe("hello");
+    // Redo still restores the edit that was undone.
+    act(() => {
+      result.current[3]();
+    });
     expect(result.current[0]).toBe("world");
+  });
+
+  it("undoes a pending burst before older history", () => {
+    const { result } = renderHook(() => useUndoState("a"));
+    act(() => {
+      result.current[1]("b");
+    });
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    act(() => {
+      result.current[1]("c"); // still pending
+    });
+    act(() => {
+      result.current[2](); // undo consumes the pending group
+    });
+    expect(result.current[0]).toBe("b");
+    act(() => {
+      result.current[2](); // then the flushed entry
+    });
+    expect(result.current[0]).toBe("a");
+    act(() => {
+      result.current[3]();
+    });
+    expect(result.current[0]).toBe("b");
+    act(() => {
+      result.current[3]();
+    });
+    expect(result.current[0]).toBe("c");
+  });
+
+  it("undoes a whole pending burst as one entry", () => {
+    const { result } = renderHook(() => useUndoState("initial"));
+    act(() => {
+      result.current[1]("a");
+      result.current[1]("b");
+      result.current[1]("c");
+    });
+    act(() => {
+      result.current[2](); // undo before the 400ms window closes
+    });
+    expect(result.current[0]).toBe("initial");
+    act(() => {
+      result.current[3](); // redo restores the last state of the burst
+    });
+    expect(result.current[0]).toBe("c");
+  });
+
+  it("a new edit after an early undo clears redo", () => {
+    const { result } = renderHook(() => useUndoState("initial"));
+    act(() => {
+      result.current[1]("a");
+    });
+    act(() => {
+      result.current[2](); // undo before flush
+    });
+    expect(result.current[0]).toBe("initial");
+    act(() => {
+      result.current[1]("b");
+    });
+    act(() => {
+      result.current[3](); // redo — future was cleared by the new edit
+    });
+    expect(result.current[0]).toBe("b");
+  });
+
+  it("cancels the pending timer on undo, redo and unmount", () => {
+    const { result, unmount } = renderHook(() => useUndoState("initial"));
+    act(() => {
+      result.current[1]("a");
+    });
+    expect(vi.getTimerCount()).toBe(1);
+    act(() => {
+      result.current[2](); // undo
+    });
+    expect(vi.getTimerCount()).toBe(0);
+    act(() => {
+      result.current[3](); // redo
+    });
+    expect(vi.getTimerCount()).toBe(0);
+    act(() => {
+      result.current[1]("b");
+    });
+    expect(vi.getTimerCount()).toBe(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("is a no-op when undo is called with empty history", () => {

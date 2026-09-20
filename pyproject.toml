@@ -34,6 +34,7 @@ dev = [
     "ruff>=0.6",
     "pre-commit>=3.8",
     "pyinstaller>=6.10",
+    "jsonschema>=4.23",
 ]
 
 [tool.pytest.ini_options]

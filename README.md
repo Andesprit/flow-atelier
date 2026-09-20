@@ -435,6 +435,62 @@ into a `tool:bash` command interpolates it the same way it interpolates
 anything else. `--input-file` is a convenience for passing documents, not
 a sandbox and not secret storage.
 
+### Writing a conduit with your editor's help
+
+`atelier schema` prints the JSON Schema of a `conduit.yaml`, generated
+from the models the version you have installed actually loads. Save it
+next to your workflows and an editor with a YAML language server will
+complete the field names and underline the mistakes as you type:
+
+```bash
+atelier init
+atelier schema > .atelier/conduit.schema.json
+```
+
+Then make this the first line of `.atelier/conduits/hello/conduit.yaml`:
+
+```yaml
+# yaml-language-server: $schema=../../conduit.schema.json
+```
+
+The path is relative to the conduit file, so `../../` lands on
+`.atelier/`. You need an editor with the YAML language server for this —
+the VS Code **YAML** extension, or the same server through your own
+LSP client. Nothing is installed for you and nothing is sent anywhere.
+
+Now break something on purpose:
+
+```yaml
+# yaml-language-server: $schema=../../conduit.schema.json
+name: hello
+description: Say hello
+max_concurrency: 0
+```
+
+The editor marks `0` with *Value is below the minimum of 1* before you
+run anything. Delete the line and the mark goes; type `re` inside a task
+body and it offers `repeat`, `retries`, `retry_backoff`, `until`,
+`while` and the rest. Both shorthands are covered, so `name: Who to
+greet` under `inputs:` and `- greet:` with the body indented under it
+are as valid to the editor as the long forms. Then the usual sequence:
+
+```bash
+atelier check hello
+atelier run hello --input name=world
+atelier outputs latest --task greet
+```
+
+A coding agent does not need the file at all — `atelier schema` on its
+own is the whole vocabulary, from the version that is installed.
+
+**It checks shape, not meaning.** A missing `tool`, a `tasks:` that is
+not a list, a `max_concurrency: 0` — yes. A `depends_on` naming a task
+that does not exist, two tasks with the same name, a loop predicate that
+will not parse, a template that resolves to nothing, an agent you never
+installed — no. `atelier check <name>` still owns all of that, and it is
+still the thing to run before a real workflow. Regenerate the file after
+upgrading Atelier; the schema describes the version that wrote it.
+
 ## Examples
 
 The two conduits below are **illustrative, not prescriptive**. A
@@ -762,6 +818,7 @@ atelier create <name> [--description <text>] [--template hello|code-review]
 atelier check [<conduit>]                              # validate conduit(s) without running
 atelier plan <conduit>                                 # print the DAG as ordered waves, run nothing
 atelier show <conduit> [--json]                        # print its definition and inputs, run nothing
+atelier schema                                         # print the conduit.yaml JSON Schema for your editor
 
 # <flow_id> below accepts a unique prefix, or 'latest' for the most recently started flow
 # running

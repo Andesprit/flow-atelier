@@ -138,6 +138,7 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     schedule,
     scheduler,
     serve,
+    show,
     status,
     stop,
     timing,

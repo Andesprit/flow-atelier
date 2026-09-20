@@ -335,7 +335,63 @@ If a run fails, `atelier status latest` and `atelier logs latest` say which
 step broke and what it printed. `latest` means the most recently started
 run in this project; pass the printed flow id instead when several runs
 overlap. To change the prompt, the harness, or the diff range, edit
-`.atelier/conduits/my-review/conduit.yaml` — it is a normal conduit.
+`.atelier/conduits/my-review/conduit.yaml` — it is a normal conduit, and
+`atelier show my-review` prints the exact prompt it will send.
+
+### Reading a conduit before you run it
+
+Conduits arrive from `atelier init`, `atelier create`, a teammate's
+repository, or an installed package. `atelier show` prints one without
+running it — no task starts, no agent is launched, no run is recorded.
+
+```bash
+atelier list conduits --json          # what is installed here
+atelier show hello                    # the exact YAML that would run
+atelier show hello --json             # the same thing, normalized, for tools
+atelier check hello                   # is it valid, and is its agent usable?
+atelier run hello --input name=world  # run it
+```
+
+`atelier show hello` writes the file's own text to stdout — comments,
+templates and multiline prompts exactly as written — and the source and
+path to stderr, so `atelier show hello > copy.yaml` gives you a clean
+copy. A project conduit shadows a global one of the same name here just
+as it does at run time.
+
+`--json` answers the question a script or a coding agent actually has:
+how do I call this? (`conduit` is abbreviated below — the real output
+carries the whole definition.)
+
+```json
+{
+  "source": "project",
+  "path": "/home/you/project/.atelier/conduits/hello/conduit.yaml",
+  "conduit": { "name": "hello", "inputs": { "name": { "description": "Who to greet", "default": null } }, "tasks": [] },
+  "accepted_inputs": ["name"],
+  "required_inputs": ["name"]
+}
+```
+
+- `conduit` is the whole definition — every task body, tool, dependency,
+  loop and default — normalized, but with templates left unresolved.
+- `accepted_inputs` is every key the conduit can use, including keys only
+  referenced as `{{inputs.x}}` in a task and keys forwarded to a nested
+  conduit.
+- `required_inputs` is the subset you must pass: the declared inputs whose
+  `default` is `null`. An input with `default: ""` is optional — an empty
+  string is still a default.
+
+So the `--input` flags a run needs are one command away:
+
+```bash
+atelier show hello --json | jq -r '.required_inputs[]'   # jq is optional
+```
+
+These are the conduit's *declarations*, not a promise that every template
+resolves or that its agent is installed — `atelier check` still answers
+that. `show` reads whichever copy would run even when that copy is
+broken, so you can see the mistake; `--json` refuses to guess and exits
+non-zero instead.
 
 ## Examples
 
@@ -662,6 +718,7 @@ atelier create <name> [--description <text>] [--template hello|code-review]
                                                        # scaffold a starter conduit
 atelier check [<conduit>]                              # validate conduit(s) without running
 atelier plan <conduit>                                 # print the DAG as ordered waves, run nothing
+atelier show <conduit> [--json]                        # print its definition and inputs, run nothing
 
 # <flow_id> below accepts a unique prefix, or 'latest' for the most recently started flow
 # running

@@ -19,6 +19,9 @@ from flow_atelier.schemas.progress import Progress
 from flow_atelier.services.scheduler import ScheduleStore
 
 console = Console()
+# Diagnostics for commands whose stdout carries data (`show --json`): same
+# Rich rendering, but nothing lands in the pipe the caller is parsing.
+err_console = Console(stderr=True)
 
 # Monotonic timestamp of the last thing written to the run stream. The
 # heartbeat reads it to stay quiet while output is already flowing and
@@ -60,18 +63,23 @@ def _parse_inputs(pairs: list[str]) -> dict[str, str]:
     return out
 
 
-def _exit_unknown_conduit(name: str, known: list[str]) -> None:
+def _exit_unknown_conduit(
+    name: str, known: list[str], out: Console | None = None
+) -> None:
     """Print the ``unknown conduit`` error, suggest close names, and exit 1.
 
     :param name: the conduit name the user typed.
     :param known: every conduit name currently visible to the store.
+    :param out: console to write the guidance to; defaults to stdout, which
+        is what every command whose output is prose already wants.
     """
-    console.print(
+    out = out or console
+    out.print(
         f"[red]unknown conduit:[/red] {escape(name)} — try 'atelier list conduits'"
     )
     close = difflib.get_close_matches(name, known, n=3)
     if close:
-        console.print(f"[dim]did you mean: {escape(', '.join(close))}?[/dim]")
+        out.print(f"[dim]did you mean: {escape(', '.join(close))}?[/dim]")
     raise typer.Exit(code=1)
 
 

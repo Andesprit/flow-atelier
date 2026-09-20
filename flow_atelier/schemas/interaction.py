@@ -5,12 +5,14 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
+
 
 class SupervisorConfig(BaseModel):
     """Harness and instructions used to answer on the user's behalf."""
 
     model_config = ConfigDict(extra="forbid")
-    tool: str = Field(pattern=r"^harness:[a-z0-9][a-z0-9-]*$")
+    tool: str = Field(pattern=HARNESS_TOOL_PATTERN)
     instructions: str = ""
     max_replies: int = Field(default=8, ge=1)
     timeout: int = Field(default=120, ge=1)

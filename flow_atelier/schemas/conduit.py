@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 from flow_atelier.schemas.interaction import InteractionPolicy
 
 _TASK_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -19,11 +20,6 @@ CONDUIT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # references and the key `ATELIER_HARNESSES` registers can never disagree over
 # case or spacing.
 HARNESS_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-
-# A model id is whatever the agent advertises (``gpt-5.1-codex``,
-# ``claude-sonnet-4-5``, ``anthropic/claude-sonnet-4-5``), so dots, slashes
-# and underscores are allowed. Colons are not: the tool grammar owns them.
-HARNESS_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
 
 def split_harness_tool(tool: str) -> tuple[str, str | None]:
@@ -132,12 +128,8 @@ class TaskDefinition(BaseModel):
         """
         if v in BUILTIN_TOOLS:
             return v
-        if v.startswith("harness:"):
-            base, model = split_harness_tool(v)
-            name_ok = HARNESS_NAME_RE.match(base.removeprefix("harness:"))
-            model_ok = model is None or HARNESS_MODEL_RE.match(model)
-            if name_ok and model_ok:
-                return v
+        if re.fullmatch(HARNESS_TOOL_PATTERN, v):
+            return v
         raise ValueError(
             f"invalid tool {v!r}: expected one of {sorted(BUILTIN_TOOLS)}, "
             "'harness:<name>' (lowercase letters, digits and hyphens) or "

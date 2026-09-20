@@ -36,7 +36,7 @@ asyncio.run(atelier.run_conduit('supervised', {'goal': 'pagination'}))
 
 
 async def run_flow(tmp_path, policy, turns, *, decision=None, replies="", config=None,
-                   supervisor_turn=None, workers=1):
+                   supervisor_turn=None, supervisor_models=None, workers=1):
     """Exercise the public facade in a process with real piped human input."""
     directory = tmp_path / ".atelier/conduits/supervised"
     directory.mkdir(parents=True)
@@ -63,6 +63,7 @@ async def run_flow(tmp_path, policy, turns, *, decision=None, replies="", config
                                     "record_path": str(worker_record)}),
             "test-supervisor": command({"turns": [supervisor_turn or {
                 "chunks": [json.dumps(decision)]}], "modes": MODES,
+                "models": supervisor_models,
                 "record_path": str(supervisor_record)}),
         },
     }
@@ -93,6 +94,10 @@ async def run_flow(tmp_path, policy, turns, *, decision=None, replies="", config
     {"questions": "approve_all"}, {"permissions": "oops"},
     {"supervisor": {"tool": "tool:bash"}}, {"unknown": True},
     {"supervisor": {"tool": "harness:codex", "max_replies": 0}},
+    {"supervisor": {"tool": "harness:codex:"}},
+    {"supervisor": {"tool": "harness:codex:model with spaces"}},
+    {"supervisor": {"tool": "harness:codex:a:b"}},
+    {"supervisor": {"tool": "harness:BadName:m1"}},
 ])
 def test_invalid_policy_rejected(policy):
     with pytest.raises(ValidationError):
@@ -140,6 +145,28 @@ async def test_supervisor_receives_complete_history_and_answers_without_human(tm
     assert all("First question?" in p and "Use the existing convention" in p for p in second)
     for log in logs:
         assert sum(e.get("source") == "supervisor" for e in log["session"]) == 2
+
+
+@pytest.mark.parametrize("model", ["m2", "unavailable"])
+async def test_supervisor_model_selection_reaches_the_agent(tmp_path, model):
+    """A pinned supervisor model runs, while an unavailable model fails before prompting."""
+    code, output, logs, supervisor, worker = await run_flow(
+        tmp_path, {"questions": "supervisor"}, [{"chunks": ["Which pattern?"]}, DONE],
+        decision={"action": "answer", "reply": "Use the existing convention"},
+        config={"tool": f"harness:test-supervisor:{model}"},
+        supervisor_models={"current": "m1", "available": [
+            {"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"},
+        ]},
+    )
+    if model == "m2":
+        assert code == 0, output
+        assert supervisor
+        assert "Use the existing convention" in worker
+    else:
+        assert code != 0
+        assert not supervisor
+        assert "is not offered" in logs[0]["stderr"]
+        assert "Use the existing convention" not in worker
 
 
 @pytest.mark.parametrize("decision", [

@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from flow_atelier.cli import app
@@ -27,7 +28,11 @@ from flow_atelier.services.store.filesystem import FilesystemStore
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _README = _REPO_ROOT / "README.md"
 _SECTION = "### Checking a workflow that calls other workflows"
+_BINDINGS = "#### The call's arguments, not only the child's name"
 _BASH_BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.MULTILINE | re.DOTALL)
+# One scan over every fence, so a closing ``` can never be read as an opening
+# one: `finditer` resumes after the block it just consumed.
+_FENCE = re.compile(r"^```(\w*)\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 # Same shim trick as the other real-process CLI tests: run this interpreter's
 # CLI as plain `atelier`, without depending on the console script on PATH.
 _CLI = "from flow_atelier.main import app; app()"
@@ -37,6 +42,39 @@ BASH = (
     "tasks:\n  - name: step\n    description: a\n"
     "    task: echo hi\n    tool: tool:bash\n"
 )
+
+
+# A child with one declared, defaulted input, and one with a required one:
+# the two shapes every binding check turns on.
+KID_HAS_TONE = (
+    "name: kid\ndescription: d\ninputs:\n  tone:\n    description: d\n"
+    "    default: calm\ntasks:\n  - name: a\n    description: a\n"
+    '    task: "echo {{inputs.tone}}"\n    tool: tool:bash\n'
+)
+KID_NEEDS_FINDING = (
+    "name: kid\ndescription: d\ninputs:\n  finding:\n    description: d\n"
+    "tasks:\n  - name: a\n    description: a\n"
+    '    task: "echo {{inputs.finding}}"\n    tool: tool:bash\n'
+)
+
+
+def _binds(name: str, target: str, *bindings: str, task: str = "call0") -> str:
+    """Build a conduit whose single call forwards ``bindings`` to ``target``.
+
+    :param name: the conduit's own name.
+    :param target: the called conduit's name.
+    :param bindings: raw ``key: value`` lines for the task's ``inputs:`` map.
+    :param task: the calling task's name.
+    :returns: a complete conduit YAML document.
+    """
+    body = (
+        f"name: {name}\ndescription: d\ntasks:\n"
+        f"  - name: {task}\n    description: c\n"
+        f"    task: {target}\n    tool: tool:conduit\n"
+    )
+    if bindings:
+        body += "    inputs:\n" + "".join(f"      {b}\n" for b in bindings)
+    return body
 
 
 def _calls(name: str, *targets: str, task: str = "call") -> str:
@@ -430,23 +468,283 @@ def test_a_conditionally_skipped_call_is_still_inspected(workdir):
 
 
 def test_child_inputs_never_become_parent_cli_requirements(workdir):
-    """`required_inputs` stays the root's own declarations."""
+    """`required_inputs` stays the root's own declarations.
+
+    The call supplies `finding` explicitly, which is what the child needs
+    and what the caller's own `topic` would never have provided by itself.
+    """
     _write(
         workdir,
         "root",
         "name: root\ndescription: d\ninputs:\n  topic:\n    description: d\n"
         "tasks:\n  - name: call0\n    description: c\n    task: kid\n"
+        "    tool: tool:conduit\n    inputs:\n"
+        '      finding: "{{inputs.topic}}"\n',
+    )
+    _write(workdir, "kid", KID_NEEDS_FINDING)
+    _, rows = _report(["root", "--recursive"], expect_exit=0)
+    assert rows[0]["required_inputs"] == ["topic"]
+
+
+# ------------------------------------------------------------ input bindings
+
+
+def test_a_misspelled_optional_binding_fails_instead_of_using_the_default(workdir):
+    """The silent failure the check exists to stop: `tonee` is simply dropped."""
+    _write(workdir, "root", _binds("root", "kid", "tonee: direct"))
+    child = _write(workdir, "kid", KID_HAS_TONE)
+    assert _report(["root"], expect_exit=0)[1][0]["ok"] is True
+
+    _, rows = _report(["root", "--recursive"], expect_exit=1)
+    _shape(rows[0])
+    error = rows[0]["error"]
+    assert error.startswith(f"root.call0 -> kid ({child.absolute()}) — ")
+    assert "task 'call0' has unknown inputs: ['tonee']" in error
+    assert "did you mean 'tone' for 'tonee'?" in error
+    assert "'kid' accepts inputs: ['tone']" in error
+    assert "direct" not in error, "a forwarded value is not the checker's to print"
+
+
+def test_an_unsupplied_required_child_input_fails_before_anything_runs(workdir):
+    """What the engine would only refuse once the earlier steps had run."""
+    _write(workdir, "root", _binds("root", "kid"))
+    child = _write(workdir, "kid", KID_NEEDS_FINDING)
+    assert _report(["root"], expect_exit=0)[1][0]["ok"] is True
+
+    _, rows = _report(["root", "--recursive"], expect_exit=1)
+    _shape(rows[0])
+    assert rows[0]["error"] == (
+        f"root.call0 -> kid ({child.absolute()}) — task 'call0' supplies no "
+        "value for required inputs: ['finding']; add them under the task's "
+        "own 'inputs:' map, which is all a called conduit receives"
+    )
+
+
+def test_a_parent_input_of_the_same_name_does_not_satisfy_the_child(workdir):
+    """Inputs are forwarded per call, never inherited down the tree."""
+    _write(
+        workdir,
+        "root",
+        "name: root\ndescription: d\ninputs:\n  finding:\n    description: d\n"
+        "tasks:\n  - name: call0\n    description: c\n    task: kid\n"
         "    tool: tool:conduit\n",
     )
+    _write(workdir, "kid", KID_NEEDS_FINDING)
+    _, rows = _report(["root", "--recursive"], expect_exit=1)
+    assert "supplies no value for required inputs: ['finding']" in rows[0]["error"]
+
+
+def test_an_unknown_key_is_reported_before_a_missing_one(workdir):
+    """So a plain typo gets its correction hint rather than two verdicts."""
+    _write(workdir, "root", _binds("root", "kid", "findng: x"))
+    _write(workdir, "kid", KID_NEEDS_FINDING)
+    _, rows = _report(["root", "--recursive"], expect_exit=1)
+    assert "did you mean 'finding' for 'findng'?" in rows[0]["error"]
+    assert "supplies no value" not in rows[0]["error"]
+
+
+@pytest.mark.parametrize("value", ['""', "null", "false", "0", "~"])
+def test_an_explicitly_supplied_falsey_value_counts_as_supplied(workdir, value):
+    """Key presence is the engine's rule, so it is the checker's rule too."""
+    _write(workdir, "root", _binds("root", "kid", f"finding: {value}"))
+    _write(workdir, "kid", KID_NEEDS_FINDING)
+    assert _report(["root", "--recursive"], expect_exit=0)[1][0]["ok"] is True
+
+
+def test_an_empty_string_default_is_a_default(workdir):
+    """`default: ""` is a value the engine merges, not a missing declaration."""
+    _write(workdir, "root", _binds("root", "kid"))
+    _write(
+        workdir,
+        "kid",
+        'name: kid\ndescription: d\ninputs:\n  note:\n    description: d\n'
+        '    default: ""\ntasks:\n  - name: a\n    description: a\n'
+        '    task: "echo {{inputs.note}}"\n    tool: tool:bash\n',
+    )
+    assert _report(["root", "--recursive"], expect_exit=0)[1][0]["ok"] is True
+
+
+def test_a_declared_child_input_nobody_uses_still_needs_no_binding(workdir):
+    """A defaulted input is optional whether or not any task reads it."""
+    _write(workdir, "root", _binds("root", "kid"))
+    _write(
+        workdir,
+        "kid",
+        "name: kid\ndescription: d\ninputs:\n  spare:\n    description: d\n"
+        "    default: x\ntasks:\n  - name: a\n    description: a\n"
+        "    task: echo hi\n    tool: tool:bash\n",
+    )
+    assert _report(["root", "--recursive"], expect_exit=0)[1][0]["ok"] is True
+
+
+def test_a_key_the_child_only_references_is_accepted_but_not_required(workdir):
+    """Undeclared references are the engine's own acceptance rule, both ways."""
+    body = (
+        "name: kid\ndescription: d\ntasks:\n  - name: a\n    description: a\n"
+        '    task: "echo {{inputs.loose}}"\n    tool: tool:bash\n'
+    )
+    _write(workdir, "kid", body)
+    _write(workdir, "root", _binds("root", "kid", "loose: x"))
+    assert _report(["root", "--recursive"], expect_exit=0)[1][0]["ok"] is True
+    _write(workdir, "root", _binds("root", "kid"))
+    assert _report(["root", "--recursive"], expect_exit=0)[1][0]["ok"] is True
+
+
+def test_a_key_referenced_only_in_the_childs_own_forward_is_accepted(workdir):
+    """The child passes it straight on, so it never appears in a task body."""
+    _write(workdir, "root", _binds("root", "kid", "relay: x"))
+    _write(
+        workdir,
+        "kid",
+        "name: kid\ndescription: d\ntasks:\n  - name: down\n    description: c\n"
+        "    task: leaf\n    tool: tool:conduit\n    inputs:\n"
+        '      finding: "{{inputs.relay}}"\n',
+    )
+    _write(workdir, "leaf", KID_NEEDS_FINDING.replace("name: kid", "name: leaf"))
+    assert _report(["root", "--recursive"], expect_exit=0)[1][0]["ok"] is True
+
+
+def test_a_forwarded_template_is_accepted_without_being_resolved(workdir):
+    """Checking names is the whole promise; the value is a run-time question."""
+    _write(
+        workdir,
+        "root",
+        "name: root\ndescription: d\ntasks:\n"
+        "  - name: prepare\n    description: a\n    task: echo 42\n"
+        "    tool: tool:bash\n"
+        "  - name: call0\n    description: c\n    task: kid\n"
+        "    tool: tool:conduit\n    depends_on: [prepare]\n"
+        '    inputs:\n      finding: "{{prepare.output}}"\n',
+    )
+    _write(workdir, "kid", KID_NEEDS_FINDING)
+    assert _report(["root", "--recursive"], expect_exit=0)[1][0]["ok"] is True
+
+
+def test_a_grandchild_binding_error_names_the_whole_chain(workdir):
+    """Two hops down, the report still says which call to repair."""
+    _write(workdir, "root", _calls("root", "mid"))
+    _write(workdir, "mid", _binds("mid", "kid", "tonee: direct", task="hop"))
+    _write(workdir, "kid", KID_HAS_TONE)
+    _, rows = _report(["root", "--recursive"], expect_exit=1)
+    assert rows[0]["error"].startswith("root.call0 -> mid.hop -> kid (")
+    assert "task 'hop' has unknown inputs: ['tonee']" in rows[0]["error"]
+
+
+def test_a_conditionally_skipped_calls_bindings_are_still_checked(workdir):
+    """Same conservatism as the rest of the walk: a condition is no excuse."""
+    _write(
+        workdir,
+        "root",
+        "name: root\ndescription: d\ntasks:\n"
+        "  - name: step\n    description: a\n    task: echo hi\n    tool: tool:bash\n"
+        "  - name: call0\n    description: c\n    task: kid\n"
+        "    tool: tool:conduit\n    depends_on: [step]\n"
+        "    inputs:\n      tonee: direct\n",
+    )
+    _write(workdir, "kid", KID_HAS_TONE)
+    _, rows = _report(["root", "--recursive"], expect_exit=1)
+    assert "task 'call0' has unknown inputs: ['tonee']" in rows[0]["error"]
+
+
+def test_a_global_childs_contract_is_the_one_that_is_checked(workdir):
+    """Child lookup order decides which input contract the call must meet."""
+    _write(workdir, "root", _binds("root", "kid"))
+    _write(workdir, "kid", KID_NEEDS_FINDING, source="global")
+    _, rows = _report(["root", "--recursive"], expect_exit=1)
+    assert "required inputs: ['finding']" in rows[0]["error"]
+
+
+def test_a_shadowing_project_child_changes_which_binding_is_wrong(workdir):
+    """The project copy runs, so the project copy's inputs are the contract."""
+    _write(workdir, "root", _binds("root", "kid", "finding: x"))
+    _write(workdir, "kid", KID_NEEDS_FINDING, source="global")
+    assert _report(["root", "--recursive"], expect_exit=0)[1][0]["ok"] is True
+
+    project = _write(workdir, "kid", KID_HAS_TONE)
+    _, rows = _report(["root", "--recursive"], expect_exit=1)
+    assert str(project.absolute()) in rows[0]["error"]
+    assert "task 'call0' has unknown inputs: ['finding']" in rows[0]["error"]
+
+
+# A valid first call to a shared child must never license a second bad one:
+# the child is memoised, the call edge is not.
+@pytest.mark.parametrize(
+    ("bad", "says"),
+    [("tonee: direct", "has unknown inputs: ['tonee']"), ("", "required inputs")],
+)
+def test_the_second_call_to_an_already_checked_child_is_still_checked(
+    workdir, bad, says
+):
+    """One good call and one bad call to the same child, at the same level."""
+    both = (
+        "name: root\ndescription: d\ntasks:\n"
+        "  - name: good\n    description: c\n    task: kid\n"
+        "    tool: tool:conduit\n    inputs:\n      tone: calm\n      finding: x\n"
+        "  - name: bad\n    description: c\n    task: kid\n"
+        "    tool: tool:conduit\n"
+    )
+    if bad:
+        both += f"    inputs:\n      {bad}\n      finding: x\n"
+    _write(workdir, "root", both)
     _write(
         workdir,
         "kid",
         "name: kid\ndescription: d\ninputs:\n  finding:\n    description: d\n"
+        "  tone:\n    description: d\n    default: calm\n"
         "tasks:\n  - name: a\n    description: a\n"
-        '    task: "echo {{inputs.finding}}"\n    tool: tool:bash\n',
+        '    task: "echo {{inputs.tone}} {{inputs.finding}}"\n    tool: tool:bash\n',
     )
-    _, rows = _report(["root", "--recursive"], expect_exit=0)
-    assert rows[0]["required_inputs"] == ["topic"]
+    _, rows = _report(["root", "--recursive"], expect_exit=1)
+    assert rows[0]["error"].startswith("root.bad -> kid (")
+    assert says in rows[0]["error"]
+
+
+def test_a_diamond_diagnoses_the_bad_caller_at_the_same_depth(workdir):
+    """Two different callers reach `kid` at level 2; only the second is wrong."""
+    _write(workdir, "root", _calls("root", "left", "right"))
+    _write(workdir, "left", _binds("left", "kid", "finding: x", task="ok"))
+    _write(workdir, "right", _binds("right", "kid", "findng: x", task="oops"))
+    _write(workdir, "kid", KID_NEEDS_FINDING)
+    _, rows = _report(["root", "--recursive"], expect_exit=1)
+    assert rows[0]["error"].startswith("root.call1 -> right.oops -> kid (")
+    assert "did you mean 'finding' for 'findng'?" in rows[0]["error"]
+
+
+def test_a_binding_failure_is_a_row_not_a_crash_and_runs_nothing(workdir):
+    """Batch behaviour, escaping and the no-execution guarantee all hold."""
+    sentinel = workdir / "ran.txt"
+    _write(workdir, "aaa-root", _binds("aaa-root", "kid", "tonee: direct"))
+    _write(
+        workdir,
+        "kid",
+        KID_HAS_TONE.replace(
+            '    task: "echo {{inputs.tone}}"', f'    task: "touch {sentinel}"'
+        ),
+    )
+    _write(workdir, "zzz-fine", BASH.format(name="zzz-fine"))
+    _, rows = _report(["--recursive"], expect_exit=1)
+    assert [(r["name"], r["ok"]) for r in rows] == [
+        ("aaa-root", False), ("kid", True), ("zzz-fine", True)
+    ]
+    for row in rows:
+        _shape(row)
+
+    plain = CliRunner().invoke(app, ["check", "--recursive"])
+    assert plain.exit_code == 1
+    assert "FAIL: aaa-root.call0 -> kid" in plain.stdout
+    assert "Traceback" not in plain.output
+    assert not sentinel.exists()
+    assert _flow_ids(workdir) == []
+
+
+def test_a_rich_looking_key_is_escaped_not_interpreted(workdir):
+    """The text report prints author-controlled names, so it escapes them."""
+    _write(workdir, "root", _binds("root", "kid", '"[red]boom[/red]": x'))
+    _write(workdir, "kid", KID_HAS_TONE)
+    result = CliRunner().invoke(app, ["check", "root", "--recursive"])
+    assert result.exit_code == 1
+    assert "[red]boom[/red]" in result.stdout
+    assert "boom" in result.stdout and "\x1b[31mboom" not in result.stdout
 
 
 # -------------------------------------------------------------- report contract
@@ -695,3 +993,100 @@ def test_the_readme_sequence_cannot_show_a_result_it_did_not_produce(
     workspace = Path(marker.read_text().strip())
     assert not (workspace / "preparation.log").exists()
     assert not (workspace / ".atelier" / "flows").exists()
+
+
+def _binding_docs() -> tuple[dict[str, str], list[str]]:
+    """Return the binding subsection's YAML documents and printed diagnostics.
+
+    :returns: ``({conduit name: yaml}, [diagnostic, ...])`` exactly as published.
+    """
+    body = _README.read_text(encoding="utf-8").split(_BINDINGS, 1)[1]
+    body = body.split("\n### ", 1)[0]
+    blocks = [(m.group(1), m.group(2)) for m in _FENCE.finditer(body)]
+    docs = [text for kind, text in blocks if kind == "yaml"]
+    says = [text.strip() for kind, text in blocks if kind == ""]
+    assert len(docs) == 2, f"expected 2 yaml blocks in the subsection, got {len(docs)}"
+    assert len(says) == 2, f"expected 2 diagnostics in the subsection, got {len(says)}"
+    return {yaml.safe_load(d)["name"]: d for d in docs}, says
+
+
+def test_the_readme_binding_example_is_what_the_checker_really_says(workdir):
+    """The published YAML, verdicts and diagnostics, checked against the code.
+
+    The paths in the README are illustrative, so the comparison starts after
+    the chain: every word the reader is told to expect has to be real.
+    """
+    docs, says = _binding_docs()
+    _write(workdir, "summary", docs["summary"])
+    report = _write(workdir, "report", docs["report"])
+
+    _, rows = _report(["report", "--recursive"], expect_exit=1)
+    _shape(rows[0])
+    assert rows[0]["error"].startswith("report.summarise -> summary (")
+    assert rows[0]["error"].rsplit(" — ", 1)[1] == says[0].rsplit(" — ", 1)[1]
+
+    corrected = docs["report"].replace("tonee:", "tone:")
+    report.write_text(corrected, encoding="utf-8")
+    assert _report(["report", "--recursive"], expect_exit=0)[1][0]["ok"] is True
+
+    without = "".join(
+        line for line in corrected.splitlines(keepends=True) if "finding:" not in line
+    )
+    report.write_text(without, encoding="utf-8")
+    _, rows = _report(["report", "--recursive"], expect_exit=1)
+    assert rows[0]["error"].rsplit(" — ", 1)[1] == says[1].rsplit(" — ", 1)[1]
+
+
+def test_the_readme_binding_example_really_runs_with_the_tone_it_asks_for(
+    readme_env, tmp_path
+):
+    """Fix the misspelled key, and the saved result is `direct`, not `calm`.
+
+    The whole point of the check: a broken binding never reaches a run, and
+    the corrected one produces what the author actually asked for.
+    """
+    env, _ = readme_env
+    docs, _says = _binding_docs()
+    project = tmp_path / "composed demo"
+    for name, body in docs.items():
+        folder = project / ".atelier" / "conduits" / name
+        folder.mkdir(parents=True)
+        (folder / "conduit.yaml").write_text(body, encoding="utf-8")
+
+    def _atelier(*args):
+        """Run this checkout's CLI as plain `atelier` inside the project.
+
+        :param args: argv after the program name.
+        :returns: the completed subprocess.
+        """
+        return subprocess.run(
+            ["atelier", *args],
+            cwd=project,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    broken = _atelier("check", "report", "--recursive")
+    assert broken.returncode == 1, broken.stdout + broken.stderr
+    assert "tonee" in broken.stdout
+    assert not (project / "preparation.log").exists()
+    # The facade may create its folders; it must not record a run in them.
+    assert _flow_ids(project) == []
+
+    caller = project / ".atelier" / "conduits" / "report" / "conduit.yaml"
+    caller.write_text(docs["report"].replace("tonee:", "tone:"), encoding="utf-8")
+    fixed = _atelier("check", "report", "--recursive")
+    assert fixed.returncode == 0, fixed.stdout + fixed.stderr
+
+    run = _atelier("run", "report")
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert (project / "preparation.log").read_text() == "prepared\n"
+
+    store = FilesystemStore(project / ".atelier")
+    flows = store.list_flows("report")
+    assert len(flows) == 1
+    assert store.read_progress(flows[0]).status.value == "completed"
+    assert store.read_outputs(flows[0])["summarise"].strip() == "direct summary of 42"

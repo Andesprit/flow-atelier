@@ -14,9 +14,10 @@ from flow_atelier.core.atelier import Atelier
 from flow_atelier.modules.engine import (
     MAX_NESTED_CONDUIT_DEPTH,
     ConduitValidationError,
+    check_unknown_inputs,
     validate_conduit,
 )
-from flow_atelier.schemas.conduit import Conduit, ToolType
+from flow_atelier.schemas.conduit import Conduit, TaskDefinition, ToolType
 
 # Errors the per-conduit job can legitimately produce; a programming error
 # still crashes rather than becoming a polite failed row.
@@ -56,15 +57,15 @@ def _chain(hops: list[tuple[str, str]], target: str | None = None) -> str:
 
 
 def _load_child(
-    atelier: Atelier, name: str, chain: str, cache: dict[str, Conduit]
-) -> Conduit:
+    atelier: Atelier, name: str, chain: str, cache: dict[str, tuple[Conduit, str]]
+) -> tuple[Conduit, str]:
     """Resolve, load and fully validate one called conduit.
 
     :param atelier: configured :class:`Atelier` providing the store.
     :param name: the called conduit's name.
     :param chain: the call chain that reached it, for the diagnostic.
-    :param cache: invocation-local name -> validated conduit cache.
-    :returns: the loaded child conduit.
+    :param cache: invocation-local name -> ``(conduit, file path)`` cache.
+    :returns: the loaded child conduit and the file it came from.
     :raises _NestedProblem: it is missing, unreadable, invalid or unrunnable.
     """
     if name in cache:
@@ -84,8 +85,48 @@ def _load_child(
         raise _NestedProblem(f"{chain}{where} — {_diagnostic(e, path or name)}") from e
     if problems:
         raise _NestedProblem(f"{chain} ({path}) — {'; '.join(problems)}")
-    cache[name] = child
-    return child
+    cache[name] = (child, path)
+    return child, path
+
+
+def _check_bindings(
+    child: Conduit, path: str, task: TaskDefinition, chain: str
+) -> None:
+    """Check what a calling task forwards against the child's own inputs.
+
+    The executor forwards this task's ``inputs`` map and nothing else — a
+    called conduit does not inherit the caller's inputs — so the two failure
+    modes are entirely decidable from the definitions: a key the child can
+    never use (dropped, so a typo of a defaulted key quietly runs with the
+    default), and a declared key with no default that nobody supplies (the
+    engine refuses, but only once the earlier steps have already run).
+
+    Names only. Whether a supplied template resolves, and whether a value
+    the child merely references (from its own caller, an upstream output, a
+    loop or a human answer) will exist, are run-time questions.
+
+    :param child: the loaded child conduit being called.
+    :param path: the child's conduit file, for the diagnostic.
+    :param task: the calling ``tool:conduit`` task.
+    :param chain: the call chain that reached ``child``.
+    :raises _NestedProblem: a forwarded key is unusable or a required one
+        is missing.
+    """
+    try:
+        check_unknown_inputs(child, task.inputs, subject=f"task {task.name!r}")
+    except ValueError as e:
+        raise _NestedProblem(f"{chain} ({path}) — {e}") from e
+    missing = sorted(
+        key
+        for key, spec in child.inputs.items()
+        if spec.default is None and key not in task.inputs
+    )
+    if missing:
+        raise _NestedProblem(
+            f"{chain} ({path}) — task {task.name!r} supplies no value for "
+            f"required inputs: {missing}; add them under the task's own "
+            f"'inputs:' map, which is all a called conduit receives"
+        )
 
 
 def _walk_calls(
@@ -94,7 +135,7 @@ def _walk_calls(
     level: int,
     ancestors: frozenset[str],
     hops: list[tuple[str, str]],
-    cache: dict[str, Conduit],
+    cache: dict[str, tuple[Conduit, str]],
     seen: set[tuple[str, int]],
 ) -> None:
     """Follow ``conduit``'s ``tool:conduit`` calls depth-first, in order.
@@ -105,14 +146,16 @@ def _walk_calls(
     ``seen`` is keyed by ``(name, level)``, not by name alone, so a child
     shared by a short and a long path is still walked on the long one — the
     cache must never hide a chain that would break the engine's depth guard.
-    A repeated call is not a cycle; only the live ancestry is.
+    A repeated call is not a cycle; only the live ancestry is. Input
+    bindings belong to the *call*, not to the child, so they are checked on
+    every edge, before ``seen`` can skip the descent a second time.
 
     :param atelier: configured :class:`Atelier` providing the store.
     :param conduit: an already-validated conduit whose calls to follow.
     :param level: ``conduit``'s nesting level; 0 for the selected root.
     :param ancestors: conduit names on the call stack, including ``conduit``.
     :param hops: ``(conduit, calling task)`` pairs above ``conduit``.
-    :param cache: invocation-local name -> validated conduit cache.
+    :param cache: invocation-local name -> ``(conduit, file path)`` cache.
     :param seen: ``(name, level)`` pairs already walked for this root.
     :raises _NestedProblem: the first failure reachable from ``conduit``.
     """
@@ -135,10 +178,11 @@ def _walk_calls(
             raise _NestedProblem(
                 f"{chain} — nested conduit depth exceeded {MAX_NESTED_CONDUIT_DEPTH}"
             )
+        child, path = _load_child(atelier, target, chain, cache)
+        _check_bindings(child, path, task, chain)
         if (target, level + 1) in seen:
             continue
         seen.add((target, level + 1))
-        child = _load_child(atelier, target, chain, cache)
         _walk_calls(
             atelier, child, level + 1, ancestors | {target}, here, cache, seen
         )
@@ -149,7 +193,7 @@ def _check_one(
     name: str,
     source: str,
     recursive: bool = False,
-    cache: dict[str, Conduit] | None = None,
+    cache: dict[str, tuple[Conduit, str]] | None = None,
 ) -> dict[str, Any]:
     """Validate one conduit fully without executing it.
 
@@ -233,20 +277,22 @@ def check_cmd(
     stdout empty and explains itself on stderr.
 
     `--recursive` also follows `tool:conduit` steps, so a missing, invalid or
-    unrunnable child fails the parent here instead of mid-run. It reports one
-    row per selected conduit still; a nested failure names the calling chain
-    and the child's file inside the parent's `error`. It is a static check of
-    definitions: a call is inspected even if a condition would skip it, a
-    templated target cannot be followed and fails the check, and passing
-    proves nothing about input values or runtime success.
+    unrunnable child — or a call that misspells one of its inputs or leaves a
+    required one unsupplied — fails the parent here instead of mid-run. It
+    reports one row per selected conduit still; a nested failure names the
+    calling chain and the child's file inside the parent's `error`. It is a
+    static check of definitions and binding *names*: a call is inspected even
+    if a condition would skip it, a templated target cannot be followed and
+    fails the check, and passing proves nothing about input *values* or
+    runtime success.
 
     :param conduit_name: a single conduit to check; when omitted, all
         project and global conduits are checked.
     :param json_mode: when true, emit machine-readable JSON instead of the
         labelled terminal report.
     :param recursive: when true, also validate conduits called with
-        ``tool:conduit``, detecting missing children, call cycles and
-        excessive nesting.
+        ``tool:conduit``, detecting missing children, unusable or missing
+        input bindings, call cycles and excessive nesting.
     """
     out = err_console if json_mode else console
     try:
@@ -266,7 +312,7 @@ def check_cmd(
     else:
         targets = entries
 
-    cache: dict[str, Conduit] = {}
+    cache: dict[str, tuple[Conduit, str]] = {}
     rows = [
         _check_one(atelier, name, source, recursive, cache) for name, source in targets
     ]

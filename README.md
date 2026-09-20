@@ -638,14 +638,86 @@ The last line prints `summary of 42` — the child's result, read back from
 the parent's saved run — and `preparation.log` holds exactly one line,
 because the two failed checks never executed a step.
 
+#### The call's arguments, not only the child's name
+
+A called conduit receives exactly what its calling task forwards under
+`inputs:`. It does **not** inherit the caller's inputs, so that one map is
+the whole interface between the two files — and `--recursive` checks it.
+
+Extend the same example: give `summary` a second input with a default, and
+let the caller misspell it.
+
+```yaml
+name: summary
+description: Write a one-line summary of a finding
+inputs:
+  finding:
+    description: what the caller measured
+  tone:
+    description: how the summary should read
+    default: calm
+tasks:
+  - name: write
+    description: write the summary line
+    task: "echo {{inputs.tone}} summary of {{inputs.finding}}"
+    tool: tool:bash
+    depends_on: []
+```
+
+```yaml
+name: report
+description: Prepare a measurement, then hand it to the summary conduit
+tasks:
+  - name: prepare
+    description: record that preparation happened, and measure something
+    task: "echo prepared >> preparation.log && echo 42"
+    tool: tool:bash
+    depends_on: []
+  - name: summarise
+    description: turn the measurement into a summary
+    task: summary
+    tool: tool:conduit
+    depends_on: [prepare]
+    inputs:
+      finding: "{{prepare.output}}"
+      tonee: direct
+```
+
+The engine drops a key the child cannot use, so this run would have
+succeeded and written a `calm` summary — the default — while the author
+believed they had asked for `direct`. `atelier check report --recursive`
+fails instead, on one line naming the call, the child's file, the bad key
+and the nearest one it does know:
+
+```
+report [project] — FAIL: report.summarise -> summary (/tmp/demo/.atelier/conduits/summary/conduit.yaml) — task 'summarise' has unknown inputs: ['tonee'] (did you mean 'tone' for 'tonee'?); 'summary' accepts inputs: ['finding', 'tone']
+```
+
+Rename `tonee` to `tone` and the check passes. Delete the `finding:` line
+from the corrected file and it fails again, because `finding` has no
+default and nothing else can supply it:
+
+```
+report [project] — FAIL: report.summarise -> summary (...) — task 'summarise' supplies no value for required inputs: ['finding']; add them under the task's own 'inputs:' map, which is all a called conduit receives
+```
+
+Both used to be found only by running the workflow — the second after
+`prepare` had already appended to `preparation.log`, the first not at all.
+
 What the flag does and does not tell you:
 
 - The report still has one row per conduit you selected, with the same
   `--json` keys. A nested failure sets that row's `ok` to false and puts the
   calling chain, the child's file and the real diagnostic into its `error`.
 - `required_inputs` stays the **root's** inputs. `summary` declares `finding`
-  with no default, but the parent supplies it, so `atelier run report` needs
-  no `--input`. Recursive checking follows definitions, not input values.
+  with no default, but the calling task supplies it, so `atelier run report`
+  needs no `--input`.
+- Binding **names** are checked: a forwarded key the child can neither
+  declare nor reference, and a child input declared with no default that the
+  call leaves out, both fail. Binding **values** are not. A `{{...}}` you
+  forward is accepted without being resolved, and a key the child only
+  *references* — supplied at run time by a loop, a human answer or an
+  upstream output — is neither required nor rejected here.
 - Every `tool:conduit` step is inspected, including one a condition would
   skip at runtime.
 - A target assembled from a template (`task: "{{inputs.which}}"`) cannot be

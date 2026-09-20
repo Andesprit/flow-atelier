@@ -303,6 +303,11 @@ atelier list flows --conduit hello          # lists previous runs
 shell command, so this works end-to-end before you install any AI
 tool.
 
+Ready for a real one? [Your first workflow: run it, break it, recover
+it](docs/first-workflow.md) is a 5-minute Bash-only exercise that builds a
+three-step conduit, fails it on purpose, diagnoses it from saved history, and
+shows what `--resume` keeps that `--again` redoes.
+
 ### Your first AI workflow: review what you staged
 
 `atelier create --template code-review` writes a two-step conduit that

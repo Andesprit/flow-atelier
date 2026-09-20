@@ -350,6 +350,7 @@ async def test_patch_still_accepts_the_string_shorthand(client):
 @pytest.mark.parametrize("tool", [
     "harness:codex",
     "harness:codex:gpt-5.1-codex",
+    "harness:claude-code:opus[1m]",
     "harness:opencode:anthropic/claude-sonnet-4-5",
 ])
 async def test_interaction_policy_round_trip_patch_and_remove(client, tool):

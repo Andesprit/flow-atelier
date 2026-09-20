@@ -8,7 +8,7 @@ export function needsSupervisor(policy?: InteractionPolicy | null): boolean {
 /** Mirrors the backend's harness-name grammar without restricting custom harnesses. */
 export function interactionError(policy?: InteractionPolicy | null): string | null {
   if (!needsSupervisor(policy)) return null;
-  return /^harness:[a-z0-9][a-z0-9-]*(:[A-Za-z0-9][A-Za-z0-9._/-]*)?$/.test(policy?.supervisor?.tool ?? "")
+  return /^harness:[a-z0-9][a-z0-9-]*(:[A-Za-z0-9][A-Za-z0-9._/\[\]-]*)?$/.test(policy?.supervisor?.tool ?? "")
     ? null
     : "Enter a harness name such as harness:codex.";
 }

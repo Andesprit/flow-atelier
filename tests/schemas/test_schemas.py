@@ -355,6 +355,7 @@ def test_unbundled_harness_name_validates():
     [
         "harness:codex:gpt-5.1-codex",
         "harness:claude-code:claude-sonnet-4-5",
+        "harness:claude-code:opus[1m]",
         "harness:opencode:anthropic/claude-sonnet-4-5",
     ],
 )

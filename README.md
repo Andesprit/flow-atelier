@@ -554,6 +554,40 @@ terminal: `atelier schema` for the vocabulary, write the YAML,
 `error`, check again, and run it once `ok` is true. Nothing runs during a
 check — no task, no agent session, no recorded flow.
 
+### Waiting for a run from another terminal or agent
+
+A run started in another terminal, by the dashboard, or by the scheduler is
+an ordinary saved flow, so a second session can join it and use its results:
+
+```bash
+flow_id=$(atelier wait latest --timeout 60) && atelier outputs "$flow_id" --json
+```
+
+`atelier wait` watches one run's saved progress and turns the outcome into an
+exit status, so nothing has to poll, re-read `status --json`, or scrape the
+terminal:
+
+| exit | what it means                                                                   |
+| ---- | ------------------------------------------------------------------------------- |
+| 0    | the run saved `completed`; stdout holds the resolved flow id and nothing else     |
+| 1    | it failed, was stopped, its runner died, or its progress could not be read        |
+| 124  | the timeout expired while it was still running                                    |
+| 130  | you pressed Ctrl-C                                                                |
+| 2    | `--timeout` was not a positive number of seconds                                  |
+
+Success prints the id it resolved, and the next command should use that id.
+Resolving `latest` a second time can land on a newer run that started while
+you were waiting.
+
+Waiting only watches. A timeout or a Ctrl-C ends your *observation*, not the
+run: the other process keeps going and `atelier status <flow_id>` still finds
+it. `wait` never starts, stops, resumes or edits anything. A run paused on a
+human gate (`tool:hitl`) counts as still running, so it times out rather than
+failing.
+
+Failures name the state and point at `atelier status` and `atelier logs`; a
+run whose runner died also suggests `atelier run --resume`.
+
 ## Examples
 
 The two conduits below are **illustrative, not prescriptive**. A
@@ -895,6 +929,7 @@ atelier stop <flow_id>                                 # gracefully halt a runni
 
 # inspecting
 atelier status <flow_id>
+atelier wait <flow_id> [--timeout 60]                  # block until it finishes; exit 0 only if it did
 atelier logs <flow_id> [--task <name>] [--follow] [--json]
 atelier outputs <flow_id> [--task <name>] [--json]    # read back a finished flow's results
 atelier timing <flow_id> [--json]                      # per-task duration, slowest first

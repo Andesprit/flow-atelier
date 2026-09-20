@@ -1359,6 +1359,105 @@ async def test_run_outputs_yaml_preserves_declaration_order(store):
     assert list(data.keys()) == ["c", "a", "b"]
 
 
+def _skipping_conduit() -> Conduit:
+    """Build a two-task conduit whose second task is always skipped.
+
+    :returns: a conduit whose final output map always carries a None value.
+    """
+    return _conduit(
+        [
+            {"name": "review", "description": "d", "task": "x", "tool": "tool:bash",
+             "depends_on": []},
+            {"name": "deploy", "description": "d", "task": "x", "tool": "tool:bash",
+             "depends_on": ["review.output.match(APPROVE)"]},
+        ]
+    )
+
+
+class _OutputsAtCompletion(FilesystemStore):
+    """Store that reads outputs.yaml the moment `completed` is persisted.
+
+    Stands in for a second process — `atelier wait` — that sees the completed
+    status and immediately reads the results of that run.
+    """
+
+    def __init__(self, base_dir):
+        """Start with nothing observed.
+
+        :param base_dir: store root, as for FilesystemStore.
+        """
+        super().__init__(base_dir)
+        self.observed: dict | None = None
+
+    def write_progress(self, flow_id, progress):
+        """Snapshot outputs.yaml just before a terminal `completed` lands.
+
+        :param flow_id: flow being written.
+        :param progress: the snapshot the engine is publishing.
+        """
+        if progress.status == FlowStatus.completed:
+            self.observed = self.read_outputs(flow_id)
+        super().write_progress(flow_id, progress)
+
+
+class _FinalOutputWriteFails(FilesystemStore):
+    """Store whose *final* outputs.yaml write fails, as a full disk would."""
+
+    def __init__(self, base_dir):
+        """Start with no recorded statuses.
+
+        :param base_dir: store root, as for FilesystemStore.
+        """
+        super().__init__(base_dir)
+        self.statuses: list[FlowStatus] = []
+
+    def write_outputs(self, flow_id, outputs):
+        """Fail only the full end-of-run map, letting intermediate writes pass.
+
+        :param flow_id: flow being written.
+        :param outputs: the map the engine is publishing.
+        """
+        # Only the last write carries every declared task, so a skipped task's
+        # None value identifies it without counting calls.
+        if None in outputs.values():
+            raise OSError("no space left on device")
+        super().write_outputs(flow_id, outputs)
+
+    def write_progress(self, flow_id, progress):
+        """Record every status the engine publishes.
+
+        :param flow_id: flow being written.
+        :param progress: the snapshot the engine is publishing.
+        """
+        self.statuses.append(progress.status)
+        super().write_progress(flow_id, progress)
+
+
+async def test_completed_status_is_published_after_the_final_outputs(tmp_path):
+    """A reader that acts on `completed` must already see the whole output map."""
+    store = _OutputsAtCompletion(tmp_path / ".atelier")
+    fake = FakeExecutor(outputs={"review": "VERDICT: REJECT"})
+    engine = Engine({"tool:bash": fake}, store)
+
+    await engine.run(_skipping_conduit(), {})
+
+    assert store.observed == {"review": "VERDICT: REJECT", "deploy": None}
+
+
+async def test_a_failed_final_output_write_never_reports_completed(tmp_path):
+    """If the results cannot be saved, the run fails instead of claiming success."""
+    store = _FinalOutputWriteFails(tmp_path / ".atelier")
+    fake = FakeExecutor(outputs={"review": "VERDICT: REJECT"})
+    engine = Engine({"tool:bash": fake}, store)
+
+    with pytest.raises(OSError):
+        await engine.run(_skipping_conduit(), {})
+
+    flow_id = store.list_flows()[0]
+    assert FlowStatus.completed not in store.statuses
+    assert store.read_progress(flow_id).status == FlowStatus.failed
+
+
 # ---------------------------------------------------------------- last_turn_output
 
 

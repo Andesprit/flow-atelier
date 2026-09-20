@@ -1,4 +1,13 @@
-"""Conduit and task schemas."""
+"""Conduit and task schemas.
+
+The three definition models below forbid extra fields. A conduit.yaml is
+hand-written (or agent-written), so a misspelled control is the likely
+mistake, and pydantic's default — discard the unknown key — turns
+``depend_on:`` into a task with no dependencies that checks, plans and runs
+as if the author meant that. Maps whose *keys* are the author's data
+(conduit inputs, a task's input bindings) stay open; only the configuration
+vocabulary is closed.
+"""
 from __future__ import annotations
 
 import re
@@ -56,6 +65,8 @@ class InputSpec(BaseModel):
     the default; callers that supply it override it.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     description: str = ""
     default: str | None = None
 
@@ -63,7 +74,7 @@ class InputSpec(BaseModel):
 class TaskDefinition(BaseModel):
     """A single task within a conduit."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     name: str
     description: str
@@ -209,6 +220,8 @@ class TaskDefinition(BaseModel):
 
 class Conduit(BaseModel):
     """A reusable workflow definition."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     description: str

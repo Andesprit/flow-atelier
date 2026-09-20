@@ -10,6 +10,7 @@ from rich.markup import escape
 
 from flow_atelier.cli._shared import _exit_unknown_conduit, console, err_console
 from flow_atelier.cli.main import app
+from flow_atelier.cli.rendering.render import format_conduit_error
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.modules.engine import (
     MAX_NESTED_CONDUIT_DEPTH,
@@ -36,10 +37,12 @@ def _diagnostic(e: Exception, where: str) -> str:
     :returns: a non-empty one-line-or-more diagnostic.
     """
     if isinstance(e, ValidationError):
-        errors = e.errors()
+        # The shared renderer, which prefixes the field path (`tasks[1].foo`).
+        # Without it a rejected unknown field reads only as "Extra inputs are
+        # not permitted" — true, and useless for finding the typo in `path`.
         # A failure always carries text: `or type(e).__name__` is the last
         # resort, because a blank diagnostic reads like a checker bug.
-        return (errors[0].get("msg") if errors else None) or str(e) or "ValidationError"
+        return format_conduit_error(e) or "ValidationError"
     if isinstance(e, OSError | UnicodeDecodeError):
         return f"cannot read {where} — {e}"
     return str(e) or type(e).__name__

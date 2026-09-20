@@ -496,6 +496,50 @@ installed — no. `atelier check <name>` still owns all of that, and it is
 still the thing to run before a real workflow. Regenerate the file after
 upgrading Atelier; the schema describes the version that wrote it.
 
+### A field Atelier does not know is an error
+
+A `conduit.yaml` may only use the fields Atelier defines. A misspelled
+one used to be dropped in silence, which is the worst possible outcome:
+the file checks, plans and runs, but not as the workflow you wrote.
+
+```yaml
+name: typo_demo
+description: two tasks that are meant to run in order
+tasks:
+  - name: prepare
+    description: write the sentinel
+    task: "printf 'prepared\n' > sentinel.txt"
+    tool: tool:bash
+  - name: consume
+    description: read the sentinel back
+    task: "cat sentinel.txt"
+    tool: tool:bash
+    depend_on: [prepare]      # typo: the field is depends_on
+```
+
+Before, `consume` loaded with no dependencies at all and raced `prepare`
+for a file that did not exist yet. Now:
+
+```bash
+atelier check typo_demo
+```
+
+```
+typo_demo [project] — FAIL: tasks[1].depend_on: Extra inputs are not permitted
+```
+
+Correct it to `depends_on:` and the same file checks, plans `consume`
+into the second wave, and runs. The API rejects the same fields, so the
+designer and a coding agent posting JSON get the identical answer.
+
+**If you kept your own notes inside a conduit:** anything Atelier does
+not define was already being discarded on load, so it never reached a
+run — but it is now an error rather than a silent drop. Move it to a
+YAML comment or a file beside the conduit. And if you exported
+`conduit.schema.json` before upgrading, run `atelier schema` again:
+the old copy still accepts the typo your editor should now be
+underlining.
+
 ### Checking conduits from a script or an agent
 
 `atelier check --json` answers the same question as `atelier check`, in a

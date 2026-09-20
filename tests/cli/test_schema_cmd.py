@@ -8,6 +8,7 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import best_match
+from pydantic import ValidationError
 from typer.testing import CliRunner
 
 from flow_atelier.cli import app
@@ -327,3 +328,50 @@ def test_the_readme_walkthrough_works_end_to_end(workdir):
     outputs = runner.invoke(app, ["outputs", "latest", "--task", "greet"])
     assert outputs.exit_code == 0, outputs.output
     assert "hello world" in outputs.output
+
+
+@pytest.mark.parametrize(
+    ("field", "break_it"),
+    [
+        # The conduit root.
+        ("max_concurreny", lambda d: d.__setitem__("max_concurreny", 5)),
+        # A wrapped task body...
+        (
+            "depend_on",
+            lambda d: d["tasks"][0]["wrapped"].__setitem__("depend_on", []),
+        ),
+        # ...and a plain task object, the other form the same file may use.
+        ("depend_on", lambda d: d["tasks"][2].__setitem__("depend_on", [])),
+        # An object-form input specification.
+        (
+            "defaut",
+            lambda d: d["inputs"]["spelled_out"].__setitem__("defaut", "x"),
+        ),
+        # A typo sitting beside the field it misspells, so the correctly
+        # spelled one cannot make the file look complete.
+        (
+            "timout",
+            lambda d: d["tasks"][2].update({"timeout": 30, "timout": 60}),
+        ),
+    ],
+)
+def test_a_misspelled_field_fails_the_schema_as_well_as_the_loader(
+    workdir, field, break_it
+):
+    """An editor holding the export catches what the loader now refuses.
+
+    Both sides have to move together: a schema that still accepted the typo
+    would green-light a file `atelier check` then rejects, and the author
+    would learn about it only after saving.
+    """
+    schema = _export()
+    document = yaml.safe_load(EVERY_SHAPE)
+    assert _errors(schema, document) == []
+    assert Conduit.model_validate(yaml.safe_load(EVERY_SHAPE))
+
+    break_it(document)
+
+    assert _errors(schema, document), field
+    with pytest.raises(ValidationError) as ei:
+        Conduit.model_validate(document)
+    assert any(field in e["loc"] for e in ei.value.errors()), ei.value.errors()

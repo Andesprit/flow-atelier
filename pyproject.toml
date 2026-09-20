@@ -1,6 +1,6 @@
 [project]
 name = "flow-atelier"
-version = "0.5.0"
+version = "0.6.0"
 description = "CLI tool and async workflow engine for running reproducible DAG workflows (conduits)."
 readme = "README.md"
 license = "Apache-2.0"

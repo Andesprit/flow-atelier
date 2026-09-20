@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import typer
@@ -13,6 +14,7 @@ from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import _render_orchestration_msg
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.schemas.conduit import Conduit, TaskDefinition
+from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 
 
 @app.command("ask")
@@ -35,7 +37,7 @@ def ask_cmd(
     harness: str = typer.Option(
         "claude-code",
         "--harness",
-        help="Agent to talk to, as listed by `atelier list harnesses`.",
+        help="Agent from `atelier list harnesses`, optionally followed by :<model>.",
     ),
 ) -> None:
     """Start an interactive conversation with an AI agent in a target directory.
@@ -51,6 +53,12 @@ def ask_cmd(
     if not query.strip():
         console.print("[red]error:[/red] query cannot be empty")
         raise typer.Exit(code=2)
+
+    if not re.fullmatch(HARNESS_TOOL_PATTERN, f"harness:{harness}"):
+        raise typer.BadParameter(
+            "expected a lowercase harness name, optionally followed by :<model>",
+            param_hint="--harness",
+        )
 
     atelier = Atelier()
     conduit = Conduit(

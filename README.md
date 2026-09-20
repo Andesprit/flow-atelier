@@ -303,6 +303,40 @@ atelier list flows --conduit hello          # lists previous runs
 shell command, so this works end-to-end before you install any AI
 tool.
 
+### Your first AI workflow: review what you staged
+
+`atelier create --template code-review` writes a two-step conduit that
+captures the patch you have staged and hands it to Claude Code for a
+review. Nothing runs at creation time — you get an ordinary YAML file to
+read, run, and edit.
+
+```bash
+atelier harness check claude-code   # confirms the agent starts and you're logged in
+atelier create my-review --template code-review
+atelier check my-review             # validates it and confirms the harness is usable
+atelier plan my-review              # prints the two waves, runs nothing
+git add -p                          # stage the changes you want reviewed
+atelier run my-review
+atelier outputs latest --task review
+```
+
+You need a Git repository, `bash`, and Claude Code installed and logged in
+(see [Optional: AI harnesses](#optional-ai-harnesses) for its launcher
+prerequisites). The review covers **only what is staged** — `git diff
+--cached`. Unstaged edits and untracked files are left out until you
+`git add` them, and an empty index skips the review step instead of
+calling the agent.
+
+The workflow only reads your repository: it never stages, commits, or
+edits anything for you. The prompt tells the agent to analyse rather than
+act, which is an instruction to the agent, not a sandbox around it.
+
+If a run fails, `atelier status latest` and `atelier logs latest` say which
+step broke and what it printed. `latest` means the most recently started
+run in this project; pass the printed flow id instead when several runs
+overlap. To change the prompt, the harness, or the diff range, edit
+`.atelier/conduits/my-review/conduit.yaml` — it is a normal conduit.
+
 ## Examples
 
 The two conduits below are **illustrative, not prescriptive**. A
@@ -624,7 +658,8 @@ flow folder under `.atelier/flows/` in the current working directory.
 ```
 # authoring
 atelier init
-atelier create <name> [--description <text>]           # scaffold a new empty conduit
+atelier create <name> [--description <text>] [--template hello|code-review]
+                                                       # scaffold a starter conduit
 atelier check [<conduit>]                              # validate conduit(s) without running
 atelier plan <conduit>                                 # print the DAG as ordered waves, run nothing
 

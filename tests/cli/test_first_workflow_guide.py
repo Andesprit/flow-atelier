@@ -19,11 +19,11 @@ from pathlib import Path
 
 import pytest
 
+from flow_atelier.services.executor.bash import to_bash_path
 from flow_atelier.services.store.filesystem import FilesystemStore
+from tests._shell import CLI as _CLI
+from tests._shell import record_path, run_script, write_shim
 
-# Same shim trick as the other real-process CLI tests: run this interpreter's
-# CLI as plain `atelier`, without depending on the console script being on PATH.
-_CLI = "from flow_atelier.main import app; app()"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GUIDE = _REPO_ROOT / "docs" / "first-workflow.md"
 _BASH_BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.MULTILINE | re.DOTALL)
@@ -40,7 +40,7 @@ def _guide_script() -> str:
 
     :returns: one shell script, with error checking enabled up front.
     """
-    blocks = [m.group(1) for m in _BASH_BLOCK.finditer(_GUIDE.read_text())]
+    blocks = [m.group(1) for m in _BASH_BLOCK.finditer(_GUIDE.read_text(encoding="utf-8"))]
     assert len(blocks) >= _EXPECTED_BLOCKS, (
         f"only {len(blocks)} bash blocks found in {_GUIDE.name}; "
         "the walkthrough is incomplete or the fences changed"
@@ -50,7 +50,7 @@ def _guide_script() -> str:
         assert required in body, f"the guide no longer runs `{required}`"
     # -e proves the copyable blocks survive a reader's own error checking; the
     # intentionally-failing step has to handle itself, not rely on leniency.
-    return "set -eu\n" + body + '\nprintf "%s\\n" "$tutorial_dir" > "$TUTORIAL_MARKER"\n'
+    return "set -eu\n" + body + "\n" + record_path("tutorial_dir", "TUTORIAL_MARKER")
 
 
 @pytest.fixture
@@ -62,16 +62,14 @@ def guide_env(tmp_path):
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    shim = bin_dir / "atelier"
-    shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" -c \'{_CLI}\' "$@"\n')
-    shim.chmod(0o755)
+    write_shim(bin_dir)
     marker = tmp_path / "workspace-path"
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("ATELIER_")}
     env["ATELIER_GLOBAL_ATELIER_DIR"] = str(tmp_path / "global")
     env["ATELIER_NO_UPDATE_CHECK"] = "1"
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
-    env["TUTORIAL_MARKER"] = str(marker)
+    env["TUTORIAL_MARKER"] = to_bash_path(marker)
     yield env, marker
     # The guide deliberately never deletes its own workspace, and `mktemp -d`
     # puts it outside tmp_path, so the test is what cleans up after it.
@@ -91,7 +89,7 @@ def _log_shape(store: FilesystemStore, flow_id: str) -> list[tuple[str, bool]]:
 
 def test_readme_points_at_a_guide_that_exists():
     """The discovery link beside the quickstart resolves to this file."""
-    readme = (_REPO_ROOT / "README.md").read_text()
+    readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "(docs/first-workflow.md)" in readme
     assert _GUIDE.is_file()
 
@@ -99,17 +97,8 @@ def test_readme_points_at_a_guide_that_exists():
 def test_the_guide_runs_end_to_end_and_records_what_it_claims(guide_env, tmp_path):
     """Execute the published commands, then verify the saved history."""
     env, marker = guide_env
-    script = tmp_path / "walkthrough.sh"
-    script.write_text(_guide_script())
-
-    run = subprocess.run(
-        ["bash", str(script)],
-        cwd=tmp_path,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=240,
+    run = run_script(
+        _guide_script(), tmp_path / "walkthrough.sh", tmp_path, env, timeout=240
     )
     assert run.returncode == 0, f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
     out = run.stdout
@@ -158,7 +147,8 @@ def test_the_guide_runs_end_to_end_and_records_what_it_claims(guide_env, tmp_pat
     assert json.loads(
         subprocess.run(
             [sys.executable, "-c", _CLI, "outputs", fresh, "--json"],
-            cwd=workspace, env=env, capture_output=True, text=True, timeout=60,
+            cwd=workspace, env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=60,
         ).stdout
     )["execute"] == "workflow works\n"
 

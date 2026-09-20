@@ -25,11 +25,10 @@ from flow_atelier.cli import app
 from flow_atelier.cli.commands import wait as wait_cmd
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.schemas.progress import FlowStatus, Progress
+from flow_atelier.services.executor.bash import to_bash_path
 from flow_atelier.services.store.filesystem import FilesystemStore
-
-# Runs the installed CLI in a child process without depending on the
-# `atelier` console script being on PATH inside the test environment.
-_CLI = "from flow_atelier.main import app; app()"
+from tests._shell import CLI as _CLI
+from tests._shell import run_expression, write_shim
 
 
 @pytest.fixture
@@ -565,9 +564,7 @@ def real_project(tmp_path, monkeypatch):
     (tmp_path / "global" / "conduits").mkdir(parents=True)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    shim = bin_dir / "atelier"
-    shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" -c \'{_CLI}\' "$@"\n')
-    shim.chmod(0o755)
+    write_shim(bin_dir)
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("ATELIER_")}
     env["ATELIER_GLOBAL_ATELIER_DIR"] = str(tmp_path / "global")
@@ -604,7 +601,23 @@ def _atelier(work: Path, env: dict, *args: str, timeout: float = 120):
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
+    )
+
+
+def _install_waiter(work: Path, ready: Path, release: Path) -> None:
+    """Install the held `waiter` conduit, with its sentinels in bash's namespace.
+
+    :param work: project directory.
+    :param ready: sentinel the task touches once it is inside its wait loop.
+    :param release: sentinel the test creates to let the task finish.
+    """
+    _install(
+        work,
+        "waiter",
+        WAITER_CONDUIT.format(ready=to_bash_path(ready), release=to_bash_path(release)),
     )
 
 
@@ -649,7 +662,7 @@ def test_wait_joins_a_real_run_and_feeds_its_results_to_the_next_command(real_pr
     """The documented timeout, release and read-back workflow, across processes."""
     work, env = real_project
     ready, release = work / "ready", work / "release"
-    _install(work, "waiter", WAITER_CONDUIT.format(ready=ready, release=release))
+    _install_waiter(work, ready, release)
 
     runner = _start_waiter(work, env, ready)
     try:
@@ -670,10 +683,10 @@ def test_wait_joins_a_real_run_and_feeds_its_results_to_the_next_command(real_pr
         assert runner.wait(timeout=60) == 0
 
         # The exact expression the README documents, run by a real shell.
-        chained = subprocess.run(
-            ['flow_id=$(atelier wait latest --timeout 60) && '
-             'atelier outputs "$flow_id" --json'],
-            shell=True, cwd=work, env=env, capture_output=True, text=True, timeout=120,
+        chained = run_expression(
+            'flow_id=$(atelier wait latest --timeout 60) && '
+            'atelier outputs "$flow_id" --json',
+            cwd=work, env=env, timeout=120,
         )
         assert chained.returncode == 0, chained.stderr
         assert json.loads(chained.stdout) == {"work": "released\n", "never": None}
@@ -690,9 +703,9 @@ def test_wait_keeps_a_failed_run_out_of_the_success_branch(real_project):
     _install(work, "boomer", BOOM_CONDUIT)
     assert _atelier(work, env, "run", "boomer").returncode == 1
 
-    chained = subprocess.run(
-        ['flow_id=$(atelier wait latest --timeout 30) && touch followed-up'],
-        shell=True, cwd=work, env=env, capture_output=True, text=True, timeout=120,
+    chained = run_expression(
+        "flow_id=$(atelier wait latest --timeout 30) && touch followed-up",
+        cwd=work, env=env, timeout=120,
     )
 
     assert chained.returncode == 1
@@ -700,11 +713,15 @@ def test_wait_keeps_a_failed_run_out_of_the_success_branch(real_project):
     assert not (work / "followed-up").exists()
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX signals: Popen.send_signal rejects SIGINT and 130 is a shell convention",
+)
 def test_ctrl_c_stops_the_observer_and_leaves_the_run_alone(real_project):
     """Interrupting a real `atelier wait` exits 130; the runner keeps going."""
     work, env = real_project
     ready, release = work / "ready", work / "release"
-    _install(work, "waiter", WAITER_CONDUIT.format(ready=ready, release=release))
+    _install_waiter(work, ready, release)
 
     runner = _start_waiter(work, env, ready)
     try:

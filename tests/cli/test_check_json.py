@@ -6,6 +6,7 @@ import os
 import stat
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from flow_atelier.cli import app
@@ -347,7 +348,8 @@ def test_a_per_conduit_io_failure_stays_inside_its_own_row(
 
 
 @pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file modes"
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs POSIX file modes; chmod(0) does not deny reads on Windows",
 )
 def test_a_real_unreadable_file_is_a_failed_row(workdir):
     """Not fault injection: a mode the filesystem actually enforces."""
@@ -366,7 +368,8 @@ def test_a_real_unreadable_file_is_a_failed_row(workdir):
 
 
 @pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file modes"
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs POSIX file modes; chmod(0) does not deny reads on Windows",
 )
 def test_an_unreadable_conduit_directory_is_a_command_error(workdir):
     """Not fault injection: the store itself cannot enumerate, so nothing is
@@ -430,7 +433,10 @@ def test_checking_runs_nothing(workdir):
         "sideeffect",
         "name: sideeffect\ndescription: d\ntasks:\n"
         "  - name: a\n    description: a\n"
-        f"    task: \"touch {sentinel}\"\n    tool: tool:bash\n",
+        # as_posix: a Windows path's backslashes are escape sequences inside a
+        # double-quoted YAML scalar, so the raw path would fail to parse and
+        # this would pass for the wrong reason.
+        f"    task: \"touch {sentinel.as_posix()}\"\n    tool: tool:bash\n",
     )
     _report(["sideeffect"], expect_exit=0)
 
@@ -500,7 +506,7 @@ def test_the_readme_report_example_works(workdir):
     ]
     assert status == 1
     assert len(failed) == 1
-    assert failed[0][0].endswith("conduits/dangling/conduit.yaml")
+    assert failed[0][0].endswith(os.path.join("conduits", "dangling", "conduit.yaml"))
 
     (workdir / ".atelier" / "conduits" / "dangling" / "conduit.yaml").write_text(
         MISSING_DEP.replace("depends_on: [nope]", "depends_on: []"), encoding="utf-8"
@@ -516,4 +522,4 @@ def test_help_says_how_to_read_the_report(workdir):
     """`--help` explains the status-plus-stdout contract before you rely on it."""
     result = CliRunner().invoke(app, ["check", "--help"])
     assert result.exit_code == 0
-    assert "--json" in result.output
+    assert "--json" in unstyle(result.output)

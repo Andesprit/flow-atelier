@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from flow_atelier.cli import app
@@ -155,7 +156,10 @@ def test_document_reaches_the_task_and_the_record_unchanged(workdir):
 def test_file_and_literal_inputs_combine(workdir):
     """A document from a file and a short literal setting travel together."""
     _write(workdir, "brief", BRIEF)
-    (workdir / "spec.md").write_text("ship it\n")
+    # newline="": `--input-file` hands the file's bytes through untouched, so
+    # letting Windows turn the \n into \r\n would assert on the platform, not
+    # on the feature.
+    (workdir / "spec.md").write_text("ship it\n", newline="")
 
     result = CliRunner().invoke(
         app,
@@ -243,14 +247,15 @@ def test_bad_usage_fails_before_anything_runs(workdir, args, expected):
 
     result = CliRunner().invoke(app, ["run", "hello", *args])
     assert result.exit_code == 2, result.output
-    assert expected in result.output
+    assert expected in unstyle(result.output)
     assert "Ada" not in result.output
     assert "loading conduit" not in result.output
     assert Atelier().list_flows() == []
 
 
 @pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads anything"
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs POSIX file modes; chmod(0) does not deny reads on Windows",
 )
 def test_unreadable_file_reports_why(workdir):
     """A file the user cannot read fails with the OS reason, not a traceback."""

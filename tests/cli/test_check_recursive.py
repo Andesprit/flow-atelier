@@ -14,16 +14,18 @@ import re
 import shutil
 import stat
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from click import unstyle
 from typer.testing import CliRunner
 
 from flow_atelier.cli import app
 from flow_atelier.modules.engine import MAX_NESTED_CONDUIT_DEPTH
+from flow_atelier.services.executor.bash import to_bash_path
 from flow_atelier.services.store.filesystem import FilesystemStore
+from tests._shell import record_path, run_script, write_shim
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _README = _REPO_ROOT / "README.md"
@@ -33,9 +35,6 @@ _BASH_BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 # One scan over every fence, so a closing ``` can never be read as an opening
 # one: `finditer` resumes after the block it just consumed.
 _FENCE = re.compile(r"^```(\w*)\n(.*?)^```$", re.MULTILINE | re.DOTALL)
-# Same shim trick as the other real-process CLI tests: run this interpreter's
-# CLI as plain `atelier`, without depending on the console script on PATH.
-_CLI = "from flow_atelier.main import app; app()"
 
 BASH = (
     "name: {name}\ndescription: d\n"
@@ -718,7 +717,11 @@ def test_a_binding_failure_is_a_row_not_a_crash_and_runs_nothing(workdir):
         workdir,
         "kid",
         KID_HAS_TONE.replace(
-            '    task: "echo {{inputs.tone}}"', f'    task: "touch {sentinel}"'
+            '    task: "echo {{inputs.tone}}"',
+            # as_posix: a Windows path's backslashes are escape sequences
+            # inside a double-quoted YAML scalar, so the raw path would fail
+            # to parse and this would pass for the wrong reason.
+            f'    task: "touch {sentinel.as_posix()}"',
         ),
     )
     _write(workdir, "zzz-fine", BASH.format(name="zzz-fine"))
@@ -805,7 +808,7 @@ def test_help_mentions_the_flag_and_its_limits(workdir):
     """`--help` states the boundary before anyone relies on the check."""
     result = CliRunner().invoke(app, ["check", "--help"])
     assert result.exit_code == 0
-    assert "--recursive" in result.output
+    assert "--recursive" in unstyle(result.output)
 
 
 # --------------------------------------------------------------- error boundary
@@ -870,7 +873,8 @@ def test_a_recursive_check_records_no_flow_and_touches_nothing(workdir):
         workdir,
         "kid",
         "name: kid\ndescription: d\ntasks:\n  - name: a\n    description: a\n"
-        f'    task: "touch {sentinel}"\n    tool: tool:bash\n',
+        # as_posix: see test_a_binding_failure_is_a_row_not_a_crash_and_runs_nothing.
+        f'    task: "touch {sentinel.as_posix()}"\n    tool: tool:bash\n',
     )
     _report(["root", "--recursive"], expect_exit=0)
     assert not sentinel.exists()
@@ -894,11 +898,7 @@ def _readme_script() -> str:
     )
     # Deliberately no `set -e`: the published block has to survive on its own
     # gating, and its final status is the status this test reads.
-    tail = (
-        "\nstatus=$?\n"
-        'printf "%s\\n" "$workspace" > "$WORKSPACE_MARKER"\n'
-        "exit $status\n"
-    )
+    tail = "\nstatus=$?\n" + record_path("workspace", "WORKSPACE_MARKER") + "exit $status\n"
     return "\n".join(blocks) + tail
 
 
@@ -914,21 +914,19 @@ def readme_env(tmp_path, request):
     break_check = getattr(request, "param", False)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    shim = bin_dir / "atelier"
     guard = (
         'if [ "$1" = check ]; then echo "INJECTED check failure" >&2; exit 1; fi\n'
         if break_check
         else ""
     )
-    shim.write_text(f'#!/bin/sh\n{guard}exec "{sys.executable}" -c \'{_CLI}\' "$@"\n')
-    shim.chmod(0o755)
+    write_shim(bin_dir, guard)
     marker = tmp_path / "workspace-path"
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("ATELIER_")}
     env["ATELIER_GLOBAL_ATELIER_DIR"] = str(tmp_path / "global")
     env["ATELIER_NO_UPDATE_CHECK"] = "1"
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
-    env["WORKSPACE_MARKER"] = str(marker)
+    env["WORKSPACE_MARKER"] = to_bash_path(marker)
     yield env, marker
     # `mktemp -d` puts the workspace outside tmp_path, and the README never
     # tells a reader to delete it, so the test is what cleans up.
@@ -943,16 +941,8 @@ def _run_readme(env, tmp_path):
     :param tmp_path: pytest temp directory fixture.
     :returns: the completed subprocess.
     """
-    script = tmp_path / "section.sh"
-    script.write_text(_readme_script())
-    return subprocess.run(
-        ["bash", str(script)],
-        cwd=tmp_path,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=180,
+    return run_script(
+        _readme_script(), tmp_path / "section.sh", tmp_path, env, timeout=180
     )
 
 
@@ -1066,6 +1056,8 @@ def test_the_readme_binding_example_really_runs_with_the_tone_it_asks_for(
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
         )
 

@@ -76,6 +76,17 @@ describe("Interaction settings", () => {
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("accepts a reasoning effort after the model, but not a fourth segment", () => {
+    render(<Editor />);
+    openSettings();
+    const input = screen.getByRole("textbox", { name: "Supervisor harness" });
+    fireEvent.change(input, { target: { value: "harness:claude-code:opus[1m]:xhigh" } });
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.change(input, { target: { value: "harness:codex:gpt-5.6-sol:high:max" } });
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("does not submit an unused supervisor but restores it when switching back", () => {
     render(<Editor />);
     openSettings();

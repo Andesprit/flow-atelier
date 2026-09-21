@@ -36,7 +36,8 @@ asyncio.run(atelier.run_conduit('supervised', {'goal': 'pagination'}))
 
 
 async def run_flow(tmp_path, policy, turns, *, decision=None, replies="", config=None,
-                   supervisor_turn=None, supervisor_models=None, workers=1):
+                   supervisor_turn=None, supervisor_models=None,
+                   supervisor_efforts=None, workers=1):
     """Exercise the public facade in a process with real piped human input."""
     directory = tmp_path / ".atelier/conduits/supervised"
     directory.mkdir(parents=True)
@@ -67,6 +68,7 @@ async def run_flow(tmp_path, policy, turns, *, decision=None, replies="", config
             "test-supervisor": command({"turns": [supervisor_turn or {
                 "chunks": [json.dumps(decision)]}], "modes": MODES,
                 "models": supervisor_models,
+                "efforts": supervisor_efforts,
                 "record_path": str(supervisor_record)}),
         },
     }
@@ -103,7 +105,9 @@ async def run_flow(tmp_path, policy, turns, *, decision=None, replies="", config
     {"supervisor": {"tool": "harness:codex", "max_replies": 0}},
     {"supervisor": {"tool": "harness:codex:"}},
     {"supervisor": {"tool": "harness:codex:model with spaces"}},
-    {"supervisor": {"tool": "harness:codex:a:b"}},
+    {"supervisor": {"tool": "harness:codex:m1:"}},
+    {"supervisor": {"tool": "harness:codex:m1:a:b"}},
+    {"supervisor": {"tool": "harness:codex::high"}},
     {"supervisor": {"tool": "harness:BadName:m1"}},
 ])
 def test_invalid_policy_rejected(policy):
@@ -154,9 +158,15 @@ async def test_supervisor_receives_complete_history_and_answers_without_human(tm
     assert all("First question?" in p and "Use the existing convention" in p for p in second)
 
 
-@pytest.mark.parametrize("model", ["m2", "unavailable"])
+# "max" is offered only once m2 is selected, so a supervisor pinned to
+# `m2:max` proves the two setters ran in order on the supervisor's session.
+EFFORTS = {"current": "medium", "available": ["low", "medium", "high"],
+           "per_model": {"m2": {"current": "high", "available": ["high", "max"]}}}
+
+
+@pytest.mark.parametrize("model", ["m2", "m2:max", "unavailable", "m2:low"])
 async def test_supervisor_model_selection_reaches_the_agent(tmp_path, model):
-    """A pinned supervisor model runs, while an unavailable model fails before prompting."""
+    """A pinned supervisor model and effort run; an unoffered one fails first."""
     code, output, logs, supervisor, worker = await run_flow(
         tmp_path, {"questions": "supervisor"}, [{"chunks": ["Which pattern?"]}, DONE],
         decision={"action": "answer", "reply": "Use the existing convention"},
@@ -164,8 +174,9 @@ async def test_supervisor_model_selection_reaches_the_agent(tmp_path, model):
         supervisor_models={"current": "m1", "available": [
             {"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"},
         ]},
+        supervisor_efforts=EFFORTS,
     )
-    if model == "m2":
+    if model in {"m2", "m2:max"}:
         assert code == 0, output
         assert supervisor
         assert "Use the existing convention" in worker

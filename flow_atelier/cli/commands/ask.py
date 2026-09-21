@@ -37,7 +37,10 @@ def ask_cmd(
     harness: str = typer.Option(
         "claude-code",
         "--harness",
-        help="Agent from `atelier list harnesses`, optionally followed by :<model>.",
+        help=(
+            "Agent from `atelier list harnesses`, optionally followed by "
+            ":<model> or :<model>:<effort>."
+        ),
     ),
 ) -> None:
     """Start an interactive conversation with an AI agent in a target directory.
@@ -56,7 +59,8 @@ def ask_cmd(
 
     if not re.fullmatch(HARNESS_TOOL_PATTERN, f"harness:{harness}"):
         raise typer.BadParameter(
-            "expected a lowercase harness name, optionally followed by :<model>",
+            "expected a lowercase harness name, optionally followed by "
+            ":<model> or :<model>:<effort>",
             param_hint="--harness",
         )
 

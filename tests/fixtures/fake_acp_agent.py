@@ -12,6 +12,13 @@ Script schema::
                 {"id": "bypassPermissions", "name": "Bypass"}
             ]
         },
+        "efforts": null | {
+            "id": "reasoning_effort",
+            "category": "thought_level",   // null drops the category entirely
+            "current": "medium",
+            "available": ["low", "medium", "high"],
+            "per_model": {"m2": {"current": "high", "available": ["high", "max"]}}
+        },
         "turns": [
             {
                 "chunks": ["text ", "more text"],
@@ -32,6 +39,13 @@ returns ``stop_reason="end_turn"`` with no chunks.
 When ``modes`` is set, ``new_session`` advertises them to the client and
 ``set_session_mode`` emits a ``[mode_set:<mode_id>]`` chunk so tests can
 assert which mode the harness selected by inspecting the run output.
+
+When ``efforts`` is set, the session carries a ``thought_level`` select
+alongside the model one. ``per_model`` makes it model-dependent the way a
+real agent's is: selecting a model listed there replaces the effort option's
+values and current before ``set_config_option`` answers, so a client that
+validates against the session's opening options instead of the returned ones
+gets it wrong.
 """
 from __future__ import annotations
 
@@ -83,6 +97,7 @@ class FakeAgent:
         turns: list[dict[str, Any]],
         modes: dict[str, Any] | None = None,
         models: dict[str, Any] | None = None,
+        efforts: dict[str, Any] | None = None,
         auth_methods: list[dict[str, Any]] | None = None,
         fail_session: str | None = None,
         record_path: str | None = None,
@@ -94,6 +109,9 @@ class FakeAgent:
         :param models: optional model spec ``{"current", "available", "via"}``
             exposed via new_session; ``via`` is ``config`` (a ``model`` config
             option, the default) or ``legacy`` (the ``models`` state).
+        :param efforts: optional ``thought_level`` spec ``{"id", "current",
+            "available", "per_model"}``; ``per_model`` swaps the offer when
+            that model is selected.
         :param auth_methods: optional auth methods advertised at initialize,
             so connection-check reporting can be exercised.
         :param fail_session: when set, new_session raises with this message —
@@ -103,6 +121,7 @@ class FakeAgent:
         self._turns = list(turns)
         self._modes_spec = modes
         self._models_spec = models
+        self._efforts_spec = efforts
         self._config_options: list[SessionConfigOptionSelect] = []
         self._auth_methods = auth_methods or []
         self._fail_session = fail_session
@@ -165,7 +184,6 @@ class FakeAgent:
                 current_mode_id=self._modes_spec["current"],
             )
         models = None
-        config_options = None
         if self._models_spec:
             spec = self._models_spec
             if spec.get("via", "config") == "legacy":
@@ -176,7 +194,7 @@ class FakeAgent:
                     current_model_id=spec["current"],
                 )
             else:
-                self._config_options = [
+                self._config_options.append(
                     SessionConfigOptionSelect(
                         id="model",
                         name="Model",
@@ -188,13 +206,35 @@ class FakeAgent:
                             for m in spec["available"]
                         ],
                     )
-                ]
-                config_options = list(self._config_options)
+                )
+        if self._efforts_spec:
+            spec = self._efforts_spec
+            self._config_options.append(
+                self._effort_option(spec["current"], spec["available"])
+            )
         return NewSessionResponse(
             session_id=self.SESSION_ID,
             modes=modes,
             models=models,
-            config_options=config_options,
+            config_options=list(self._config_options) or None,
+        )
+
+    def _effort_option(self, current: str, available: list[str]) -> SessionConfigOptionSelect:
+        """Build the ``thought_level`` select for the efforts currently on offer.
+
+        :param current: the effort in force.
+        :param available: the effort ids offered.
+        :returns: the config option the client reads the effort choice from.
+        """
+        return SessionConfigOptionSelect(
+            id=self._efforts_spec.get("id", "reasoning_effort"),
+            name="Reasoning effort",
+            # ACP makes the category optional; ``"category": null`` in the
+            # script drops it, leaving only the id to recognize it by.
+            category=self._efforts_spec.get("category", "thought_level"),
+            type="select",
+            current_value=current,
+            options=[SessionConfigSelectOption(value=e, name=e.title()) for e in available],
         )
 
     async def prompt(self, prompt, session_id: str, **kwargs) -> PromptResponse:
@@ -354,6 +394,10 @@ class FakeAgent:
     async def set_config_option(self, config_id: str, session_id: str, value, **kwargs):
         """Echo a config change as ``[config_set:<id>=<value>]``.
 
+        Answers with the *full* config, as ACP requires — including the
+        effort option swapped for the newly chosen model's, when the script
+        gave that model its own offer.
+
         :param config_id: the option being set.
         :param session_id: session identifier the client is interacting with.
         :param value: the requested value.
@@ -361,9 +405,20 @@ class FakeAgent:
         """
         del kwargs
         await self._echo(session_id, f"[config_set:{config_id}={value}]")
-        for option in self._config_options:
-            if option.id == config_id:
-                option.current_value = value
+        changed = next(
+            (o for o in self._config_options if o.id == config_id), None
+        )
+        if changed is not None:
+            changed.current_value = value
+        per_model = (self._efforts_spec or {}).get("per_model", {}).get(value)
+        if changed is not None and changed.category == "model" and per_model is not None:
+            effort_id = self._efforts_spec.get("id", "reasoning_effort")
+            self._config_options = [
+                self._effort_option(per_model["current"], per_model["available"])
+                if o.id == effort_id
+                else o
+                for o in self._config_options
+            ]
         return SetSessionConfigOptionResponse(config_options=list(self._config_options))
 
     async def fork_session(self, *args, **kwargs):
@@ -417,6 +472,7 @@ async def _main() -> None:
         turns=script.get("turns", []),
         modes=script.get("modes"),
         models=script.get("models"),
+        efforts=script.get("efforts"),
         auth_methods=script.get("auth_methods"),
         fail_session=script.get("fail_session"),
         record_path=script.get("record_path"),

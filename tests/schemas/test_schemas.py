@@ -369,17 +369,43 @@ def test_harness_model_suffix_validates(tool_str):
 
     c = Conduit.model_validate(_task_with_tool(tool_str))
     assert c.tasks[0].tool == tool_str
-    base, model = split_harness_tool(tool_str)
+    base, model, effort = split_harness_tool(tool_str)
     assert base == tool_str.rsplit(":", 1)[0]
     assert model == tool_str.rsplit(":", 1)[1]
+    assert effort is None
+
+
+@pytest.mark.parametrize(
+    ("tool_str", "expected"),
+    [
+        ("harness:codex:gpt-5.6-sol:high", ("harness:codex", "gpt-5.6-sol", "high")),
+        ("harness:claude-code:opus[1m]:xhigh", ("harness:claude-code", "opus[1m]", "xhigh")),
+        (
+            "harness:opencode:anthropic/claude-sonnet-4-5:low",
+            ("harness:opencode", "anthropic/claude-sonnet-4-5", "low"),
+        ),
+        ("harness:codex:gpt-5.5:ultra_2", ("harness:codex", "gpt-5.5", "ultra_2")),
+    ],
+)
+def test_harness_effort_suffix_validates(tool_str, expected):
+    """A third colon names the reasoning effort for that model.
+
+    :param tool_str: parametrized ``harness:<name>:<model>:<effort>`` under test.
+    :param expected: the three parts it must split into.
+    """
+    from flow_atelier.schemas.conduit import split_harness_tool
+
+    c = Conduit.model_validate(_task_with_tool(tool_str))
+    assert c.tasks[0].tool == tool_str
+    assert split_harness_tool(tool_str) == expected
 
 
 def test_split_harness_tool_without_model():
-    """A plain harness tool and a built-in tool split to themselves with no model."""
+    """A plain harness tool and a built-in tool split to themselves with no suffixes."""
     from flow_atelier.schemas.conduit import split_harness_tool
 
-    assert split_harness_tool("harness:codex") == ("harness:codex", None)
-    assert split_harness_tool("tool:bash") == ("tool:bash", None)
+    assert split_harness_tool("harness:codex") == ("harness:codex", None, None)
+    assert split_harness_tool("tool:bash") == ("tool:bash", None, None)
 
 
 @pytest.mark.parametrize(
@@ -391,7 +417,11 @@ def test_split_harness_tool_without_model():
         "claude",           # missing the namespace prefix
         "harness:codex:",         # empty model
         "harness:codex:gpt 5",    # space in the model
-        "harness:codex:a:b",      # a third segment
+        "harness:codex::high",    # effort with the model segment left empty
+        "harness:codex:gpt-5.5:", # empty effort
+        "harness:codex:gpt-5.5:hi gh",     # space in the effort
+        "harness:codex:gpt-5.5:high:max",  # a fourth segment
+        "harness:codex:gpt-5.5:-high",     # effort starting with a hyphen
     ],
 )
 def test_malformed_tool_is_rejected(tool_str):

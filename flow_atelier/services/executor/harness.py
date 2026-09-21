@@ -124,7 +124,8 @@ class ProbeResult:
 
     :param ok: whether the agent is reachable and completed the handshake.
     :param stage: how far the check got — ``path``, ``spawn``, ``initialize``,
-        ``handshake`` (timed out), ``session``, or ``ok``.
+        ``handshake`` (timed out), ``session``, ``selection`` (the session
+        opened but the named model or effort was refused), or ``ok``.
     :param detail: one-line human explanation of ``stage``.
     :param agent: the agent's self-reported name and version, when it got
         far enough to send one.
@@ -136,6 +137,9 @@ class ProbeResult:
     :param models: model ids the agent offers, usable as
         ``harness:<name>:<model>``.
     :param current_model: the model the agent starts a session on.
+    :param efforts: reasoning-effort ids offered *for the selected model*,
+        usable as ``harness:<name>:<model>:<effort>``.
+    :param current_effort: the effort that model would run on unnamed.
     :param stderr: tail of the agent's stderr, the usual place a failing
         agent explains itself.
     """
@@ -150,15 +154,17 @@ class ProbeResult:
     permissive_mode: str = ""
     models: list[str] = field(default_factory=list)
     current_model: str = ""
+    efforts: list[str] = field(default_factory=list)
+    current_effort: str = ""
     stderr: str = ""
 
 
 @dataclass
-class _ModelChoice:
-    """How a session lets the client pick a model, read off ``new_session``.
+class _SelectChoice:
+    """How a session lets the client pick one value — a model, an effort.
 
-    :param available: model ids the agent offers.
-    :param current: the model the session opened on.
+    :param available: the values the agent offers.
+    :param current: the value in force right now.
     :param config_id: the ``configOptions`` entry to set, or ``None`` when the
         agent only speaks the older ``session/set_model``.
     """
@@ -168,36 +174,98 @@ class _ModelChoice:
     config_id: str | None
 
 
-def _model_choice(sess) -> _ModelChoice | None:
-    """Find the model selector a ``new_session`` response advertises.
+# ACP's semantic category for a reasoning-effort selector. The *id* under it
+# is the agent's own — claude-agent-acp calls it ``effort``, codex-acp calls
+# it ``reasoning_effort`` — so the category is what we match on and the id is
+# what we send back.
+# See https://agentclientprotocol.com/protocol/v1/session-config-options
+EFFORT_CATEGORY = "thought_level"
+
+# The category is optional in ACP and the spec leans on it for presentation
+# only, so an agent may ship the effort selector with none at all. These are
+# the ids the known adapters use; they stand in when a selector is
+# uncategorized, the same way an uncategorized ``model`` id stands in for the
+# model selector. A selector categorized as something *else* is never read as
+# effort, and an uncategorized id outside this set stays unsupported.
+EFFORT_IDS = frozenset({"effort", "reasoning_effort", "thought_level"})
+
+
+def _select_values(option) -> list[str]:
+    """Return every value a ``select`` config option offers.
+
+    :param option: a ``SessionConfigOptionSelect``.
+    :returns: the option's values, flattened across any groups.
+    """
+    values: list[str] = []
+    for entry in option.options:
+        # A grouped select nests its values one level down. An empty group is
+        # legal and has no ``value`` of its own, so branch on whether the
+        # entry *has* nested options, not on whether it has any.
+        nested = getattr(entry, "options", None)
+        if nested is None:
+            values.append(entry.value)
+        else:
+            values.extend(o.value for o in nested)
+    return values
+
+
+def _model_choice(sess, options=None) -> _SelectChoice | None:
+    """Find the model selector a session advertises.
 
     The stable path is a ``select`` config option in the ``model`` category
     (codex-acp and claude-agent-acp both use the id ``model``). The older
     ``models`` state with ``session/set_model`` is the fallback.
 
     :param sess: the ``NewSessionResponse``.
+    :param options: config options to read instead of the session's own —
+        pass the list a ``session/set_config_option`` response returned so a
+        later lookup sees the agent's current truth, not the opening one.
     :returns: the selector, or ``None`` when the agent offers no model choice.
     """
-    for option in getattr(sess, "config_options", None) or []:
+    if options is None:
+        options = getattr(sess, "config_options", None)
+    for option in options or []:
         if getattr(option, "type", None) != "select":
             continue
         if option.category != "model" and option.id != "model":
             continue
-        available: list[str] = []
-        for entry in option.options:
-            # A grouped select nests its values one level down.
-            nested = getattr(entry, "options", None)
-            if nested:
-                available.extend(o.value for o in nested)
-            else:
-                available.append(entry.value)
-        return _ModelChoice(available, option.current_value, option.id)
+        return _SelectChoice(_select_values(option), option.current_value, option.id)
     models = getattr(sess, "models", None)
     if models is not None:
-        return _ModelChoice(
+        return _SelectChoice(
             [m.model_id for m in models.available_models], models.current_model_id, None
         )
     return None
+
+
+def _effort_choice(options) -> _SelectChoice | None:
+    """Find the reasoning-effort selector in a config-options list.
+
+    Which efforts exist depends on the model, so this must only ever be read
+    off options the agent returned *after* the model was selected.
+
+    Matched on the ``thought_level`` category first and, only for a selector
+    that carries no category at all, on the ids in :data:`EFFORT_IDS`.
+
+    :param options: the agent's current ``configOptions``, or ``None``.
+    :returns: the selector, or ``None`` when the agent offers no effort choice.
+    """
+    uncategorized = None
+    for option in options or []:
+        if getattr(option, "type", None) != "select":
+            continue
+        category = getattr(option, "category", None)
+        # An explicit category wins wherever it sits in the list, so scan the
+        # whole thing before settling for an id match.
+        if category == EFFORT_CATEGORY:
+            return _SelectChoice(_select_values(option), option.current_value, option.id)
+        if category is None and uncategorized is None and option.id in EFFORT_IDS:
+            uncategorized = option
+    if uncategorized is None:
+        return None
+    return _SelectChoice(
+        _select_values(uncategorized), uncategorized.current_value, uncategorized.id
+    )
 
 
 class _ProbeClient:
@@ -830,6 +898,8 @@ class AcpHarnessExecutor(ExecutorBase):
         over the inherited environment
     :param model: model id to select on every session, or ``None`` for the
         agent's default
+    :param effort: reasoning-effort id to select after the model, or ``None``
+        to leave whatever that model defaults to
     """
 
     def __init__(
@@ -839,6 +909,7 @@ class AcpHarnessExecutor(ExecutorBase):
         done_marker: str | None = None,
         env: dict[str, str] | None = None,
         model: str | None = None,
+        effort: str | None = None,
     ) -> None:
         """Initialize the harness executor.
 
@@ -849,6 +920,7 @@ class AcpHarnessExecutor(ExecutorBase):
             :data:`DEFAULT_DONE_MARKER`.
         :param env: optional extra environment variables for the agent.
         :param model: optional model id to select once a session is open.
+        :param effort: optional reasoning-effort id to select after the model.
         """
         if not launch_cmd:
             raise ValueError("launch_cmd must not be empty")
@@ -857,11 +929,18 @@ class AcpHarnessExecutor(ExecutorBase):
         self.done_marker = done_marker or DEFAULT_DONE_MARKER
         self.env = dict(env or {})
         self.model = model
+        self.effort = effort
 
-    def with_model(self, model: str) -> AcpHarnessExecutor:
-        """Return a copy of this executor pinned to ``model``.
+    def with_model(self, model: str, effort: str | None = None) -> AcpHarnessExecutor:
+        """Return a copy of this executor pinned to ``model`` (and ``effort``).
+
+        A copy, never a mutation: the registry hands the same executor object
+        to every task naming that harness, so pinning in place would let one
+        task's model leak into another's run.
 
         :param model: model id as the agent lists it.
+        :param effort: reasoning-effort id as the agent lists it *for that
+            model*, or ``None`` to leave the model's own default alone.
         :returns: a new executor sharing the sink, marker and environment.
         """
         return AcpHarnessExecutor(
@@ -870,6 +949,7 @@ class AcpHarnessExecutor(ExecutorBase):
             done_marker=self.done_marker,
             env=self.env,
             model=model,
+            effort=effort,
         )
 
     def _spawn_env(self) -> dict[str, str]:
@@ -991,15 +1071,33 @@ class AcpHarnessExecutor(ExecutorBase):
                     )
                     return partial
                 modes = getattr(sess, "modes", None)
+                partial.modes = [m.id for m in (modes.available_modes if modes else [])]
+                partial.permissive_mode = _pick_permissive_mode(modes) or ""
+                # Resolve model and effort exactly as a run would, so a check
+                # of `harness:<name>:<model>` reports the efforts *that* model
+                # offers, and a value the agent refuses is reported as the
+                # selection error it is rather than as a broken session.
+                try:
+                    options = await self._apply_selection(conn, sess)
+                except Exception as exc:  # noqa: BLE001 — any refusal is a result
+                    partial.stage = "selection"
+                    partial.detail = str(exc)
+                    return partial
                 partial.ok = True
                 partial.stage = "ok"
                 partial.detail = "reachable and ACP-compatible"
-                partial.modes = [m.id for m in (modes.available_modes if modes else [])]
-                partial.permissive_mode = _pick_permissive_mode(modes) or ""
-                choice = _model_choice(sess)
+                choice = _model_choice(sess, options)
                 if choice is not None:
                     partial.models = choice.available
-                    partial.current_model = choice.current
+                    # Selection has already succeeded, so a named model *is*
+                    # the current one — the legacy `session/set_model` path
+                    # answers with nothing, leaving `choice.current` on the
+                    # model the session merely opened with.
+                    partial.current_model = self.model or choice.current
+                effort = _effort_choice(options)
+                if effort is not None:
+                    partial.efforts = effort.available
+                    partial.current_effort = effort.current
                 return partial
             finally:
                 if drain is not None:
@@ -1138,7 +1236,7 @@ class AcpHarnessExecutor(ExecutorBase):
                     await self._maybe_switch_to_permissive_mode(conn, sess)
                 else:
                     await self._ensure_prompting_mode(conn, sess)
-                await self._apply_model(conn, sess)
+                await self._apply_selection(conn, sess)
 
                 if client.supervisor_run:
                     # Startup/mode announcements are not the decision response.
@@ -1191,19 +1289,34 @@ class AcpHarnessExecutor(ExecutorBase):
         except Exception as exc:  # noqa: BLE001
             logger.debug("set_session_mode(%s) failed: %s", picked, exc)
 
-    async def _apply_model(self, conn, sess) -> None:
-        """Select :attr:`model` on the session, or fail before the first prompt.
+    async def _apply_selection(self, conn, sess) -> list:
+        """Select :attr:`model`, then :attr:`effort`, or fail before any prompt.
 
-        Unlike the mode switch this is not best-effort: the user named a
-        model, so running on a different one would be a silent substitution.
+        Order matters and is not cosmetic. Which reasoning efforts exist is a
+        property of the *chosen* model — Claude's Opus offers a different set
+        from its Haiku — and ``session/set_config_option`` answers with the
+        agent's full, authoritative config afterwards. So the model goes
+        first and the effort is validated against what came back, never
+        against the options the session happened to open with.
+
+        A choice the user did not name is never set: an omitted model leaves
+        the agent's own default, and an omitted effort leaves that model's.
+
+        Unlike the mode switch this is not best-effort: the user named these,
+        so running on something else would be a silent substitution.
 
         :param conn: the ACP connection.
         :param sess: the new-session response.
-        :raises RuntimeError: when the agent offers no model choice or does
-            not list :attr:`model`.
+        :returns: the agent's latest config options — what it returned from
+            the last setter, or the session's own when nothing was set.
+        :raises RuntimeError: when the agent offers no such choice, does not
+            list the named value, or cannot report the efforts of a model it
+            switched to over the legacy ``session/set_model``.
         """
+        options = list(getattr(sess, "config_options", None) or [])
         if self.model is None:
-            return
+            return options
+
         choice = _model_choice(sess)
         if choice is None:
             raise RuntimeError(
@@ -1215,14 +1328,66 @@ class AcpHarnessExecutor(ExecutorBase):
                 f"model {self.model!r} is not offered by this harness; "
                 f"available: {', '.join(choice.available)}"
             )
-        if self.model == choice.current:
-            return
-        if choice.config_id is not None:
-            await conn.set_config_option(
-                config_id=choice.config_id, session_id=sess.session_id, value=self.model
+        stale = False
+        if self.model != choice.current:
+            if choice.config_id is not None:
+                response = await conn.set_config_option(
+                    config_id=choice.config_id,
+                    session_id=sess.session_id,
+                    value=self.model,
+                )
+                options = list(response.config_options)
+            else:
+                await conn.set_session_model(
+                    model_id=self.model, session_id=sess.session_id
+                )
+                # ``session/set_model`` answers with nothing, so the options
+                # still in hand describe the model we just left — drop them
+                # rather than let a caller read them as the new model's.
+                options = []
+                stale = True
+
+        if self.effort is None:
+            return options
+        if stale:
+            raise RuntimeError(
+                f"this harness switches models with the legacy `session/set_model`, "
+                f"which returns no configuration, so the reasoning efforts it offers "
+                f"for {self.model!r} cannot be read — the ones on hand belong to "
+                f"{choice.current!r}. Drop ':{self.effort}' from the tool name, or "
+                f"name a harness that advertises a model config option"
             )
-        else:
-            await conn.set_session_model(model_id=self.model, session_id=sess.session_id)
+        return await self._apply_effort(conn, sess, options)
+
+    async def _apply_effort(self, conn, sess, options: list) -> list:
+        """Select :attr:`effort` against the options the chosen model offers.
+
+        :param conn: the ACP connection.
+        :param sess: the new-session response.
+        :param options: the agent's config options as of the model selection.
+        :returns: the agent's config options after the effort was set — the
+            setter's own answer, which is the only place the newly selected
+            effort shows as current.
+        :raises RuntimeError: when the agent offers no effort choice for this
+            model, or does not list :attr:`effort` among them.
+        """
+        choice = _effort_choice(options)
+        if choice is None:
+            raise RuntimeError(
+                f"model {self.model!r} on this harness offers no reasoning-effort "
+                f"choice; drop ':{self.effort}' from the tool name"
+            )
+        if self.effort not in choice.available:
+            raise RuntimeError(
+                f"reasoning effort {self.effort!r} is not offered for model "
+                f"{self.model!r}; available: {', '.join(choice.available)}"
+            )
+        if self.effort == choice.current:
+            return options
+        response = await conn.set_config_option(
+            config_id=choice.config_id, session_id=sess.session_id, value=self.effort
+        )
+        return list(response.config_options)
 
     @staticmethod
     async def _ensure_prompting_mode(conn, sess) -> None:

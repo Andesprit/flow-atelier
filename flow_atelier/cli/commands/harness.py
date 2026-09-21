@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shlex
 from urllib.error import URLError
 
@@ -18,6 +19,8 @@ from rich.table import Table
 from flow_atelier.cli._shared import console
 from flow_atelier.cli.main import harness_app, list_app
 from flow_atelier.core.atelier import Atelier
+from flow_atelier.schemas.conduit import split_harness_tool
+from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 from flow_atelier.services.executor.acp_registry import (
     LEGACY_HARNESS_ALIASES,
     REGISTRY_URL,
@@ -124,12 +127,22 @@ def _render_probe(tool: str, launch: list[str], result) -> None:
                 f"  [dim]modes:[/dim] {escape(', '.join(result.modes))}{escape(picked)}"
             )
         if result.models:
-            current = f" (default {result.current_model})" if result.current_model else ""
+            current = f" (current {result.current_model})" if result.current_model else ""
             console.print(
                 f"  [dim]models:[/dim] {escape(', '.join(result.models))}{escape(current)}"
             )
-            if tool.startswith("harness:"):
+            if tool.startswith("harness:") and tool.count(":") == 1:
                 console.print(f"  [dim]pick one with[/dim] tool: {escape(tool)}:<model>")
+        if result.efforts:
+            current = f" (current {result.current_effort})" if result.current_effort else ""
+            # Effort choices belong to the model in force, so say which one.
+            model = f" for {result.current_model}" if result.current_model else ""
+            console.print(
+                f"  [dim]efforts{escape(model)}:[/dim] "
+                f"{escape(', '.join(result.efforts))}{escape(current)}"
+            )
+            if tool.startswith("harness:") and tool.count(":") == 2:
+                console.print(f"  [dim]pick one with[/dim] tool: {escape(tool)}:<effort>")
         if result.auth_methods:
             console.print(
                 f"  [dim]auth methods advertised:[/dim] "
@@ -168,7 +181,11 @@ def _render_probe(tool: str, launch: list[str], result) -> None:
 @harness_app.command("check")
 def harness_check_cmd(
     name: str = typer.Argument(
-        None, help="Harness name to check, e.g. gemini or harness:gemini."
+        None,
+        help=(
+            "Harness to check, e.g. gemini, harness:gemini, or codex:<model> "
+            "to see the reasoning efforts that model offers."
+        ),
     ),
     cmd: str = typer.Option(
         None, "--cmd", help="Check an arbitrary agent command instead of a name."
@@ -180,11 +197,14 @@ def harness_check_cmd(
     """Check that an agent command is reachable and speaks ACP.
 
     Starts the agent, completes the ACP handshake and opens a session, then
-    stops — no prompt is sent, so the check costs no tokens. Installing the
-    agent and logging into it stay entirely yours; this only reports what is
-    missing.
+    stops — no prompt is sent, so the check costs no tokens. A ``:<model>``
+    (or ``:<model>:<effort>``) suffix is resolved the same way a run resolves
+    it, so what the check reports is what a task naming that tool would get.
+    Installing the agent and logging into it stay entirely yours; this only
+    reports what is missing.
 
-    :param name: a registered harness name to check.
+    :param name: a registered harness name, optionally with a model and
+        effort suffix.
     :param cmd: an arbitrary command to check instead of a registered name.
     :param timeout: seconds to allow for the handshake.
     """
@@ -202,13 +222,22 @@ def harness_check_cmd(
         executor = AcpHarnessExecutor(launch_cmd=argv)
     else:
         tool = name if name.startswith("harness:") else f"harness:{name}"
-        executor = Atelier().executors.get(tool)
+        if not re.fullmatch(HARNESS_TOOL_PATTERN, tool):
+            console.print(
+                f"[red]malformed harness:[/red] {escape(tool)} — expected "
+                "<name>, <name>:<model> or <name>:<model>:<effort>"
+            )
+            raise typer.Exit(code=2)
+        base, model, effort = split_harness_tool(tool)
+        executor = Atelier().executors.get(base)
         if executor is None:
             console.print(
-                f"[red]unknown harness:[/red] {escape(tool)} "
+                f"[red]unknown harness:[/red] {escape(base)} "
                 "— try 'atelier list harnesses'"
             )
             raise typer.Exit(code=1)
+        if model is not None:
+            executor = executor.with_model(model, effort)
         label = tool
 
     result = asyncio.run(executor.probe(timeout=timeout))

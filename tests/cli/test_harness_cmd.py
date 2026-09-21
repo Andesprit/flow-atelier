@@ -108,9 +108,134 @@ def test_check_lists_models_and_how_to_pick_one(workdir):
     )
     result = CliRunner().invoke(app, ["harness", "check", "--cmd", _fake_cmd(script)])
     assert result.exit_code == 0, result.output
-    assert "models: m1, m2 (default m1)" in result.output
+    assert "models: m1, m2 (current m1)" in result.output
     # An ad-hoc --cmd has no harness name to put a model suffix on.
     assert ":<model>" not in result.output
+
+
+_EFFORT_SCRIPT = {
+    "turns": [],
+    "models": {
+        "current": "m1",
+        "available": [{"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"}],
+    },
+    "efforts": {
+        "id": "reasoning_effort",
+        "current": "medium",
+        "available": ["low", "medium", "high"],
+        "per_model": {"m2": {"current": "high", "available": ["high", "max"]}},
+    },
+}
+
+
+def _check(workdir, monkeypatch, name: str, script: dict | None = None):
+    """Register the fake agent as `harness:fake` and check ``name``.
+
+    :param workdir: isolated working directory fixture.
+    :param monkeypatch: pytest monkeypatch fixture.
+    :param name: the argument passed to `atelier harness check`.
+    :param script: the fake agent's scenario; defaults to the effort script.
+    :returns: the CliRunner result.
+    """
+    launch = [sys.executable, str(FAKE_AGENT), "--script",
+              json.dumps(script if script is not None else _EFFORT_SCRIPT)]
+    monkeypatch.setenv("ATELIER_HARNESSES", json.dumps({"fake": launch}))
+    # Wide enough that Rich reports a selection error on one line.
+    monkeypatch.setenv("COLUMNS", "200")
+    return CliRunner().invoke(app, ["harness", "check", name])
+
+
+def test_check_lists_the_efforts_of_the_default_model(workdir, monkeypatch):
+    """A bare check reports the efforts the session's own model offers.
+
+    :param workdir: isolated working directory fixture.
+    :param monkeypatch: pytest monkeypatch fixture.
+    """
+    result = _check(workdir, monkeypatch, "fake")
+    assert result.exit_code == 0, result.output
+    assert "efforts for m1: low, medium, high (current medium)" in result.output
+
+
+def test_check_with_a_model_reports_that_model_s_efforts(workdir, monkeypatch):
+    """Naming a model selects it first, so the efforts listed are its own.
+
+    :param workdir: isolated working directory fixture.
+    :param monkeypatch: pytest monkeypatch fixture.
+    """
+    result = _check(workdir, monkeypatch, "fake:m2")
+    assert result.exit_code == 0, result.output
+    assert "efforts for m2: high, max (current high)" in result.output
+    assert "tool: harness:fake:m2:<effort>" in result.output
+
+
+def test_check_reports_the_effort_it_selected_not_the_one_before_it(
+    workdir, monkeypatch
+):
+    """The current effort must come from the setter's answer, not from before it.
+
+    m2 opens on `high`; asking for `max` and then reporting `high` would tell
+    the user a run is something it is not.
+    """
+    result = _check(workdir, monkeypatch, "fake:m2:max")
+    assert result.exit_code == 0, result.output
+    assert "efforts for m2: high, max (current max)" in result.output
+    # A check never prompts, so the agent's scripted turns stay untouched.
+    assert "done" not in result.output
+
+
+def test_check_reports_the_model_it_selected_over_legacy_set_model(
+    workdir, monkeypatch
+):
+    """`session/set_model` answers with nothing; the check still names m2."""
+    script = {
+        "turns": [],
+        "models": {
+            "via": "legacy",
+            "current": "m1",
+            "available": [{"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"}],
+        },
+        "efforts": {"current": "low", "available": ["low"]},
+    }
+    result = _check(workdir, monkeypatch, "fake:m2", script)
+    assert result.exit_code == 0, result.output
+    assert "models: m1, m2 (current m2)" in result.output
+    # Those efforts belong to m1; the legacy setter reports none for m2.
+    assert "efforts for" not in result.output
+
+
+def test_check_with_a_bad_model_is_a_selection_error(workdir, monkeypatch):
+    """An unoffered model fails as a selection error, not as a login problem.
+
+    :param workdir: isolated working directory fixture.
+    :param monkeypatch: pytest monkeypatch fixture.
+    """
+    result = _check(workdir, monkeypatch, "fake:m9")
+    assert result.exit_code == 1
+    assert "'m9' is not offered" in result.output
+    assert "log in with the agent's own CLI" not in result.output
+
+
+def test_check_with_a_bad_effort_names_the_models_own_choices(workdir, monkeypatch):
+    """An effort the chosen model drops fails and lists what it does offer.
+
+    :param workdir: isolated working directory fixture.
+    :param monkeypatch: pytest monkeypatch fixture.
+    """
+    result = _check(workdir, monkeypatch, "fake:m2:low")
+    assert result.exit_code == 1
+    assert "'low' is not offered for model 'm2'" in result.output
+    assert "high, max" in result.output
+
+
+def test_check_rejects_a_malformed_suffix(workdir, monkeypatch):
+    """A fourth segment is a usage error, not a spawn attempt.
+
+    :param workdir: isolated working directory fixture.
+    :param monkeypatch: pytest monkeypatch fixture.
+    """
+    result = _check(workdir, monkeypatch, "fake:m2:high:max")
+    assert result.exit_code == 2
+    assert "malformed harness" in result.output
 
 
 def test_check_tells_the_user_to_install_a_missing_agent(workdir):

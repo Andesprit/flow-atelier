@@ -31,18 +31,23 @@ CONDUIT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 HARNESS_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
-def split_harness_tool(tool: str) -> tuple[str, str | None]:
-    """Split ``harness:<name>[:<model>]`` into the executor key and the model.
+def split_harness_tool(tool: str) -> tuple[str, str | None, str | None]:
+    """Split ``harness:<name>[:<model>[:<effort>]]`` into its three parts.
 
-    Anything that is not a harness tool comes back unchanged with no model.
+    Anything that is not a harness tool comes back unchanged with neither.
+    A missing segment is ``None`` — the caller's signal to leave that choice
+    on the agent's own default rather than to set it to anything.
 
     :param tool: a task's ``tool`` string.
-    :returns: ``("harness:<name>", "<model>" or None)``.
+    :returns: ``("harness:<name>", "<model>" or None, "<effort>" or None)``.
     """
     if not tool.startswith("harness:"):
-        return tool, None
-    name, sep, model = tool.removeprefix("harness:").partition(":")
-    return f"harness:{name}", (model if sep else None)
+        return tool, None, None
+    name, sep, rest = tool.removeprefix("harness:").partition(":")
+    if not sep:
+        return f"harness:{name}", None, None
+    model, sep, effort = rest.partition(":")
+    return f"harness:{name}", model, (effort if sep else None)
 
 
 class ToolType(str, Enum):
@@ -125,7 +130,7 @@ class TaskDefinition(BaseModel):
     @field_validator("tool")
     @classmethod
     def _tool_valid(cls, v: str) -> str:
-        """Accept a built-in tool or any well-formed ``harness:<name>[:<model>]``.
+        """Accept a built-in tool or any ``harness:<name>[:<model>[:<effort>]]``.
 
         ``tool:*`` executors are code, so that side stays closed to the
         :class:`ToolType` catalogue. Harnesses are config — a user can point
@@ -143,8 +148,10 @@ class TaskDefinition(BaseModel):
             return v
         raise ValueError(
             f"invalid tool {v!r}: expected one of {sorted(BUILTIN_TOOLS)}, "
-            "'harness:<name>' (lowercase letters, digits and hyphens) or "
-            "'harness:<name>:<model>' (model as the agent lists it)"
+            "'harness:<name>' (lowercase letters, digits and hyphens), "
+            "'harness:<name>:<model>' (model as the agent lists it) or "
+            "'harness:<name>:<model>:<effort>' (reasoning effort as the "
+            "agent lists it for that model)"
         )
 
     @field_validator("repeat")

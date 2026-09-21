@@ -11,17 +11,21 @@ from click import unstyle
 from typer.testing import CliRunner
 
 from flow_atelier.cli import app
+from flow_atelier.schemas.conduit import split_harness_tool
 
 FAKE_AGENT = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
 
 
-@pytest.mark.parametrize("harness", [None, "custom-agent:m2", "custom-agent:opus[1m]"])
+@pytest.mark.parametrize(
+    "harness",
+    [None, "custom-agent:m2", "custom-agent:opus[1m]", "custom-agent:m2:max"],
+)
 def test_ask_runs_an_interactive_agent_session_in_path(tmp_path, monkeypatch, harness) -> None:
-    """The query, path and optional model reach the selected interactive agent.
+    """The query, path and optional model and effort reach the agent.
 
     :param tmp_path: pytest temporary directory fixture.
     :param monkeypatch: pytest monkeypatch fixture.
-    :param harness: optional custom agent and model to select.
+    :param harness: optional custom agent, model and effort to select.
     """
     project = tmp_path / "target-project"
     project.mkdir()
@@ -33,6 +37,13 @@ def test_ask_runs_an_interactive_agent_session_in_path(tmp_path, monkeypatch, ha
                 {"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"},
                 {"id": "opus[1m]", "name": "Opus 1M"},
             ]},
+            # "max" exists only once m2 is selected, so an effort suffix is
+            # only honoured if the model went first.
+            "efforts": {
+                "current": "medium",
+                "available": ["low", "medium", "high"],
+                "per_model": {"m2": {"current": "high", "available": ["high", "max"]}},
+            },
             "turns": [
                 {"chunks": ["Which colour? "], "stop": "end_turn"},
                 {"chunks": ["Blue it is. [ATELIER_DONE]"], "stop": "end_turn"},
@@ -67,7 +78,10 @@ def test_ask_runs_an_interactive_agent_session_in_path(tmp_path, monkeypatch, ha
     assert logs[-1]["tool"] == f"harness:{harness or 'claude-code'}"
     assert "Blue it is." in logs[-1]["output"]
     if harness:
-        assert f"[config_set:model={harness.split(':', 1)[1]}]" in result.output
+        _, model, effort = split_harness_tool(f"harness:{harness}")
+        assert f"[config_set:model={model}]" in result.output
+        if effort:
+            assert f"[config_set:reasoning_effort={effort}]" in result.output
 
 
 def test_ask_requires_a_path(tmp_path, monkeypatch) -> None:
@@ -82,7 +96,10 @@ def test_ask_requires_a_path(tmp_path, monkeypatch) -> None:
     assert "--path" in unstyle(result.output)
 
 
-@pytest.mark.parametrize("harness", ["", "Bad Name", "codex:", "codex:a:b"])
+@pytest.mark.parametrize(
+    "harness",
+    ["", "Bad Name", "codex:", "codex:m:", "codex:m:a:b", "codex::high"],
+)
 def test_ask_invalid_harness_is_a_usage_error(tmp_path, monkeypatch, harness) -> None:
     """Malformed harness options explain the error without starting a flow."""
     monkeypatch.chdir(tmp_path)

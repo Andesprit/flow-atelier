@@ -275,24 +275,58 @@ model the agent does not offer fails the task at once and prints the
 models it does offer. `atelier harness check <name>` lists them too, as
 `models:`. Without the suffix the agent runs on its own default.
 
+#### Picking a reasoning effort
+
+A fourth segment names how hard that model should think, again spelled
+the way the agent lists it:
+
+```yaml
+    tool: harness:codex:gpt-5.6-sol:high
+    tool: harness:claude-code:opus[1m]:xhigh
+```
+
+Effort only comes after a model, because which efforts exist is a
+property of the model: the agent is asked for the model first, and the
+efforts it offers *for that model* are what the value is checked
+against. An effort that model does not offer fails the task before the
+prompt is sent, and prints the ones it does offer.
+
+Leave the segment off and the model keeps whatever effort it defaults
+to — flow-atelier sends nothing, so your own agent configuration stands.
+
+To see the choices for a given model, no prompt and no tokens:
+
+```bash
+atelier harness check codex             # efforts for its default model
+atelier harness check codex:gpt-5.6-sol # efforts for that model
+```
+
 #### Checking a harness before you use it
 
 ```bash
 atelier harness check gemini
+atelier harness check codex:gpt-5.6-sol
 atelier harness check --cmd "/opt/my-agent --acp"
 ```
 
 This starts the agent, completes the ACP handshake, opens a session and
-stops. No prompt is sent, so it costs no tokens. It reports one of:
+stops. No prompt is sent, so it costs no tokens. A `:<model>` or
+`:<model>:<effort>` suffix is resolved the way a run resolves it, so
+what the check reports is what a task naming that same tool would get.
+It reports one of:
 
-- **ok** — with the agent's name and version, the ACP version, and the
-  session modes it offers.
+- **ok** — with the agent's name and version, the ACP version, the
+  session modes it offers, and the models and reasoning efforts it
+  offers for the model in force.
 - **not found on PATH** — install the agent yourself, then re-check.
 - **started but did not speak ACP** — usually the wrong entry point;
   many CLIs need an `--acp` flag.
 - **could not open a session** — usually not logged in. The check lists
   the auth methods the agent advertises, and you log in with that
   agent's own CLI.
+- **not usable — model/effort not offered** — the session opened fine;
+  the suffix named something the agent does not have. The message lists
+  what it does.
 
 Failures exit non-zero and include the tail of the agent's own stderr,
 which is where a failing agent explains itself.

@@ -121,20 +121,22 @@ def current_task(default: str = "") -> str:
 
 
 def resolve_executor(executors: dict[str, ExecutorBase], tool: str) -> ExecutorBase | None:
-    """Look up the executor for ``tool``, binding a harness model when one is named.
+    """Look up the executor for ``tool``, binding model and effort when named.
 
-    ``harness:<name>:<model>`` shares the ``harness:<name>`` executor; the
-    model suffix yields a copy pinned to that model.
+    ``harness:<name>:<model>[:<effort>]`` shares the ``harness:<name>``
+    executor; the suffixes yield a *copy* pinned to them, so two tasks naming
+    the same harness with different models run side by side without one
+    rebinding the other.
 
     :param executors: mapping of tool string to executor.
     :param tool: a task's ``tool`` string.
     :returns: the executor, or ``None`` when no executor is registered.
     """
-    base, model = split_harness_tool(tool)
+    base, model, effort = split_harness_tool(tool)
     executor = executors.get(base)
     if executor is None or model is None:
         return executor
-    return executor.with_model(model)  # type: ignore[attr-defined]
+    return executor.with_model(model, effort)  # type: ignore[attr-defined]
 
 
 def accepted_input_keys(conduit: Conduit) -> set[str]:

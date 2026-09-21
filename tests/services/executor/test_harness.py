@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from acp.connection import StreamDirection, StreamEvent
-from acp.schema import AgentMessageChunk, TextContentBlock
+from acp.schema import (
+    AgentMessageChunk,
+    SessionConfigOptionSelect,
+    SessionConfigSelectGroup,
+    SessionConfigSelectOption,
+    TextContentBlock,
+)
 
 from flow_atelier.schemas.conduit import TaskDefinition, ToolType
 from flow_atelier.services.executor.base import FlowContext
@@ -17,10 +23,40 @@ from flow_atelier.services.executor.harness import (
     AGENT_STDERR_LINES,
     DEFAULT_DONE_MARKER,
     AcpHarnessExecutor,
+    _effort_choice,
+    _select_values,
     build_interactive_suffix,
 )
 
 FAKE_AGENT = Path(__file__).resolve().parents[2] / "fixtures" / "fake_acp_agent.py"
+
+# Two models whose reasoning-effort offers differ, the way real agents'
+# do: "max" exists only under m2 and only in the config the agent returns
+# after m2 is selected, so ordering and re-reading are both load-bearing.
+_EFFORT_SCRIPT: dict[str, Any] = {
+    "models": {
+        "current": "m1",
+        "available": [{"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"}],
+    },
+    "efforts": {
+        "id": "reasoning_effort",
+        "current": "medium",
+        "available": ["low", "medium", "high"],
+        "per_model": {"m2": {"current": "high", "available": ["high", "max"]}},
+    },
+    "turns": [{"chunks": ["done"], "stop": "end_turn"}],
+}
+
+# An agent on the pre-config `session/set_model`, which answers with no
+# configuration at all.
+_LEGACY_SCRIPT: dict[str, Any] = {
+    "models": {
+        "via": "legacy",
+        "current": "m1",
+        "available": [{"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"}],
+    },
+    "turns": [{"chunks": ["done"], "stop": "end_turn"}],
+}
 
 
 def _fake_cmd(script: dict[str, Any]) -> list[str]:
@@ -721,6 +757,162 @@ class TestInteractive:
         assert result.exit_code != 0
         assert "does not support model selection" in result.stderr
 
+    async def test_effort_is_set_after_the_model(self) -> None:
+        """The model is selected first; the effort follows on the same session."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(_EFFORT_SCRIPT), sink=RecordingSink()
+        ).with_model("m2", "max")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code == 0, result.output
+        assert result.output.index("[config_set:model=m2]") < result.output.index(
+            "[config_set:reasoning_effort=max]"
+        )
+
+    async def test_effort_uses_the_choices_the_chosen_model_returned(self) -> None:
+        """`max` exists only for m2, and only in the reply to selecting m2."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(_EFFORT_SCRIPT), sink=RecordingSink()
+        ).with_model("m2", "max")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        # "max" is absent from the options the session opened with, so a
+        # client validating against those would have rejected it here.
+        assert result.exit_code == 0, result.stderr
+        assert "[config_set:reasoning_effort=max]" in result.output
+
+    async def test_effort_dropped_by_the_chosen_model_is_rejected(self) -> None:
+        """An effort the opening session offered but the model does not fails."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(_EFFORT_SCRIPT), sink=RecordingSink()
+        ).with_model("m2", "low")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code != 0
+        assert "'low' is not offered for model 'm2'" in result.stderr
+        assert "high, max" in result.stderr
+        assert "done" not in result.output
+
+    async def test_unsupported_effort_never_reaches_the_prompt(self) -> None:
+        """A bad effort fails at setup, before the agent is ever prompted."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(_EFFORT_SCRIPT), sink=RecordingSink()
+        ).with_model("m1", "nonsense")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code != 0
+        assert "'nonsense' is not offered" in result.stderr
+        assert "done" not in result.output
+
+    async def test_omitted_effort_sends_no_effort_setter(self) -> None:
+        """A model with no effort suffix leaves that model's own default alone."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(_EFFORT_SCRIPT), sink=RecordingSink()
+        ).with_model("m2")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code == 0, result.stderr
+        assert "[config_set:model=m2]" in result.output
+        assert "[config_set:reasoning_effort=" not in result.output
+
+    async def test_bare_harness_sends_no_setter_at_all(self) -> None:
+        """No suffix means neither choice is touched."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(_EFFORT_SCRIPT), sink=RecordingSink()
+        )
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code == 0, result.stderr
+        assert "[config_set:" not in result.output
+
+    async def test_effort_already_current_is_not_reset(self) -> None:
+        """Asking for the effort the chosen model already runs on sends nothing."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(_EFFORT_SCRIPT), sink=RecordingSink()
+        ).with_model("m2", "high")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code == 0, result.stderr
+        assert "[config_set:model=m2]" in result.output
+        assert "[config_set:reasoning_effort=" not in result.output
+
+    async def test_effort_selector_without_a_category_is_found_by_id(self) -> None:
+        """Categories are optional in ACP; a known selector id stands in."""
+        script = dict(
+            _EFFORT_SCRIPT,
+            efforts=dict(_EFFORT_SCRIPT["efforts"], category=None),
+        )
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(script), sink=RecordingSink()
+        ).with_model("m2", "max")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code == 0, result.stderr
+        assert "[config_set:reasoning_effort=max]" in result.output
+
+    async def test_effort_on_agent_without_choice_fails(self) -> None:
+        """An agent that offers models but no effort cannot honour a pinned one."""
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(
+                {
+                    "models": {
+                        "current": "m1",
+                        "available": [{"id": "m1", "name": "One"}, {"id": "m2", "name": "Two"}],
+                    },
+                    "turns": [{"chunks": ["done"], "stop": "end_turn"}],
+                }
+            ),
+            sink=RecordingSink(),
+        ).with_model("m2", "high")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code != 0
+        assert "offers no reasoning-effort choice" in result.stderr
+        assert "done" not in result.output
+
+    async def test_changed_legacy_model_never_validates_effort_on_stale_options(
+        self,
+    ) -> None:
+        """A legacy switch answers with nothing, so m1's efforts must not stand in.
+
+        The agent here offers legacy models *and* an effort config option —
+        the combination that makes the opening options look usable. `high` is
+        on offer there, so validating against them would silently run m2 on
+        m1's effort list.
+        """
+        script = dict(_LEGACY_SCRIPT, efforts=_EFFORT_SCRIPT["efforts"])
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(script), sink=RecordingSink()
+        ).with_model("m2", "high")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code != 0
+        assert "legacy `session/set_model`" in result.stderr
+        assert "efforts it offers for 'm2' cannot be read" in result.stderr
+        # Nothing was prompted, and no effort was set on the wrong model.
+        assert "done" not in result.output
+        assert "[config_set:reasoning_effort=" not in result.output
+
+    async def test_unchanged_legacy_model_still_takes_an_effort(self) -> None:
+        """No switch means the opening options do describe the model in force."""
+        script = dict(_LEGACY_SCRIPT, efforts=_EFFORT_SCRIPT["efforts"])
+        executor = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(script), sink=RecordingSink()
+        ).with_model("m1", "high")
+        result = await executor.execute(_task("x"), "x", _ctx())
+        assert result.exit_code == 0, result.stderr
+        assert "[model_set:" not in result.output
+        assert "[config_set:reasoning_effort=high]" in result.output
+
+    async def test_concurrent_tasks_keep_their_own_bindings(self) -> None:
+        """Two bindings off one registered executor never cross-contaminate."""
+        base = AcpHarnessExecutor(
+            launch_cmd=_fake_cmd(_EFFORT_SCRIPT), sink=RecordingSink()
+        )
+        first, second = await asyncio.gather(
+            base.with_model("m2", "max").execute(_task("x"), "x", _ctx()),
+            base.with_model("m1", "low").execute(_task("y"), "y", _ctx()),
+        )
+        assert first.exit_code == 0, first.stderr
+        assert second.exit_code == 0, second.stderr
+        assert "[config_set:reasoning_effort=max]" in first.output
+        assert "[config_set:reasoning_effort=low]" in second.output
+        assert "[config_set:model=m1]" not in first.output
+        assert "[config_set:model=m2]" not in second.output
+        # The shared, registered executor is still unbound.
+        assert base.model is None
+        assert base.effort is None
+
     async def test_session_mode_absent_is_no_op(self) -> None:
         """Verify the harness is a no-op when the agent advertises no modes."""
         sink = RecordingSink()
@@ -1280,3 +1472,69 @@ async def test_chatty_agent_stderr_is_ring_buffered() -> None:
     assert "noise" in result.stderr
     # The bare failure line plus at most AGENT_STDERR_LINES of agent output.
     assert len(result.stderr.splitlines()) <= AGENT_STDERR_LINES + 1
+
+
+def _select(id_: str, category: str | None, options: list) -> SessionConfigOptionSelect:
+    """Build a real ACP select config option for the selector-matching tests.
+
+    :param id_: the option id the agent would send.
+    :param category: the semantic category, or ``None`` for an uncategorized one.
+    :param options: the option's entries, values or groups.
+    :returns: a :class:`SessionConfigOptionSelect`.
+    """
+    return SessionConfigOptionSelect(
+        id=id_,
+        name=id_,
+        category=category,
+        type="select",
+        current_value="high",
+        options=options,
+    )
+
+
+def test_select_values_skips_an_empty_group() -> None:
+    """A group with no values is legal ACP and contributes nothing.
+
+    It carries no ``value`` of its own, so reading one off it is a crash.
+    """
+    option = _select(
+        "reasoning_effort",
+        "thought_level",
+        [
+            SessionConfigSelectGroup(group="empty", name="Empty", options=[]),
+            SessionConfigSelectGroup(
+                group="all",
+                name="All",
+                options=[
+                    SessionConfigSelectOption(value="high", name="High"),
+                    SessionConfigSelectOption(value="max", name="Max"),
+                ],
+            ),
+        ],
+    )
+    assert _select_values(option) == ["high", "max"]
+
+
+def test_effort_choice_prefers_the_category_over_a_matching_id() -> None:
+    """An explicit `thought_level` wins even when an id match comes first."""
+    by_id = _select("effort", None, [SessionConfigSelectOption(value="high", name="H")])
+    by_category = _select(
+        "depth", "thought_level", [SessionConfigSelectOption(value="high", name="H")]
+    )
+    assert _effort_choice([by_id, by_category]).config_id == "depth"
+
+
+def test_effort_choice_ignores_a_control_categorized_as_something_else() -> None:
+    """A selector that says it is something else is never read as effort."""
+    other = _select(
+        "effort", "model", [SessionConfigSelectOption(value="high", name="H")]
+    )
+    assert _effort_choice([other]) is None
+
+
+def test_effort_choice_leaves_an_unknown_uncategorized_id_unsupported() -> None:
+    """Without a category or a known id there is nothing to recognize it by."""
+    unknown = _select(
+        "brainpower", None, [SessionConfigSelectOption(value="high", name="H")]
+    )
+    assert _effort_choice([unknown]) is None

@@ -29,6 +29,7 @@ class FlowWatcher:
         self._atelier = atelier
         self._flow_id = flow_id
         self._signature = atelier.flow_files_signature(flow_id)
+        self._look_again = False
         self.view: FlowView = atelier.get_flow_view(flow_id)
         self.log: TaskLogView | None = None
         self._task: str | None = None
@@ -63,9 +64,12 @@ class FlowWatcher:
         :raises FileNotFoundError: if the flow was deleted
         """
         signature = self._atelier.flow_files_signature(self._flow_id)
-        if signature == self._signature:
+        if signature == self._signature and not self._look_again:
             return []
         progress_changed = signature[0] != self._signature[0]
+        # A sub-run's folder appears just before the engine records which
+        # task started it, so look once more on the next tick.
+        self._look_again = signature[3] != self._signature[3]
         self._signature = signature
 
         envelopes: list[dict[str, Any]] = []
@@ -101,4 +105,9 @@ class FlowWatcher:
         known = next(t for t in self.view.tasks if t.name == self._task)
         tool = known.tool or (self._entries[0].tool if self._entries else "")
         progress = store.read_progress(self._flow_id).tasks.get(self._task)
-        return build_task_log(self._task, tool, progress, self._entries, self._steps)
+        sub_runs = (
+            self._atelier.task_sub_runs(self._flow_id, self._task)
+            if tool == "tool:conduit"
+            else None
+        )
+        return build_task_log(self._task, tool, progress, self._entries, self._steps, sub_runs)

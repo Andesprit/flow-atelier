@@ -6,8 +6,9 @@ started from the CLI, the dashboard or the scheduler.
 """
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import Counter
-from datetime import datetime
+from datetime import UTC, datetime
 
 from flow_atelier.modules.conditions import DependencyParseError, parse_dependency
 from flow_atelier.schemas.api import (
@@ -47,6 +48,7 @@ def build_flow_view(
     conduit_name: str,
     progress: Progress,
     conduit: Conduit | None,
+    parent_flow_id: str | None = None,
 ) -> FlowView:
     """Return every task of a run with its dependencies and progress.
 
@@ -58,6 +60,7 @@ def build_flow_view(
     :param conduit_name: name of the conduit the flow ran.
     :param progress: the flow's saved progress.
     :param conduit: the conduit's current definition, or ``None`` if unreadable.
+    :param parent_flow_id: for a sub-run, the run that started it.
     :returns: the map's read model.
     """
     tasks: list[FlowTaskView] = []
@@ -93,6 +96,8 @@ def build_flow_view(
         started_at=progress.started_at,
         finished_at=progress.finished_at,
         run_path=progress.run_path,
+        parent_flow_id=parent_flow_id,
+        parent_task=progress.invoking_task if parent_flow_id else None,
         current_tasks=list(progress.current_tasks),
         tasks=tasks,
     )
@@ -104,6 +109,7 @@ def build_task_log(
     progress: TaskProgress | None,
     entries: list[LogEntry],
     steps: list[StepRecord],
+    sub_runs: list[tuple[str, str]] | None = None,
 ) -> TaskLogView:
     """Return one task's log, grouped into rounds, one line per action.
 
@@ -112,9 +118,15 @@ def build_task_log(
     :param progress: the task's saved progress, or ``None`` if it never started.
     :param entries: the task's finished attempts from ``logs.jsonl``.
     :param steps: the task's live steps from ``steps.jsonl``.
+    :param sub_runs: ``(started_at, flow_id)`` of each sub-run a
+        ``tool:conduit`` task started; each is linked to its round.
     :returns: the task log's read model.
     """
-    iterations = sorted({e.iteration for e in entries} | {s.iteration for s in steps})
+    iterations = {e.iteration for e in entries} | {s.iteration for s in steps}
+    # A round that has recorded nothing yet (a sub-conduit, or a command that
+    # has not printed) still shows, so the page can say it is running.
+    if progress is not None and progress.status == TaskStatus.running:
+        iterations.add(progress.iteration)
     rounds = [
         _build_round(
             iteration,
@@ -123,8 +135,10 @@ def build_task_log(
             [e for e in entries if e.iteration == iteration],
             [s.step for s in steps if s.iteration == iteration],
         )
-        for iteration in iterations
+        for iteration in sorted(iterations)
     ]
+    if sub_runs:
+        _link_sub_runs(rounds, entries, sub_runs)
     return TaskLogView(
         task=task,
         tool=tool,
@@ -168,6 +182,7 @@ def task_log_update(old: TaskLogView, new: TaskLogView) -> TaskLogUpdate | None:
                 started_at=now.started_at,
                 duration_seconds=now.duration_seconds,
                 exit_code=now.exit_code,
+                child_flow_id=now.child_flow_id,
                 append=now.lines[seen:],
             )
         )
@@ -241,6 +256,39 @@ def _build_round(
         exit_code=last.exit_code,
         lines=lines,
     )
+
+
+def _link_sub_runs(
+    rounds: list[TaskLogRound], entries: list[LogEntry], sub_runs: list[tuple[str, str]]
+) -> None:
+    """Give each round of a ``tool:conduit`` task the sub-run it started.
+
+    A task's rounds run one after another and each starts (or resumes) one
+    sub-run, so a sub-run belongs to the last round that began before it did.
+    A round that has recorded nothing yet began when the one before it ended.
+
+    :param rounds: the task's rounds, in order; updated in place.
+    :param entries: the task's finished attempts.
+    :param sub_runs: ``(started_at, flow_id)`` of each sub-run the task started.
+    """
+    # ponytail: matched by start time, since the parent does not record which
+    # sub-run a round started. If a round ever shows the wrong one, have the
+    # conduit executor record the id on the round instead.
+    ended: dict[int, datetime] = {}
+    for e in entries:
+        at = _parse_time(e.finished_at)
+        if at is not None and (e.iteration not in ended or at > ended[e.iteration]):
+            ended[e.iteration] = at
+    starts: list[datetime] = []
+    previous_end = datetime.min.replace(tzinfo=UTC)
+    for r in rounds:
+        starts.append(_parse_time(r.started_at) or previous_end)
+        previous_end = ended.get(r.iteration, previous_end)
+    for started_at, flow_id in sorted(sub_runs):
+        at = _parse_time(started_at)
+        i = bisect_right(starts, at) - 1 if at is not None else -1
+        if i >= 0:
+            rounds[i].child_flow_id = flow_id
 
 
 def _stamped_by(step: IntermediateStep, end: datetime | None) -> bool:

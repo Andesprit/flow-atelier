@@ -77,3 +77,27 @@ def test_resume_prints_page_url(workdir):
     resumed = runner.invoke(app, ["run", "--resume", fid])
     assert "resuming" in resumed.stdout
     assert f"· run page http://127.0.0.1:8000/runs/{fid}\n" in resumed.stdout
+
+
+def test_nested_run_names_only_the_top_flow(workdir):
+    """A tool:conduit child neither gets its own page line nor becomes the resume target."""
+    conduits = workdir / ".atelier" / "conduits"
+    (conduits / "child").mkdir()
+    (conduits / "child" / "conduit.yaml").write_text(
+        "name: child\ndescription: fails\n"
+        "tasks:\n  - boom:\n      description: boom\n"
+        "      task: exit 1\n      tool: tool:bash\n      depends_on: []\n"
+    )
+    (conduits / "parent").mkdir()
+    (conduits / "parent" / "conduit.yaml").write_text(
+        "name: parent\ndescription: nests\n"
+        "tasks:\n  - nest:\n      description: nest\n"
+        "      task: child\n      tool: tool:conduit\n      depends_on: []\n"
+    )
+    result = CliRunner().invoke(app, ["run", "parent"])
+    assert result.exit_code == 1, result.stdout
+    fid = _flow_id(result.stdout)
+    assert fid.endswith("_parent")
+    assert result.stdout.count("· run page ") == 1
+    assert f"· run page http://127.0.0.1:8000/runs/{fid}\n" in result.stdout
+    assert f"atelier run --resume {fid}" in result.stdout

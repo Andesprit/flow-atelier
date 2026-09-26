@@ -165,9 +165,13 @@ def drive_flow(
         render_task_event(event, console)
 
     def _on_started(fid: str) -> None:
-        captured["id"] = fid
         if flow_id is None:
             console.print(_render_orchestration_msg(f"starting flow {fid}"))
+        # The engine also reports each nested tool:conduit run it starts. The
+        # flow this command drives is the first one (or the resumed one), and
+        # its page links to the nested runs.
+        if captured["id"] is None:
+            captured["id"] = fid
             _announce_page(fid)
 
     def _on_task_starting(task_name: str, tool: str) -> None:

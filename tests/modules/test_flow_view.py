@@ -332,3 +332,50 @@ def test_update_gives_up_when_an_earlier_line_changed():
     """A rewritten line needs the whole log resent, so there is no update."""
     assert task_log_update(_log(_round(1, "a", "b")), _log(_round(1, "a", "B"))) is None
     assert task_log_update(_log(_round(1, "a"), _round(2, "b")), _log(_round(2, "b"))) is None
+
+
+def test_task_log_links_each_round_to_its_sub_run():
+    """A tool:conduit round links the sub-run it started, the running one included."""
+    entries = [
+        _entry(
+            tool="tool:conduit",
+            iteration=i,
+            of=5,
+            started_at=f"2026-09-25T14:0{i}:00Z",
+            finished_at=f"2026-09-25T14:0{i}:30Z",
+        )
+        for i in (1, 2)
+    ]
+    sub_runs = [
+        ("2026-09-25T14:03:00.5Z", "20260925_cccccccc_child"),
+        ("2026-09-25T14:01:00.5Z", "20260925_ffffffff_child"),
+        ("2026-09-25T14:02:00.5Z", "20260925_aaaaaaaa_child"),
+    ]
+    progress = TaskProgress(status=TaskStatus.running, iteration=3, of=5)
+
+    log = build_task_log("t", "tool:conduit", progress, entries, [], sub_runs)
+
+    assert [(r.iteration, r.status, r.child_flow_id) for r in log.rounds] == [
+        (1, "completed", "20260925_ffffffff_child"),
+        (2, "completed", "20260925_aaaaaaaa_child"),
+        (3, "running", "20260925_cccccccc_child"),
+    ]
+
+
+def test_update_carries_a_sub_run_that_just_started():
+    """The running round gains its sub-run link without a resend."""
+    progress = TaskProgress(status=TaskStatus.running, iteration=1)
+    before = build_task_log("t", "tool:conduit", progress, [], [])
+    after = build_task_log(
+        "t", "tool:conduit", progress, [], [], [("2026-09-25T14:00:01Z", "20260925_aaaaaaaa_child")]
+    )
+
+    update = task_log_update(before, after)
+
+    assert update is not None
+    (patch,) = update.rounds
+    assert (patch.status, patch.child_flow_id, patch.append) == (
+        "running",
+        "20260925_aaaaaaaa_child",
+        [],
+    )

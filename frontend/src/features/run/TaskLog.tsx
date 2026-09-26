@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { cn } from "@/lib/cn";
 import { fmtClock } from "@/utils/format";
 import { toolColor } from "@/constants/tools";
@@ -91,29 +92,33 @@ export function TaskLog({ task, log, error, live }: Props) {
       return (
         <div key={round.iteration} data-testid={`task-log-round-${round.iteration}`}>
           {multi && (
-            <button
-              type="button"
-              aria-expanded={open}
-              onClick={() => toggle(round.iteration)}
-              className="flex w-full items-center gap-3 px-4 py-1.5 text-left font-mono text-data hover:bg-muted/40"
-            >
-              <span className="w-3 text-muted-foreground">{open ? "▾" : "▸"}</span>
-              <span className={cn("w-20", isLast && "font-semibold")}>Round {round.iteration}</span>
-              <RoundMarker status={round.status} />
-              <span
-                className={cn(
-                  round.status === "running" ? "text-primary" : "text-muted-foreground",
-                )}
+            <div className="flex items-center hover:bg-muted/40">
+              <button
+                type="button"
+                aria-expanded={open}
+                onClick={() => toggle(round.iteration)}
+                className="flex flex-1 items-center gap-3 px-4 py-1.5 text-left font-mono text-data"
               >
-                {roundSummary(round)}
-                {problems > 0 && round.status !== "failed"
-                  ? ` · ${problems} ${problems === 1 ? "warning" : "warnings"}`
-                  : ""}
-              </span>
-            </button>
+                <span className="w-3 text-muted-foreground">{open ? "▾" : "▸"}</span>
+                <span className={cn("w-20", isLast && "font-semibold")}>Round {round.iteration}</span>
+                <RoundMarker status={round.status} />
+                <span
+                  className={cn(
+                    round.status === "running" ? "text-primary" : "text-muted-foreground",
+                  )}
+                >
+                  {roundSummary(round)}
+                  {problems > 0 && round.status !== "failed"
+                    ? ` · ${problems} ${problems === 1 ? "warning" : "warnings"}`
+                    : ""}
+                </span>
+              </button>
+              {round.childFlowId && <SubRunLink flowId={round.childFlowId} />}
+            </div>
           )}
           {open && (
             <div className={cn(multi && "ml-9 border-l-2 border-border")}>
+              {!multi && round.childFlowId && <SubRunLink flowId={round.childFlowId} />}
               {lines.map((line, i) => (
                 <LogLine key={i} line={line} />
               ))}
@@ -121,7 +126,9 @@ export function TaskLog({ task, log, error, live }: Props) {
                 <p className="px-4 py-1.5 text-body text-muted-foreground">
                   {task.tool === "tool:bash"
                     ? "Running. Nothing printed yet."
-                    : "Working. Actions show here as they happen."}
+                    : task.tool === "tool:conduit"
+                      ? "Running as a sub-run. Open it to follow each step."
+                      : "Working. Actions show here as they happen."}
                 </p>
               )}
             </div>
@@ -182,6 +189,18 @@ export function TaskLog({ task, log, error, live }: Props) {
         </div>
       )}
     </section>
+  );
+}
+
+function SubRunLink({ flowId }: { flowId: string }) {
+  return (
+    <Link
+      to={`/runs/${encodeURIComponent(flowId)}`}
+      title={flowId}
+      className="shrink-0 px-4 py-1.5 font-mono text-data text-primary underline-offset-2 hover:underline"
+    >
+      Open sub-run →
+    </Link>
   );
 }
 

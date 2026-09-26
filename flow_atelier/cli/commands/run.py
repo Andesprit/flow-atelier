@@ -32,6 +32,7 @@ from flow_atelier.cli.rendering.render import (
     render_task_start,
 )
 from flow_atelier.core.atelier import Atelier
+from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.engine import accepted_input_keys
 from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.flow import parse_flow_id
@@ -147,6 +148,15 @@ def drive_flow(
     collected: list[TaskEvent] = []
     captured: dict[str, str | None] = {"id": flow_id}
     running = _RunningTasks()
+    page_base = AtelierSettings().serve_url.rstrip("/")
+
+    def _announce_page(fid: str) -> None:
+        # soft_wrap keeps the URL on one line when the output is piped to a
+        # log, where Rich would otherwise wrap at 80 columns.
+        console.print(
+            _render_orchestration_msg(f"run page {page_base}/runs/{fid}"),
+            soft_wrap=True,
+        )
 
     def _on_event(event: TaskEvent) -> None:
         collected.append(event)
@@ -158,6 +168,7 @@ def drive_flow(
         captured["id"] = fid
         if flow_id is None:
             console.print(_render_orchestration_msg(f"starting flow {fid}"))
+            _announce_page(fid)
 
     def _on_task_starting(task_name: str, tool: str) -> None:
         index = running.start(task_name)
@@ -165,6 +176,9 @@ def drive_flow(
         console.print()
         console.print(render_task_start(task_name, tool, index, total_tasks, verb=verb))
 
+    # The engine does not announce a resumed flow, so name its page here.
+    if flow_id is not None:
+        _announce_page(flow_id)
     coro = start(
         on_task_event=_on_event,
         on_flow_started=_on_started,

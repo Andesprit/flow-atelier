@@ -1356,6 +1356,13 @@ runs started from the CLI, the dashboard or the scheduler. The server follows
 the run's files and pushes each new line over `/ws/flows/<flow_id>` within a
 quarter second, shell output included.
 
+`atelier run` and `atelier ask` print that page's address as soon as the flow
+starts, for example
+`· run page http://127.0.0.1:8000/runs/20260925_0eb21391_hello`, so an agent
+driving the CLI can hand the link to you. The page loads only while
+`atelier serve` runs from the same project directory as the run. Set
+`ATELIER_SERVE_URL` when you serve on another host or port.
+
 Binds to `127.0.0.1:8000` by default; pass `--host 0.0.0.0` to expose
 on the LAN — which requires `ATELIER_API_TOKEN`, see [Security](#security).
 `--cors-origin` is repeatable.

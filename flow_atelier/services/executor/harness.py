@@ -498,6 +498,8 @@ class _BufferingClient:
         self._pending_thinking_len: int = 0
         self._pending_message: list[str] = []
         self._pending_message_len: int = 0
+        # Tool calls announced before their input, by id. See _dispatch_update.
+        self._held_calls: dict[str, IntermediateStep] = {}
         # True once a message block reached the sink, so the caller knows a
         # result panel would duplicate what already scrolled past.
         self.streamed_message = False
@@ -578,6 +580,9 @@ class _BufferingClient:
         group of thinking, the last message block, and any open tool-call
         burst are emitted instead of being stuck pending.
         """
+        held, self._held_calls = list(self._held_calls.values()), {}
+        for step in held:
+            await self._record(step)
         await self._flush_thinking()
         await self._flush_message()
         if hasattr(self._sink, "flush_steps"):
@@ -698,19 +703,34 @@ class _BufferingClient:
                 await self._flush_thinking()
         elif isinstance(update, ToolCallStart):
             await self._flush_thinking()
-            await self._record(
-                IntermediateStep(
-                    kind=StepKind.tool_call,
-                    tool_call_id=update.tool_call_id,
-                    tool_name=update.title,
-                    tool_kind=update.kind or "",
-                    tool_status=update.status or "",
-                    tool_input=_payload_snippet(update.raw_input),
-                    locations=[loc.path for loc in (update.locations or [])],
-                )
+            step = IntermediateStep(
+                kind=StepKind.tool_call,
+                tool_call_id=update.tool_call_id,
+                tool_name=update.title,
+                tool_kind=update.kind or "",
+                tool_status=update.status or "",
+                tool_input=_payload_snippet(update.raw_input),
+                locations=[loc.path for loc in (update.locations or [])],
             )
+            if update.status == "pending" and not (step.tool_input or step.locations):
+                # claude-code-acp announces every call as a bare "Terminal" or
+                # "Read File" and sends what it will run in the next update.
+                # A pending call has not started, so holding it hides nothing.
+                self._held_calls[update.tool_call_id] = step
+            else:
+                await self._record(step)
         elif isinstance(update, ToolCallProgress):
-            if update.status in ("completed", "failed"):
+            held = self._held_calls.get(update.tool_call_id)
+            finished = update.status in ("completed", "failed")
+            if held is not None and (update.raw_input or update.locations or finished):
+                del self._held_calls[update.tool_call_id]
+                if update.raw_input:
+                    held.tool_input = _payload_snippet(update.raw_input)
+                if update.locations:
+                    held.locations = [loc.path for loc in update.locations]
+                await self._flush_thinking()
+                await self._record(held)
+            if finished:
                 await self._flush_thinking()
                 await self._record(
                     IntermediateStep(

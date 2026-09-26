@@ -378,3 +378,61 @@ class TestBufferingClientSteps:
         )
         await client.session_update("s1", update)
         assert len(client.steps[0].tool_output) <= 500
+
+
+async def test_tool_call_waits_for_the_input_claude_sends_next() -> None:
+    """claude-code-acp opens each call empty; the step carries the command that follows."""
+    client = _BufferingClient(RecordingSink(), stream_steps=False)
+    await client.session_update(
+        "s1",
+        ToolCallStart(
+            sessionUpdate="tool_call", tool_call_id="tc-1", title="Terminal",
+            kind="execute", status="pending", raw_input={},
+        ),
+    )
+    assert client.steps == []
+
+    await client.session_update(
+        "s1",
+        ToolCallProgress(
+            sessionUpdate="tool_call_update", tool_call_id="tc-1",
+            title="cat request.json", raw_input={"command": "cat request.json"},
+        ),
+    )
+    await client.session_update(
+        "s1",
+        ToolCallProgress(sessionUpdate="tool_call_update", tool_call_id="tc-1", status="completed"),
+    )
+
+    call, result = client.steps
+    assert (call.kind, call.tool_name, call.tool_input) == (
+        StepKind.tool_call, "Terminal", '{"command": "cat request.json"}'
+    )
+    assert result.kind == StepKind.tool_result
+
+
+async def test_tool_call_already_running_is_never_held() -> None:
+    """A call that starts in progress shows at once, input or not (codex edits)."""
+    client = _BufferingClient(RecordingSink(), stream_steps=False)
+    await client.session_update(
+        "s1",
+        ToolCallStart(
+            sessionUpdate="tool_call", tool_call_id="tc-1", title="Editing files",
+            kind="edit", status="in_progress",
+        ),
+    )
+    assert [s.tool_name for s in client.steps] == ["Editing files"]
+
+
+async def test_held_tool_call_is_kept_when_the_turn_ends() -> None:
+    """A call whose input never arrives still shows once the turn is flushed."""
+    client = _BufferingClient(RecordingSink(), stream_steps=False)
+    await client.session_update(
+        "s1",
+        ToolCallStart(
+            sessionUpdate="tool_call", tool_call_id="tc-1", title="Terminal",
+            kind="execute", status="pending",
+        ),
+    )
+    await client.flush_pending()
+    assert [s.tool_name for s in client.steps] == ["Terminal"]

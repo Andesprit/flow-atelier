@@ -30,7 +30,7 @@ from flow_atelier.schemas.ws import (
     ResumeMessage,
     RunMessage,
 )
-from flow_atelier.services.api.base import get_atelier
+from flow_atelier.services.api.base import get_atelier, origin_allowed
 from flow_atelier.services.api.ws_hitl import WsHitlExecutor
 from flow_atelier.services.api.ws_manager import WebSocketBroker
 from flow_atelier.services.api.ws_sink import WsPromptSink
@@ -76,6 +76,9 @@ async def run_conduit_ws(websocket: WebSocket) -> None:
         websocket.query_params.get("token", ""), expected_token
     ):
         await websocket.close(code=1008, reason="invalid or missing API token")
+        return
+    if not origin_allowed(websocket):
+        await websocket.close(code=1008, reason="origin not allowed")
         return
 
     await websocket.accept()

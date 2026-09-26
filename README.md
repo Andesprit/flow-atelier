@@ -1375,7 +1375,7 @@ The API runs shell commands on the machine hosting it, so treat reaching it as
 equivalent to a shell on that machine.
 
 **On loopback (the default).** `atelier serve` binds `127.0.0.1:8000` and needs
-no token. Two guards keep a web page you happen to visit from driving it:
+no token. Three guards keep a web page you happen to visit from driving it:
 
 - **Origin.** CORS is restricted to localhost origins, never `*`.
 - **Host.** Only `localhost`, `127.0.0.1`, and `::1` are accepted as the `Host`
@@ -1383,6 +1383,13 @@ header. This is what stops DNS rebinding, where an attacker's page resolves
 its own hostname to `127.0.0.1` so the browser treats the request as
 same-origin and sends no `Origin` for CORS to reject. Requests carrying any
 other `Host` get `400 Invalid host header`.
+- **WebSocket origin.** CORS does not apply to WebSockets, and a page on any
+site can open `ws://127.0.0.1:8000/...` with a loopback `Host`. So the
+WebSocket routes check the page's `Origin` themselves: they accept a local
+page, an origin passed with `--cors-origin`, or this server's own UI, and
+refuse any other with close code `1008` before the connection opens. A client
+that sends no `Origin`, such as a script, is not a browser page and is let
+through.
 
 **Anywhere else.** Before binding to a non-loopback address, set
 `ATELIER_API_TOKEN`. Every REST request then needs

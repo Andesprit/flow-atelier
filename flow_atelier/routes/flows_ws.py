@@ -6,12 +6,11 @@ import logging
 import secrets
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
-from flow_atelier.services.api.base import get_atelier
+from flow_atelier.services.api.base import get_atelier, origin_allowed
 from flow_atelier.services.api.flow_watch import FlowWatcher
 
 logger = logging.getLogger(__name__)
@@ -19,31 +18,6 @@ router = APIRouter()
 
 # How often the run's files are checked; the same cadence as `atelier logs --follow`.
 TICK_SECONDS = 0.25
-
-_LOOPBACK = {"localhost", "127.0.0.1", "::1"}
-
-
-def _origin_allowed(websocket: WebSocket) -> bool:
-    """Return whether the page that opened ``websocket`` may read runs.
-
-    CORS does not apply to WebSockets, so without this check any site the
-    user visits could open the socket against a local ``atelier serve`` and
-    read its runs. A client that sends no ``Origin`` is not a browser page and
-    passes; a page must be local, a configured CORS origin, or this server.
-
-    :param websocket: the incoming connection.
-    :returns: ``True`` when the connection may proceed.
-    """
-    origin = websocket.headers.get("origin")
-    if not origin:
-        return True
-    parts = urlsplit(origin)
-    if parts.hostname in _LOOPBACK:
-        return True
-    if origin in getattr(websocket.app.state, "cors_origins", []):
-        return True
-    return parts.netloc == websocket.headers.get("host", "")
-
 
 def _log_failure(task: asyncio.Task) -> None:
     """Log why a feed's follower stopped, unless the client simply left.
@@ -74,7 +48,7 @@ async def watch_flow_ws(websocket: WebSocket, flow_id: str) -> None:
     ):
         await websocket.close(code=1008, reason="invalid or missing API token")
         return
-    if not _origin_allowed(websocket):
+    if not origin_allowed(websocket):
         await websocket.close(code=1008, reason="origin not allowed")
         return
 

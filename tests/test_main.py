@@ -611,6 +611,20 @@ def test_logs_follow_on_completed_flow_exits(workdir):
     assert "beta" in result.output
 
 
+def test_logs_follow_prints_shell_output_once(workdir):
+    """--follow must not echo recorded shell lines on top of each entry's output.
+
+    :param workdir: isolated working directory fixture.
+    """
+    _write_multi(workdir)
+    runner = CliRunner()
+    flow_id = _run_and_id(runner, "multi")
+    plain = runner.invoke(app, ["logs", flow_id])
+    followed = runner.invoke(app, ["logs", flow_id, "--follow"])
+    assert followed.exit_code == 0, followed.output
+    assert followed.output.count("alpha") == plain.output.count("alpha")
+
+
 def test_logs_follow_unknown_flow(workdir):
     """Verify `logs --follow` errors on an unknown flow id.
 

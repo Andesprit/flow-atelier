@@ -4,10 +4,13 @@ from __future__ import annotations
 import secrets
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 
 from flow_atelier.core.atelier import Atelier
+
+_LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 
 
 class ApiServerBase(ABC):
@@ -54,3 +57,26 @@ def require_token(request: Request) -> None:
     auth = request.headers.get("authorization", "")
     if not secrets.compare_digest(auth, f"Bearer {token}"):
         raise HTTPException(status_code=401, detail="invalid or missing API token")
+
+
+def origin_allowed(websocket: WebSocket) -> bool:
+    """Return whether the page that opened ``websocket`` may use it.
+
+    CORS does not apply to WebSockets, and the ``Host`` pin does not help
+    either: a page on any site can open ``ws://127.0.0.1:8000/...`` and the
+    browser sends a loopback ``Host``. Only ``Origin`` names the page. A client
+    that sends none is not a browser page and passes; a page must be local, a
+    configured CORS origin, or served by this server.
+
+    :param websocket: the incoming connection.
+    :returns: ``True`` when the connection may proceed.
+    """
+    origin = websocket.headers.get("origin")
+    if not origin:
+        return True
+    parts = urlsplit(origin)
+    if parts.hostname in _LOOPBACK:
+        return True
+    if origin in getattr(websocket.app.state, "cors_origins", []):
+        return True
+    return parts.netloc == websocket.headers.get("host", "")

@@ -143,3 +143,59 @@ async def test_timeout_preserves_partial_output():
     assert "hello" in r.stdout
     assert "hello" in r.output
     assert "timeout" in r.stderr
+
+
+def _recording_ctx(steps: list) -> FlowContext:
+    """Build a FlowContext whose step hook records each step and when it came.
+
+    :param steps: list receiving ``(monotonic_time, step)`` tuples.
+    """
+    ctx = _ctx()
+
+    async def _on_step(step) -> None:
+        steps.append((time.monotonic(), step))
+
+    ctx.on_step = _on_step
+    return ctx
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="bash ; syntax not supported in cmd.exe")
+async def test_output_is_recorded_as_it_is_printed():
+    """Each line reaches the step hook while the command still runs."""
+    steps: list = []
+    cmd = "echo first; sleep 0.5; printf 'second\\npartial'; echo oops >&2"
+    r = await BashExecutor().execute(_task(cmd), cmd, _recording_ctx(steps))
+    done = time.monotonic()
+
+    out = [line for _, s in steps if s.kind == "stdout" for line in s.text.splitlines()]
+    err = [line for _, s in steps if s.kind == "stderr" for line in s.text.splitlines()]
+    assert out == ["first", "second", "partial"]
+    assert err == ["oops"]
+    first_at = next(at for at, s in steps if s.text.startswith("first"))
+    assert done - first_at >= 0.4
+    assert r.stdout == "first\nsecond\npartial"
+
+
+async def test_a_failing_output_hook_does_not_fail_the_command():
+    """Recording is best-effort: the command's own result is what counts."""
+    ctx = _ctx()
+
+    async def _broken(step) -> None:
+        raise OSError("disk full")
+
+    ctx.on_step = _broken
+    r = await BashExecutor().execute(_task("echo hello"), "echo hello", ctx)
+    assert r.exit_code == 0
+    assert r.stdout == "hello\n"
+
+
+async def test_recorded_output_stops_at_the_cap(monkeypatch):
+    """A noisy command cannot grow steps.jsonl without bound; its result keeps everything."""
+    monkeypatch.setattr(bash_mod, "LIVE_OUTPUT_BYTES", 20)
+    steps: list = []
+    cmd = "for i in $(seq 1 50); do echo line-$i; done"
+    r = await BashExecutor().execute(_task(cmd), cmd, _recording_ctx(steps))
+
+    recorded = "".join(s.text for _, s in steps if s.kind == "stdout")
+    assert 0 < len(recorded.encode()) <= 20
+    assert r.stdout.count("line-") == 50

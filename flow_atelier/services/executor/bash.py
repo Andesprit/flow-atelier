@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import os
 import re
 import shutil
@@ -11,8 +12,14 @@ import subprocess
 from pathlib import Path
 
 from flow_atelier.schemas.conduit import TaskDefinition
-from flow_atelier.schemas.log import ExecutionResult
+from flow_atelier.schemas.log import ExecutionResult, IntermediateStep, StepKind
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext
+
+logger = logging.getLogger(__name__)
+
+# Bytes of each stream recorded live per attempt. This bounds steps.jsonl
+# only: the result still carries every byte the command printed.
+LIVE_OUTPUT_BYTES = 1_000_000
 
 # Windows drive-rooted path, e.g. ``D:\foo`` or ``C:/bar``. Engine-computed
 # path variables (``{{conduit_dir}}``) are the only values that arrive in this
@@ -67,6 +74,78 @@ def to_bash_path(path: Path | str) -> str:
     rest = text[2:].replace("\\", "/").lstrip("/")
     prefix = f"/mnt/{drive}" if _bash_namespace() == "wsl" else f"/{drive}"
     return f"{prefix}/{rest}" if rest else prefix
+
+
+class _LiveOutput:
+    """Hand the complete lines of one output stream to the step hook as they arrive.
+
+    Lines are cut at ``\\n`` on bytes, so a character split across two reads
+    is never decoded in halves. Recording is a live view only: it stops at
+    :data:`LIVE_OUTPUT_BYTES` or on the first hook failure, and the command's
+    result keeps every byte either way.
+    """
+
+    def __init__(self, on_step, kind: StepKind) -> None:
+        """Bind the recorder to a step hook and the stream it reports.
+
+        :param on_step: the context's step hook, or ``None`` to record nothing.
+        :param kind: :attr:`StepKind.stdout` or :attr:`StepKind.stderr`.
+        """
+        self._on_step = on_step
+        self._kind = kind
+        self._pending = bytearray()
+        self._sent = 0
+
+    async def feed(self, chunk: bytes) -> None:
+        """Record every line ``chunk`` completes; keep the unfinished tail.
+
+        :param chunk: bytes just read from the stream.
+        """
+        if self._on_step is None:
+            return
+        self._pending.extend(chunk)
+        cut = self._pending.rfind(b"\n")
+        if cut == -1:
+            # A stream with no newline in sight cannot finish a line within the
+            # budget either; stop rather than hold it all in memory twice.
+            if len(self._pending) > LIVE_OUTPUT_BYTES - self._sent:
+                self._on_step = None
+                self._pending.clear()
+            return
+        lines = bytes(self._pending[:cut])
+        del self._pending[: cut + 1]
+        await self._send(lines)
+
+    async def close(self) -> None:
+        """Record a last line the command printed without a newline."""
+        if self._on_step is not None and self._pending:
+            lines = bytes(self._pending)
+            self._pending.clear()
+            await self._send(lines)
+
+    async def _send(self, data: bytes) -> None:
+        """Pass ``data`` to the hook, trimmed to whole lines within the budget.
+
+        :param data: one or more complete lines, without the final newline.
+        """
+        room = LIVE_OUTPUT_BYTES - self._sent
+        full = len(data) > room
+        if full:
+            kept = data[:room]
+            data = kept[: max(kept.rfind(b"\n"), 0)]
+        on_step = self._on_step
+        if full:
+            self._on_step = None
+        if not data.strip() or on_step is None:
+            return
+        self._sent += len(data)
+        try:
+            await on_step(
+                IntermediateStep(kind=self._kind, text=data.decode("utf-8", errors="replace"))
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("live output recording failed", exc_info=True)
+            self._on_step = None
 
 
 class BashExecutor(ExecutorBase):
@@ -141,13 +220,21 @@ class BashExecutor(ExecutorBase):
         stdout_buf = bytearray()
         stderr_buf = bytearray()
 
-        async def _pump(stream: asyncio.StreamReader, sink: bytearray) -> None:
+        async def _pump(
+            stream: asyncio.StreamReader, sink: bytearray, live: _LiveOutput
+        ) -> None:
             while chunk := await stream.read(65536):
                 sink.extend(chunk)
+                await live.feed(chunk)
+            await live.close()
 
         pumps = [
-            asyncio.create_task(_pump(proc.stdout, stdout_buf)),
-            asyncio.create_task(_pump(proc.stderr, stderr_buf)),
+            asyncio.create_task(
+                _pump(proc.stdout, stdout_buf, _LiveOutput(context.on_step, StepKind.stdout))
+            ),
+            asyncio.create_task(
+                _pump(proc.stderr, stderr_buf, _LiveOutput(context.on_step, StepKind.stderr))
+            ),
         ]
         try:
             await asyncio.wait_for(proc.wait(), timeout=context.timeout)

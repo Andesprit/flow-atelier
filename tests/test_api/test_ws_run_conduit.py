@@ -371,6 +371,38 @@ def test_ws_rejects_bad_token(env):
         assert wrong.value.code == 1008
 
 
+def test_ws_refuses_pages_from_other_sites(env, tmp_path):
+    """A page on another site cannot open the socket; the UI and scripts can.
+
+    CORS does not apply to WebSockets, so without this a site the user visits
+    could open the socket against a local server and run conduits.
+
+    :param env: env fixture providing (atelier, app).
+    :param tmp_path: pytest temp directory fixture.
+    """
+    run = json.dumps(
+        {"type": "run", "conduit_name": "hello", "inputs": {}, "run_path": str(tmp_path)}
+    )
+    _, app = env
+    with TestClient(app, base_url="http://127.0.0.1", headers={"host": "127.0.0.1"}) as client:
+        with pytest.raises(WebSocketDisconnect) as refused:
+            with client.websocket_connect(
+                "/ws/run-conduit", headers={"origin": "https://evil.example"}
+            ):
+                pass
+        assert refused.value.code == 1008
+
+        with client.websocket_connect(
+            "/ws/run-conduit", headers={"origin": "http://localhost:5173"}
+        ) as ws:
+            ws.send_text(run)
+            _drain_until(ws, lambda e: e.get("type") == "flow_complete")
+
+        with client.websocket_connect("/ws/run-conduit") as ws:
+            ws.send_text(run)
+            _drain_until(ws, lambda e: e.get("type") == "flow_complete")
+
+
 # ── interactive harness (agent_message / agent_input_request) ─────────────
 
 INTERACTIVE_YAML = """name: chat

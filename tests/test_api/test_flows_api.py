@@ -115,3 +115,60 @@ async def test_get_logs_rejects_encoded_dot_segment(fixture, tmp_path):
     resp = await client.get("/flows/%2E%2E/logs")
     assert resp.status_code == 404
     assert "SECRET" not in resp.text
+
+
+async def test_get_flow_view_lists_the_run_tasks(fixture, tmp_path):
+    """Verify GET /flows/<id> returns the run's tasks and their progress.
+
+    :param fixture: client+atelier tuple fixture.
+    :param tmp_path: pytest temp directory fixture.
+    """
+    client, atelier = fixture
+    flow_id = await _seed_flow(atelier, run_path=str(tmp_path))
+    resp = await client.get(f"/flows/{flow_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["flow_id"] == flow_id
+    assert body["status"] == "completed"
+    assert [(t["name"], t["status"]) for t in body["tasks"]] == [("echo", "completed")]
+
+
+async def test_get_task_log_returns_the_task_output(fixture, tmp_path):
+    """Verify GET /flows/<id>/tasks/<task>/log returns the command and its output.
+
+    :param fixture: client+atelier tuple fixture.
+    :param tmp_path: pytest temp directory fixture.
+    """
+    client, atelier = fixture
+    flow_id = await _seed_flow(atelier, run_path=str(tmp_path))
+    resp = await client.get(f"/flows/{flow_id}/tasks/echo/log")
+    assert resp.status_code == 200
+    body = resp.json()
+    (only,) = body["rounds"]
+    assert only["status"] == "completed"
+    lines = [(line["kind"], line["text"]) for line in only["lines"]]
+    assert ("run", "$ echo flow-api-output") in lines
+    assert ("out", "flow-api-output") in lines
+
+
+async def test_get_task_log_unknown_task_returns_404(fixture, tmp_path):
+    """Verify asking for a task the flow does not have returns 404.
+
+    :param fixture: client+atelier tuple fixture.
+    :param tmp_path: pytest temp directory fixture.
+    """
+    client, atelier = fixture
+    flow_id = await _seed_flow(atelier, run_path=str(tmp_path))
+    resp = await client.get(f"/flows/{flow_id}/tasks/nope/log")
+    assert resp.status_code == 404
+
+
+async def test_get_flow_view_unknown_returns_404(fixture):
+    """Verify the run page's map 404s for an unknown or traversing flow id.
+
+    :param fixture: client+atelier tuple fixture.
+    """
+    client, _ = fixture
+    assert (await client.get("/flows/no_such_flow")).status_code == 404
+    assert (await client.get("/flows/%2E%2E")).status_code == 404
+    assert (await client.get("/flows/%2E%2E/tasks/t/log")).status_code == 404

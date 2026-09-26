@@ -766,6 +766,30 @@ class Atelier:
             flow_id, conduit_name, self.store.read_progress(flow_id), conduit
         )
 
+    def flow_files_signature(
+        self, flow_id: str
+    ) -> tuple[tuple[int, int] | None, tuple[int, int] | None, tuple[int, int] | None]:
+        """Return the mtime and size of the files a flow writes as it runs.
+
+        Cheap enough to call several times a second: a watcher compares it
+        between looks and reads the files only when it changed.
+
+        :param flow_id: flow identifier
+        :returns: ``(mtime_ns, size)`` for ``progress.json``, ``logs.jsonl``
+            and ``steps.jsonl``, in that order; ``None`` for one not written yet
+        :raises FileNotFoundError: if no flow with that id exists
+        """
+        flow_dir = self.store._flow_dir(flow_id)
+        found: list[tuple[int, int] | None] = []
+        for name in ("progress.json", "logs.jsonl", "steps.jsonl"):
+            try:
+                st = (flow_dir / name).stat()
+            except FileNotFoundError:
+                found.append(None)
+            else:
+                found.append((st.st_mtime_ns, st.st_size))
+        return found[0], found[1], found[2]
+
     def get_task_log(self, flow_id: str, task: str) -> TaskLogView:
         """Return one task's log in ``flow_id``: its rounds and every action.
 

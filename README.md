@@ -1347,12 +1347,14 @@ Flow Atelier visual frontend connects to.
 | `GET`    | `/flows/:id`          | Tasks, dependencies and progress          |
 | `GET`    | `/flows/:id/tasks/:task/log` | One task's rounds and actions, secrets masked |
 | `WS`     | `/ws/run-conduit`     | Run flows, HITL + interactive AI turns    |
+| `WS`     | `/ws/flows/:id`       | The run page's feed: its map and one task's log, pushed as they change |
 
 
 Every run also has a page at `/runs/<flow_id>`: a map of its tasks with the
 ones running now framed, and the log of whichever task you click. It works for
-runs started from the CLI, the dashboard or the scheduler, and refreshes while
-the run is going. Shell output appears line by line as it is printed.
+runs started from the CLI, the dashboard or the scheduler. The server follows
+the run's files and pushes each new line over `/ws/flows/<flow_id>` within a
+quarter second, shell output included.
 
 Binds to `127.0.0.1:8000` by default; pass `--host 0.0.0.0` to expose
 on the LAN — which requires `ATELIER_API_TOKEN`, see [Security](#security).

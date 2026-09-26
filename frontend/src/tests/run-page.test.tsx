@@ -1,16 +1,35 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import RunPage, { defaultTask } from "@/pages/Run";
+import { applyTaskLogUpdate } from "@/features/run/feed";
 import { hereBox, layoutRunMap, NODE_W } from "@/features/run/layout";
+import type { RunFeedHandlers } from "@/services/api/runs";
 import type { RunTask, RunView, TaskLog } from "@/types/run";
 
-const getRunView = vi.fn<(flowId: string) => Promise<RunView>>();
-const getTaskLog = vi.fn<(flowId: string, task: string) => Promise<TaskLog>>();
+interface FakeFeed {
+  flowId: string;
+  handlers: RunFeedHandlers;
+  watched: string[];
+}
+
+const feeds: FakeFeed[] = [];
+// What the fake server does when the page connects; each test may replace it.
+let onOpen: (feed: FakeFeed) => void = () => {};
 
 vi.mock("@/services/api/runs", () => ({
-  getRunView: (flowId: string) => getRunView(flowId),
-  getTaskLog: (flowId: string, task: string) => getTaskLog(flowId, task),
+  openRunFeed: (flowId: string, handlers: RunFeedHandlers) => {
+    const feed: FakeFeed = { flowId, handlers, watched: [] };
+    feeds.push(feed);
+    queueMicrotask(() => onOpen(feed));
+    return {
+      watch: (task: string) => {
+        feed.watched.push(task);
+        queueMicrotask(() => feed.handlers.onTaskLog(logFor(task)));
+      },
+      close: () => {},
+    };
+  },
 }));
 
 function task(over: Partial<RunTask> & Pick<RunTask, "name">): RunTask {
@@ -103,13 +122,12 @@ function renderAt(path: string) {
 }
 
 beforeEach(() => {
-  getRunView.mockResolvedValue(VIEW);
-  getTaskLog.mockImplementation((_flow, name) => Promise.resolve(logFor(name)));
+  feeds.length = 0;
+  onOpen = (feed) => feed.handlers.onFlow(VIEW);
 });
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
 });
 
 describe("run page", () => {
@@ -119,7 +137,7 @@ describe("run page", () => {
 
     fireEvent.click(screen.getByTestId("run-map-node-run_tests"));
 
-    await waitFor(() => expect(getTaskLog).toHaveBeenLastCalledWith(VIEW.flowId, "run_tests"));
+    await waitFor(() => expect(feeds[0].watched).toEqual(["implement", "run_tests"]));
     expect(await screen.findByText("44 passed")).toBeTruthy();
     expect(screen.queryByText("payments/retry.py")).toBeNull();
     expect(screen.getByTestId("run-map-node-run_tests").getAttribute("aria-pressed")).toBe("true");
@@ -148,9 +166,73 @@ describe("run page", () => {
   });
 
   it("says why a run cannot be loaded", async () => {
-    getRunView.mockRejectedValue(new Error("API error 404: flow not found"));
+    onOpen = (feed) => feed.handlers.onError("flow not found: nope");
     renderAt("/runs/nope");
     expect(await screen.findByText(/flow not found/)).toBeTruthy();
+  });
+
+  it("adds pushed lines without asking again", async () => {
+    renderAt(`/runs/${VIEW.flowId}?task=implement`);
+    expect(await screen.findByText("payments/retry.py")).toBeTruthy();
+
+    act(() =>
+      feeds[0].handlers.onTaskUpdate({
+        task: "implement",
+        status: "completed",
+        reason: null,
+        of: 1,
+        rounds: [
+          {
+            iteration: 1,
+            status: "completed",
+            startedAt: null,
+            durationSeconds: 190,
+            exitCode: 0,
+            append: [{ at: null, kind: "run", text: "make test -k retry", level: "info" }],
+          },
+        ],
+      }),
+    );
+
+    expect(screen.getByText("make test -k retry")).toBeTruthy();
+    expect(screen.getByText("payments/retry.py")).toBeTruthy();
+    expect(feeds[0].watched).toEqual(["implement"]);
+  });
+
+  it("follows what is running when the link names no task", async () => {
+    onOpen = (feed) => feed.handlers.onFlow({ ...VIEW, status: "running", currentTasks: ["run_tests"] });
+    renderAt(`/runs/${VIEW.flowId}`);
+    expect(await screen.findByText("44 passed")).toBeTruthy();
+    expect(feeds[0].watched).toEqual(["run_tests"]);
+  });
+});
+
+describe("applyTaskLogUpdate", () => {
+  it("appends to a round, adds a new one in order, and takes the new state", () => {
+    const log = logFor("run_tests");
+    const next = applyTaskLogUpdate(
+      { ...log, rounds: log.rounds.slice(0, 2), status: "running" },
+      {
+        task: "run_tests",
+        status: "running",
+        reason: null,
+        of: 5,
+        rounds: [
+          {
+            iteration: 2,
+            status: "failed",
+            startedAt: null,
+            durationSeconds: 40,
+            exitCode: 1,
+            append: [{ at: null, kind: "out", text: "late line", level: "info" }],
+          },
+          { iteration: 3, status: "running", startedAt: null, durationSeconds: null, exitCode: null, append: [] },
+        ],
+      },
+    );
+    expect(next.rounds.map((r) => r.iteration)).toEqual([1, 2, 3]);
+    expect(next.rounds[1].lines.map((l) => l.text)).toEqual(["test_jitter FAILED", "late line"]);
+    expect(next.rounds[2].lines).toEqual([]);
   });
 });
 

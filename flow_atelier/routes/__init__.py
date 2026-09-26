@@ -15,14 +15,15 @@ def register_routes(app: FastAPI) -> None:
 
     :param app: FastAPI application that receives the routers.
     """
-    from flow_atelier.routes import conduits, flows, schedules, tasks, ws
+    from flow_atelier.routes import conduits, flows, flows_ws, schedules, tasks, ws
     from flow_atelier.services.api.base import require_token
 
-    # REST routers enforce the optional bearer token; the WS route checks
-    # its ?token= query param itself (browser WS cannot set headers).
+    # REST routers enforce the optional bearer token; the WS routes check
+    # their ?token= query param themselves (browser WS cannot set headers).
     deps = [Depends(require_token)]
     app.include_router(conduits.router, dependencies=deps)
     app.include_router(schedules.router, dependencies=deps)
     app.include_router(tasks.router, dependencies=deps)
     app.include_router(flows.router, dependencies=deps)
     app.include_router(ws.router)
+    app.include_router(flows_ws.router)

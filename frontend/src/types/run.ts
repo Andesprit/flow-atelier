@@ -51,3 +51,22 @@ export interface TaskLog {
   of: number;
   rounds: TaskLogRound[];
 }
+
+/** A round's current state and the lines it gained since the last update. */
+export interface TaskRoundPatch {
+  iteration: number;
+  status: string;
+  startedAt: string | null;
+  durationSeconds: number | null;
+  exitCode: number | null;
+  append: TaskLogLine[];
+}
+
+/** What changed in a task's log: its state, and each round that grew. */
+export interface TaskLogUpdate {
+  task: string;
+  status: string;
+  reason: string | null;
+  of: number;
+  rounds: TaskRoundPatch[];
+}

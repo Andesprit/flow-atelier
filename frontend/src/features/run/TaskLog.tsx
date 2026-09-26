@@ -2,17 +2,16 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { fmtClock } from "@/utils/format";
 import { toolColor } from "@/constants/tools";
-import { getTaskLog } from "@/services/api/runs";
 import type { ToolType } from "@/types/conduit";
 import type { RunTask, TaskLog as TaskLogData, TaskLogLine, TaskLogRound } from "@/types/run";
 import { statusLabel } from "./RunMap";
 
-const POLL_MS = 2000;
-
 interface Props {
-  flowId: string;
   task: RunTask;
-  /** The run is still going, so the log keeps refreshing. */
+  /** The task's log as the feed last pushed it; undefined until it arrives. */
+  log?: TaskLogData;
+  error?: string;
+  /** The run is still going, so new lines keep arriving. */
   live: boolean;
 }
 
@@ -34,9 +33,7 @@ function roundSummary(round: TaskLogRound): string {
   return round.status;
 }
 
-export function TaskLog({ flowId, task, live }: Props) {
-  const [log, setLog] = useState<TaskLogData>();
-  const [error, setError] = useState<string>();
+export function TaskLog({ task, log, error, live }: Props) {
   const [query, setQuery] = useState("");
   const [problemsOnly, setProblemsOnly] = useState(false);
   const [showThoughts, setShowThoughts] = useState(false);
@@ -44,47 +41,9 @@ export function TaskLog({ flowId, task, live }: Props) {
   const [flipped, setFlipped] = useState<Set<number>>(new Set());
 
   useEffect(() => {
-    setLog(undefined);
-    setError(undefined);
     setFlipped(new Set());
     setShowThoughts(false);
   }, [task.name]);
-
-  const polling = live && (task.status === "running" || task.status === "pending");
-
-  // Refetched when the map reports a new status or round, so a task that just
-  // finished shows its final lines even after polling stops.
-  useEffect(() => {
-    let ignore = false;
-    let inFlight = false;
-    const load = () => {
-      if (inFlight) return;
-      inFlight = true;
-      getTaskLog(flowId, task.name)
-        .then((next) => {
-          if (ignore) return;
-          setLog(next);
-          setError(undefined);
-        })
-        .catch((e: unknown) => {
-          if (!ignore) setError(e instanceof Error ? e.message : String(e));
-        })
-        .finally(() => {
-          inFlight = false;
-        });
-    };
-    load();
-    if (!polling) {
-      return () => {
-        ignore = true;
-      };
-    }
-    const id = setInterval(load, POLL_MS);
-    return () => {
-      ignore = true;
-      clearInterval(id);
-    };
-  }, [flowId, task.name, task.status, task.iteration, polling]);
 
   const q = query.trim().toLowerCase();
   const filtering = q !== "" || problemsOnly;
@@ -186,7 +145,7 @@ export function TaskLog({ flowId, task, live }: Props) {
           </span>
         )}
         <span className="text-body text-muted-foreground">{statusLabel(task)}</span>
-        {polling && task.status === "running" && (
+        {live && task.status === "running" && (
           <span className="flex items-center gap-1.5 font-mono text-mini tracking-[0.12em] text-primary">
             <span className="h-2 w-2 rounded-full bg-primary motion-safe:animate-pulse" />
             LIVE

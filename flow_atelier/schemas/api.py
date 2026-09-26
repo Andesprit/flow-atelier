@@ -170,6 +170,35 @@ class TaskLogView(BaseModel):
     rounds: list[TaskLogRound] = Field(default_factory=list)
 
 
+class TaskRoundPatch(BaseModel):
+    """A round's current state and the lines it gained since the last update."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    iteration: int
+    status: str
+    started_at: str | None = None
+    duration_seconds: float | None = None
+    exit_code: int | None = None
+    append: list[TaskLogLine] = Field(default_factory=list)
+
+
+class TaskLogUpdate(BaseModel):
+    """What changed in a task's log: its state, and each round that grew.
+
+    A round the client does not have yet arrives with all its lines in
+    ``append``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task: str
+    status: str
+    reason: str | None = None
+    of: int = 1
+    rounds: list[TaskRoundPatch] = Field(default_factory=list)
+
+
 class RunTaskInput(BaseModel):
     """Body for ``POST /tasks/run``: an ad-hoc one-task conduit."""
 

@@ -1,12 +1,9 @@
-import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { fmtMSS } from "@/utils/format";
-import { getRunView } from "@/services/api/runs";
 import { RunMap } from "@/features/run/RunMap";
 import { TaskLog } from "@/features/run/TaskLog";
+import { useRunFeed } from "@/features/run/feed";
 import type { RunView } from "@/types/run";
-
-const POLL_MS = 2000;
 
 const STATUS_STYLE: Record<string, string> = {
   running: "border-primary text-primary",
@@ -26,44 +23,8 @@ export function defaultTask(view: RunView): string | undefined {
 export default function RunPage() {
   const { flowId = "" } = useParams();
   const [params, setParams] = useSearchParams();
-  const [view, setView] = useState<RunView>();
-  const [error, setError] = useState<string>();
-
-  const running = view?.status === "running";
-
-  useEffect(() => {
-    let ignore = false;
-    let inFlight = false;
-    const load = () => {
-      if (inFlight) return;
-      inFlight = true;
-      getRunView(flowId)
-        .then((next) => {
-          if (ignore) return;
-          setView(next);
-          setError(undefined);
-        })
-        .catch((e: unknown) => {
-          if (!ignore) setError(e instanceof Error ? e.message : String(e));
-        })
-        .finally(() => {
-          inFlight = false;
-        });
-    };
-    load();
-    if (view && !running) {
-      return () => {
-        ignore = true;
-      };
-    }
-    const id = setInterval(load, POLL_MS);
-    return () => {
-      ignore = true;
-      clearInterval(id);
-    };
-    // Keyed on whether a view has loaded, not on the view itself, so polling
-    // restarts only when the run starts or stops and not on every update.
-  }, [flowId, running, view === undefined]);
+  const asked = params.get("task") ?? undefined;
+  const { view, task, log, error } = useRunFeed(flowId, (v) => asked ?? (v && defaultTask(v)));
 
   if (error && !view) {
     return (
@@ -80,8 +41,8 @@ export default function RunPage() {
     );
   }
 
-  const selectedName = params.get("task") ?? defaultTask(view);
-  const selected = view.tasks.find((t) => t.name === selectedName);
+  const running = view.status === "running";
+  const selected = view.tasks.find((t) => t.name === task);
   const started = view.startedAt ? Date.parse(view.startedAt) : NaN;
   const ended = view.finishedAt ? Date.parse(view.finishedAt) : Date.now();
   const elapsed = ended >= started ? ` · ${fmtMSS(ended - started)}` : "";
@@ -116,7 +77,7 @@ export default function RunPage() {
         />
       )}
 
-      {selected && <TaskLog flowId={view.flowId} task={selected} live={running} />}
+      {selected && <TaskLog task={selected} log={log} error={error} live={running} />}
     </div>
   );
 }

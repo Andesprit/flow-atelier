@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import json
 
-from flow_atelier.modules.flow_view import build_flow_view, build_task_log
+from flow_atelier.modules.flow_view import build_flow_view, build_task_log, task_log_update
+from flow_atelier.schemas.api import TaskLogLine, TaskLogRound, TaskLogView
 from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.log import IntermediateStep, LogEntry, StepKind, StepRecord
 from flow_atelier.schemas.progress import FlowStatus, Progress, TaskProgress, TaskStatus
@@ -268,3 +269,66 @@ def test_task_log_falls_back_to_saved_output_when_the_recording_is_partial():
 
     out = [(line.at, line.text) for line in log.rounds[0].lines if line.kind == "out"]
     assert out == [(None, "a"), (None, "b"), (None, "c")]
+
+
+def _round(iteration: int, *texts: str, status: str = "running") -> TaskLogRound:
+    """Build a round holding one ``out`` line per text.
+
+    :param iteration: round number.
+    :param texts: line texts.
+    :param status: round status.
+    :returns: a :class:`TaskLogRound`.
+    """
+    return TaskLogRound(
+        iteration=iteration,
+        status=status,
+        lines=[TaskLogLine(kind="out", text=t) for t in texts],
+    )
+
+
+def _log(*rounds: TaskLogRound, status: str = "running") -> TaskLogView:
+    """Build a task log over ``rounds``.
+
+    :param rounds: the log's rounds.
+    :param status: task status.
+    :returns: a :class:`TaskLogView`.
+    """
+    return TaskLogView(task="t", tool="tool:bash", status=status, of=5, rounds=list(rounds))
+
+
+def test_update_carries_only_the_new_lines():
+    """Lines added to a round travel alone, with the round's new state."""
+    update = task_log_update(_log(_round(1, "a")), _log(_round(1, "a", "b", "c")))
+
+    assert update is not None
+    (patch,) = update.rounds
+    assert (patch.iteration, [line.text for line in patch.append]) == (1, ["b", "c"])
+
+
+def test_update_carries_a_new_round_whole():
+    """A round that just started arrives with all its lines."""
+    old = _log(_round(1, "a", status="failed"))
+    new = _log(_round(1, "a", status="failed"), _round(2, "x"))
+
+    update = task_log_update(old, new)
+
+    assert update is not None
+    assert [(p.iteration, [line.text for line in p.append]) for p in update.rounds] == [(2, ["x"])]
+
+
+def test_update_reports_a_finished_round_without_new_lines():
+    """A round that ends with no new lines still sends its final state."""
+    old = _log(_round(1, "a"))
+    new = _log(_round(1, "a", status="completed"), status="completed")
+
+    update = task_log_update(old, new)
+
+    assert update is not None
+    assert update.status == "completed"
+    assert [(p.status, p.append) for p in update.rounds] == [("completed", [])]
+
+
+def test_update_gives_up_when_an_earlier_line_changed():
+    """A rewritten line needs the whole log resent, so there is no update."""
+    assert task_log_update(_log(_round(1, "a", "b")), _log(_round(1, "a", "B"))) is None
+    assert task_log_update(_log(_round(1, "a"), _round(2, "b")), _log(_round(2, "b"))) is None

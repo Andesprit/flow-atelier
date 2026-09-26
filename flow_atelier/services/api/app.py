@@ -121,6 +121,7 @@ class FastApiServer(ApiServerBase):
         app = FastAPI(title="flow-atelier", version=__version__)
         app.state.atelier = atelier
         app.state.api_token = api_token or ""
+        app.state.cors_origins = list(cors_origins or [])
 
         if cors_origins:
             app.add_middleware(

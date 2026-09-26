@@ -15,7 +15,9 @@ from flow_atelier.schemas.api import (
     FlowView,
     TaskLogLine,
     TaskLogRound,
+    TaskLogUpdate,
     TaskLogView,
+    TaskRoundPatch,
 )
 from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.log import IntermediateStep, LogEntry, StepKind, StepRecord
@@ -130,6 +132,47 @@ def build_task_log(
         reason=progress.reason if progress else None,
         of=progress.of if progress else max((e.of for e in entries), default=1),
         rounds=rounds,
+    )
+
+
+def task_log_update(old: TaskLogView, new: TaskLogView) -> TaskLogUpdate | None:
+    """Return what ``new`` adds to ``old``, or ``None`` if only a resend describes it.
+
+    Rounds only grow while a task runs, so an update carries each changed
+    round's state and the lines it gained. When a line the client already has
+    changed (a failed tool result marks its call, or a finished round swaps
+    its recorded lines for the saved output), there is no update and the
+    whole log has to be sent again.
+
+    :param old: the log the client holds.
+    :param new: the log as it is now.
+    :returns: the update, or ``None`` when ``new`` is not ``old`` plus lines.
+    """
+    if (old.task, old.tool) != (new.task, new.tool):
+        return None
+    before = {r.iteration: r for r in old.rounds}
+    if not before.keys() <= {r.iteration for r in new.rounds}:
+        return None
+    patches: list[TaskRoundPatch] = []
+    for now in new.rounds:
+        was = before.get(now.iteration)
+        seen = len(was.lines) if was else 0
+        if was is not None and now.lines[:seen] != was.lines:
+            return None
+        if was == now:
+            continue
+        patches.append(
+            TaskRoundPatch(
+                iteration=now.iteration,
+                status=now.status,
+                started_at=now.started_at,
+                duration_seconds=now.duration_seconds,
+                exit_code=now.exit_code,
+                append=now.lines[seen:],
+            )
+        )
+    return TaskLogUpdate(
+        task=new.task, status=new.status, reason=new.reason, of=new.of, rounds=patches
     )
 
 

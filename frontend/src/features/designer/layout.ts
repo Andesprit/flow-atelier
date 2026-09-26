@@ -7,7 +7,7 @@ import type { ConduitTask } from "@/types/conduit";
  *
  * Returns task name -> column index.
  */
-export function layerTasks(tasks: ConduitTask[]): Map<string, number> {
+export function layerTasks(tasks: Pick<ConduitTask, "name" | "dependsOn">[]): Map<string, number> {
   const byName = new Map(tasks.map((t) => [t.name, t]));
   const depth = new Map<string, number>();
   const visiting = new Set<string>();

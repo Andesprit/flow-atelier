@@ -223,6 +223,17 @@ export function FlowDrawer({
                 getText={() => flowId}
                 testId="flow-drawer-copy-id"
               />
+              {/* A new tab: leaving this page closes its socket, and the
+                  server cancels every run started over that socket. */}
+              <a
+                href={`/runs/${encodeURIComponent(flowId)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="shrink-0 text-primary underline-offset-2 hover:underline"
+                data-testid="flow-drawer-open-run"
+              >
+                open run page
+              </a>
             </div>
           )}
         </SheetHeader>

@@ -100,6 +100,76 @@ class FlowLogsOutput(BaseModel):
     children: list[str] = Field(default_factory=list)
 
 
+class FlowTaskView(BaseModel):
+    """One task on the run page's map: what it depends on and how far it got."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    tool: str
+    description: str = ""
+    depends_on: list[str] = Field(default_factory=list)
+    status: str
+    iteration: int = 1
+    of: int = 1
+
+
+class FlowView(BaseModel):
+    """Response shape for ``GET /flows/:flow_id``: the run page's map."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    flow_id: str
+    conduit_name: str
+    status: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    run_path: str | None = None
+    current_tasks: list[str] = Field(default_factory=list)
+    tasks: list[FlowTaskView] = Field(default_factory=list)
+
+
+class TaskLogLine(BaseModel):
+    """One line of a task's log, as the terminal would show it.
+
+    ``text`` is already condensed and credential-masked, the same way the CLI
+    masks what it prints.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    at: str | None = None
+    kind: str
+    text: str
+    level: Literal["info", "warn", "error"] = "info"
+
+
+class TaskLogRound(BaseModel):
+    """One iteration of a task and the lines it produced."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    iteration: int
+    status: str
+    started_at: str | None = None
+    duration_seconds: float | None = None
+    exit_code: int | None = None
+    lines: list[TaskLogLine] = Field(default_factory=list)
+
+
+class TaskLogView(BaseModel):
+    """Response shape for ``GET /flows/:flow_id/tasks/:task/log``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task: str
+    tool: str
+    status: str
+    reason: str | None = None
+    of: int = 1
+    rounds: list[TaskLogRound] = Field(default_factory=list)
+
+
 class RunTaskInput(BaseModel):
     """Body for ``POST /tasks/run``: an ad-hoc one-task conduit."""
 

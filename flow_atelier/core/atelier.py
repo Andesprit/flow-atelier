@@ -18,14 +18,17 @@ from flow_atelier.modules.engine import (
     check_unknown_inputs,
     resolve_executor,
 )
+from flow_atelier.modules.flow_view import build_flow_view, build_task_log
 from flow_atelier.modules.liveness import is_runner_alive
 from flow_atelier.schemas.api import (
     CreateConduitInput,
     CreateScheduleInput,
+    FlowView,
     PriorFlow,
     RunTaskInput,
     RunTaskOutput,
     ScheduledJob,
+    TaskLogView,
     UpdateConduitInput,
 )
 from flow_atelier.schemas.conduit import Conduit
@@ -739,6 +742,53 @@ class Atelier:
         for child_id in self.store.list_child_flows(flow_id):
             entries.extend(self._descendant_logs(child_id))
         return entries
+
+    def get_flow_view(self, flow_id: str) -> FlowView:
+        """Return every task of ``flow_id`` with its dependencies and progress.
+
+        Dependencies come from the conduit's current definition, so a conduit
+        edited since the run shows its new shape around the tasks that ran.
+
+        :param flow_id: flow identifier
+        :returns: the run page's map
+        :raises FileNotFoundError: if no flow with that id exists
+        """
+        self.store._flow_dir(flow_id)
+        try:
+            conduit_name, _, _ = parse_flow_id(flow_id)
+        except ValueError:
+            conduit_name = ""
+        try:
+            conduit = self.store.read_conduit(conduit_name) if conduit_name else None
+        except (FileNotFoundError, ValueError):
+            conduit = None
+        return build_flow_view(
+            flow_id, conduit_name, self.store.read_progress(flow_id), conduit
+        )
+
+    def get_task_log(self, flow_id: str, task: str) -> TaskLogView:
+        """Return one task's log in ``flow_id``: its rounds and every action.
+
+        :param flow_id: flow identifier
+        :param task: task name
+        :returns: the task's log
+        :raises FileNotFoundError: if no flow with that id exists
+        :raises KeyError: if the flow has no task with that name
+        """
+        view = self.get_flow_view(flow_id)
+        known = next((t for t in view.tasks if t.name == task), None)
+        if known is None:
+            raise KeyError(task)
+        entries = [e for e in self.store.read_logs(flow_id) if e.task == task]
+        steps, _ = self.store.read_steps(flow_id)
+        tool = known.tool or (entries[0].tool if entries else "")
+        return build_task_log(
+            task,
+            tool,
+            self.store.read_progress(flow_id).tasks.get(task),
+            entries,
+            [s for s in steps if s.task == task],
+        )
 
     def _known_run_paths(self) -> set[Path]:
         """Return the resolved ``run_path`` of every known flow.

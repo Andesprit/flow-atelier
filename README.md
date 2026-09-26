@@ -1344,8 +1344,15 @@ Flow Atelier visual frontend connects to.
 | `DELETE` | `/schedules/:id`      | Soft-delete                               |
 | `GET`    | `/flows`              | List prior flows                          |
 | `GET`    | `/flows/:id/logs`     | Per-flow log entries                      |
+| `GET`    | `/flows/:id`          | Tasks, dependencies and progress          |
+| `GET`    | `/flows/:id/tasks/:task/log` | One task's rounds and actions, secrets masked |
 | `WS`     | `/ws/run-conduit`     | Run flows, HITL + interactive AI turns    |
 
+
+Every run also has a page at `/runs/<flow_id>`: a map of its tasks with the
+ones running now framed, and the log of whichever task you click. It works for
+runs started from the CLI, the dashboard or the scheduler, and refreshes while
+the run is going. Shell output appears when each round ends.
 
 Binds to `127.0.0.1:8000` by default; pass `--host 0.0.0.0` to expose
 on the LAN — which requires `ATELIER_API_TOKEN`, see [Security](#security).

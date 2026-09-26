@@ -125,6 +125,9 @@ class FlowView(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
     run_path: str | None = None
+    parent_flow_id: str | None = None
+    """For a sub-run, the run whose ``parent_task`` started it."""
+    parent_task: str | None = None
     current_tasks: list[str] = Field(default_factory=list)
     tasks: list[FlowTaskView] = Field(default_factory=list)
 
@@ -154,6 +157,8 @@ class TaskLogRound(BaseModel):
     started_at: str | None = None
     duration_seconds: float | None = None
     exit_code: int | None = None
+    child_flow_id: str | None = None
+    """For a ``tool:conduit`` task, the sub-run this round started."""
     lines: list[TaskLogLine] = Field(default_factory=list)
 
 
@@ -180,6 +185,7 @@ class TaskRoundPatch(BaseModel):
     started_at: str | None = None
     duration_seconds: float | None = None
     exit_code: int | None = None
+    child_flow_id: str | None = None
     append: list[TaskLogLine] = Field(default_factory=list)
 
 

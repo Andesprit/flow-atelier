@@ -607,7 +607,9 @@ class Atelier:
 
             :param fid: flow id assigned by the engine.
             """
-            captured["id"] = fid
+            # The engine also reports each nested tool:conduit run; keep the first.
+            if captured["id"] is None:
+                captured["id"] = fid
 
         # A failing task is a result, not a transport error — the run happened,
         # it just didn't succeed — so it stays a 200 and reports itself in the
@@ -753,7 +755,9 @@ class Atelier:
         :returns: the run page's map
         :raises FileNotFoundError: if no flow with that id exists
         """
-        self.store._flow_dir(flow_id)
+        # A sub-run lives at <parent>/flows/<id>; a top-level run at <base>/flows/<id>.
+        holder = self.store._flow_dir(flow_id).parent.parent
+        parent_flow_id = None if holder == self.store.base_dir else holder.name
         try:
             conduit_name, _, _ = parse_flow_id(flow_id)
         except ValueError:
@@ -763,32 +767,48 @@ class Atelier:
         except (FileNotFoundError, ValueError):
             conduit = None
         return build_flow_view(
-            flow_id, conduit_name, self.store.read_progress(flow_id), conduit
+            flow_id, conduit_name, self.store.read_progress(flow_id), conduit, parent_flow_id
         )
 
-    def flow_files_signature(
-        self, flow_id: str
-    ) -> tuple[tuple[int, int] | None, tuple[int, int] | None, tuple[int, int] | None]:
+    def flow_files_signature(self, flow_id: str) -> tuple[tuple[int, int] | None, ...]:
         """Return the mtime and size of the files a flow writes as it runs.
 
         Cheap enough to call several times a second: a watcher compares it
         between looks and reads the files only when it changed.
 
         :param flow_id: flow identifier
-        :returns: ``(mtime_ns, size)`` for ``progress.json``, ``logs.jsonl``
-            and ``steps.jsonl``, in that order; ``None`` for one not written yet
+        :returns: ``(mtime_ns, size)`` for ``progress.json``, ``logs.jsonl``,
+            ``steps.jsonl`` and the ``flows/`` dir that holds its sub-runs, in
+            that order; ``None`` for one not written yet
         :raises FileNotFoundError: if no flow with that id exists
         """
         flow_dir = self.store._flow_dir(flow_id)
         found: list[tuple[int, int] | None] = []
-        for name in ("progress.json", "logs.jsonl", "steps.jsonl"):
+        for name in ("progress.json", "logs.jsonl", "steps.jsonl", "flows"):
             try:
                 st = (flow_dir / name).stat()
             except FileNotFoundError:
                 found.append(None)
             else:
                 found.append((st.st_mtime_ns, st.st_size))
-        return found[0], found[1], found[2]
+        return tuple(found)
+
+    def task_sub_runs(self, flow_id: str, task: str) -> list[tuple[str, str]]:
+        """Return the sub-runs ``task`` started in ``flow_id``, as ``(started_at, flow_id)``.
+
+        :param flow_id: flow identifier
+        :param task: the ``tool:conduit`` task's name
+        :returns: one pair per sub-run; unreadable ones are left out
+        """
+        found: list[tuple[str, str]] = []
+        for child in self.store.list_child_flows(flow_id):
+            try:
+                p = self.store.read_progress(child)
+            except (FileNotFoundError, ValueError):
+                continue
+            if p.invoking_task == task and p.started_at:
+                found.append((p.started_at, child))
+        return found
 
     def get_task_log(self, flow_id: str, task: str) -> TaskLogView:
         """Return one task's log in ``flow_id``: its rounds and every action.
@@ -812,6 +832,7 @@ class Atelier:
             self.store.read_progress(flow_id).tasks.get(task),
             entries,
             [s for s in steps if s.task == task],
+            self.task_sub_runs(flow_id, task) if tool == "tool:conduit" else None,
         )
 
     def _known_run_paths(self) -> set[Path]:

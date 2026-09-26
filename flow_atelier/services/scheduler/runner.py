@@ -301,7 +301,9 @@ class SchedulerDaemon:
 
             :param flow_id: flow id assigned when the run starts
             """
-            captured["id"] = flow_id
+            # The engine also reports each nested tool:conduit run; keep the first.
+            if captured["id"] is None:
+                captured["id"] = flow_id
 
         try:
             await self.executor(job, working_dir, on_started)

@@ -12,6 +12,7 @@ from flow_atelier.core.atelier import Atelier
 from flow_atelier.schemas.log import IntermediateStep, StepKind, StepRecord
 from flow_atelier.schemas.progress import Progress, TaskProgress, TaskStatus
 from flow_atelier.services.api.app import FastApiServer
+from flow_atelier.services.api.flow_watch import FlowWatcher
 
 STREAM_YAML = """name: stream
 description: prints lines
@@ -94,6 +95,79 @@ def test_pushes_each_new_line_of_the_watched_task(running):
             assert update["type"] == "task_update"
             (patch,) = update["update"]["rounds"]
             assert [line["text"] for line in patch["append"]] == ["tick 2"]
+
+
+@pytest.fixture
+def nesting(tmp_path, monkeypatch):
+    """Seed a running flow whose only task is a tool:conduit mid-round.
+
+    :param tmp_path: pytest temp directory fixture.
+    :param monkeypatch: pytest monkeypatch fixture.
+    :returns: tuple of the Atelier and the flow id.
+    """
+    monkeypatch.setenv("ATELIER_GLOBAL_ATELIER_DIR", str(tmp_path / ".atelier-global"))
+    atelier = Atelier(base_dir=tmp_path / ".atelier")
+    conduit_dir = atelier.store.base_dir / "conduits" / "outer"
+    conduit_dir.mkdir(parents=True)
+    (conduit_dir / "conduit.yaml").write_text(
+        "name: outer\ndescription: nests\ntasks:\n  - nest:\n      description: nest\n"
+        "      task: stream\n      tool: tool:conduit\n      depends_on: []\n"
+    )
+    flow_id = atelier.store.create_flow("outer", {})
+    atelier.store.write_progress(
+        flow_id,
+        Progress(current_tasks=["nest"], tasks={"nest": TaskProgress(status=TaskStatus.running)}),
+    )
+    return atelier, flow_id
+
+
+def test_a_sub_run_names_the_run_and_step_that_started_it(nesting):
+    """Only a sub-run's map points back to a parent."""
+    atelier, flow_id = nesting
+    child = atelier.store.create_flow("stream", {}, flow_id)
+    atelier.store.write_progress(child, Progress(invoking_task="nest"))
+
+    view = atelier.get_flow_view(child)
+
+    assert (view.parent_flow_id, view.parent_task) == (flow_id, "nest")
+    assert atelier.get_flow_view(flow_id).parent_flow_id is None
+
+
+def test_watcher_catches_a_sub_run_tagged_just_after_its_folder(nesting):
+    """The engine names the invoking task a moment after the sub-run's folder appears."""
+    atelier, flow_id = nesting
+    watcher = FlowWatcher(atelier, flow_id)
+    watcher.watch("nest")
+    child = atelier.store.create_flow("stream", {}, flow_id)
+    assert watcher.poll() == []
+
+    atelier.store.write_progress(
+        child, Progress(started_at="2026-09-25T14:00:00Z", invoking_task="nest")
+    )
+    (update,) = watcher.poll()
+    assert update["update"]["rounds"][0]["child_flow_id"] == child
+
+
+@pytest.mark.timeout(20)
+def test_links_a_sub_run_as_soon_as_it_starts(nesting):
+    """A tool:conduit round gains its sub-run's link while it runs."""
+    atelier, flow_id = nesting
+    app = FastApiServer().create_app(atelier)
+    with TestClient(app, base_url="http://127.0.0.1", headers=HOST) as client:
+        with client.websocket_connect(f"/ws/flows/{flow_id}") as ws:
+            assert _receive(ws)["type"] == "flow"
+            ws.send_text(json.dumps({"type": "watch", "task": "nest"}))
+            (only,) = _receive(ws)["log"]["rounds"]
+            assert (only["status"], only["child_flow_id"]) == ("running", None)
+
+            child = atelier.store.create_flow("stream", {}, flow_id)
+            atelier.store.write_progress(
+                child, Progress(started_at="2026-09-25T14:00:00Z", invoking_task="nest")
+            )
+            update = _receive(ws)
+            assert update["type"] == "task_update"
+            (patch,) = update["update"]["rounds"]
+            assert patch["child_flow_id"] == child
 
 
 @pytest.mark.timeout(20)

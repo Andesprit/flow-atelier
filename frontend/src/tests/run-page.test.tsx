@@ -55,10 +55,33 @@ const VIEW: RunView = {
   tasks: [
     task({ name: "implement", tool: "harness:codex" }),
     task({ name: "run_tests", dependsOn: ["implement"], iteration: 3, of: 5 }),
+    task({ name: "nest", tool: "tool:conduit", status: "running", iteration: 2, of: 5 }),
   ],
 };
 
 function logFor(name: string): TaskLog {
+  if (name === "nest") {
+    const sub = (iteration: number, status: string, childFlowId: string) => ({
+      iteration,
+      status,
+      startedAt: null,
+      durationSeconds: null,
+      exitCode: null,
+      childFlowId,
+      lines: [],
+    });
+    return {
+      task: name,
+      tool: "tool:conduit",
+      status: "running",
+      reason: null,
+      of: 5,
+      rounds: [
+        sub(1, "completed", "20260925_aaaaaaaa_child"),
+        sub(2, "running", "20260925_bbbbbbbb_child"),
+      ],
+    };
+  }
   if (name === "implement") {
     return {
       task: name,
@@ -197,6 +220,34 @@ describe("run page", () => {
     expect(screen.getByText("make test -k retry")).toBeTruthy();
     expect(screen.getByText("payments/retry.py")).toBeTruthy();
     expect(feeds[0].watched).toEqual(["implement"]);
+  });
+
+  it("opens the sub-run a conduit round started", async () => {
+    renderAt(`/runs/${VIEW.flowId}?task=nest`);
+    const links = await screen.findAllByText("Open sub-run →");
+    expect(links.map((a) => a.getAttribute("href"))).toEqual([
+      "/runs/20260925_aaaaaaaa_child",
+      "/runs/20260925_bbbbbbbb_child",
+    ]);
+    expect(screen.getByText("Running as a sub-run. Open it to follow each step.")).toBeTruthy();
+
+    fireEvent.click(links[1]);
+
+    await waitFor(() => expect(feeds.at(-1)?.flowId).toBe("20260925_bbbbbbbb_child"));
+  });
+
+  it("links a sub-run back to the step that started it", async () => {
+    onOpen = (feed) =>
+      feed.handlers.onFlow({
+        ...VIEW,
+        flowId: "20260925_bbbbbbbb_child",
+        parentFlowId: "20260925_cccccccc_goal_loop",
+        parentTask: "nest",
+      });
+    renderAt("/runs/20260925_bbbbbbbb_child?task=implement");
+
+    const back = await screen.findByText("← goal_loop · nest");
+    expect(back.getAttribute("href")).toBe("/runs/20260925_cccccccc_goal_loop?task=nest");
   });
 
   it("follows what is running when the link names no task", async () => {

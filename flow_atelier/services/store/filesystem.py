@@ -399,17 +399,32 @@ class FilesystemStore(StoreBase):
         return sorted(ids)
 
     def list_child_flows(self, parent_flow_id: str) -> list[str]:
-        """List flow ids under ``parent_flow_id/flows/``.
+        """List flow ids under ``parent_flow_id/flows/``, oldest first.
+
+        Ordered by each child's ``started_at``: the id's random part says
+        nothing about order, and a parent that loops starts many children a
+        day.
 
         :param parent_flow_id: parent flow identifier
-        :returns: sorted list of child flow ids
+        :returns: child flow ids in the order they last started (a resumed
+            child counts from its resume), so the last one is the most recent
         """
         children_dir = self._flow_dir(parent_flow_id) / "flows"
         if not children_dir.exists():
             return []
-        return sorted(
-            p.name for p in children_dir.iterdir() if p.is_dir()
-        )
+
+        def _started(child: Path) -> tuple[str, str]:
+            # Unreadable progress sorts first, so it never passes for the latest.
+            try:
+                started = json.loads((child / "progress.json").read_text())["started_at"]
+            except (OSError, ValueError, KeyError, TypeError):
+                started = None
+            return started or "", child.name
+
+        return [
+            p.name
+            for p in sorted((p for p in children_dir.iterdir() if p.is_dir()), key=_started)
+        ]
 
     def delete_flow(self, flow_id: str) -> bool:
         """Remove a flow directory and its nested child subtree.

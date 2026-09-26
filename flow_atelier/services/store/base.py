@@ -88,10 +88,11 @@ class StoreBase(ABC):
 
     @abstractmethod
     def list_child_flows(self, parent_flow_id: str) -> list[str]:
-        """List flow ids that are children of ``parent_flow_id``.
+        """List flow ids that are children of ``parent_flow_id``, oldest first.
 
         :param parent_flow_id: parent flow identifier
-        :returns: sorted list of child flow ids
+        :returns: child flow ids in the order they last started (a resumed
+            child counts from its resume), so the last one is the most recent
         """
         ...
 

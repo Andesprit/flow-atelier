@@ -103,6 +103,9 @@ def serve_cmd(
             task.add_done_callback(pending.discard)
 
         def _on_started(flow_id: str) -> None:
+            # The engine also reports each nested tool:conduit run; keep the first.
+            if captured["flow_id"] is not None:
+                return
             captured["flow_id"] = flow_id
             report(flow_id)
             _spawn(

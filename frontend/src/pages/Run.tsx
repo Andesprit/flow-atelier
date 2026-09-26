@@ -1,4 +1,4 @@
-import { useParams, useSearchParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { fmtMSS } from "@/utils/format";
 import { RunMap } from "@/features/run/RunMap";
 import { TaskLog } from "@/features/run/TaskLog";
@@ -18,6 +18,11 @@ export function defaultTask(view: RunView): string | undefined {
     view.tasks.find((t) => t.status === "failed")?.name ??
     view.tasks[0]?.name
   );
+}
+
+/** The conduit name inside a flow id (`<date>_<uuid8>_<conduit>`). */
+function conduitOf(flowId: string): string {
+  return flowId.split("_").slice(2).join("_") || flowId;
 }
 
 export default function RunPage() {
@@ -49,6 +54,19 @@ export default function RunPage() {
 
   return (
     <div className="mx-auto flex max-w-[1100px] flex-col gap-6 px-6 py-8" data-testid="run-page">
+      {view.parentFlowId && (
+        <Link
+          to={
+            `/runs/${encodeURIComponent(view.parentFlowId)}` +
+            (view.parentTask ? `?task=${encodeURIComponent(view.parentTask)}` : "")
+          }
+          title={view.parentFlowId}
+          className="-mb-4 self-start font-mono text-data text-primary underline-offset-2 hover:underline"
+        >
+          ← {conduitOf(view.parentFlowId)}
+          {view.parentTask ? ` · ${view.parentTask}` : ""}
+        </Link>
+      )}
       <header className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <h1 className="font-display text-head">{view.conduitName || view.flowId}</h1>
         <span

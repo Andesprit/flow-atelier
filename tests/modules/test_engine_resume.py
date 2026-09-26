@@ -577,6 +577,35 @@ async def test_find_child_to_resume_disambiguates_by_invoking_task(store):
     assert engine._find_child_to_resume(parent, "build", "step2") is None
 
 
+async def test_find_child_to_resume_takes_the_latest_round_of_a_loop(store):
+    """A looping step resumes the child it started last, not the one whose id sorts last.
+
+    The id's random part says nothing about order, so an earlier completed
+    round must not hide the failed one that came after it.
+
+    :param store: FilesystemStore fixture.
+    """
+    parent = store.create_flow("parent", {})
+    rounds = [
+        ("20260101_ffffffff_build", FlowStatus.completed),
+        ("20260101_88888888_build", FlowStatus.completed),
+        ("20260101_00000000_build", FlowStatus.failed),
+    ]
+    for minute, (fid, status) in enumerate(rounds):
+        store.create_flow("build", {}, parent_flow_id=parent, flow_id=fid)
+        store.write_progress(
+            fid,
+            Progress(
+                status=status,
+                invoking_task="loop",
+                started_at=f"2026-01-01T09:0{minute}:00Z",
+            ),
+        )
+
+    engine = Engine({}, store)
+    assert engine._find_child_to_resume(parent, "build", "loop") == "20260101_00000000_build"
+
+
 async def test_find_child_to_resume_skips_live_running_child(store):
     """A `running` child whose runner is still alive must not be picked up.
 

@@ -19,6 +19,9 @@ export interface RunView {
   startedAt: string | null;
   finishedAt: string | null;
   runPath: string | null;
+  /** For a sub-run, the run whose `parentTask` started it. */
+  parentFlowId?: string | null;
+  parentTask?: string | null;
   currentTasks: string[];
   tasks: RunTask[];
 }
@@ -39,6 +42,8 @@ export interface TaskLogRound {
   startedAt: string | null;
   durationSeconds: number | null;
   exitCode: number | null;
+  /** For a `tool:conduit` task, the sub-run this round started. */
+  childFlowId?: string | null;
   lines: TaskLogLine[];
 }
 
@@ -59,6 +64,7 @@ export interface TaskRoundPatch {
   startedAt: string | null;
   durationSeconds: number | null;
   exitCode: number | null;
+  childFlowId?: string | null;
   append: TaskLogLine[];
 }
 

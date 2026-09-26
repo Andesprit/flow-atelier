@@ -161,7 +161,7 @@ export function TaskLog({ flowId, task, live }: Props) {
               {round.status === "running" && lines.length === 0 && (
                 <p className="px-4 py-1.5 text-body text-muted-foreground">
                   {task.tool === "tool:bash"
-                    ? "Running. Its output shows when the round ends."
+                    ? "Running. Nothing printed yet."
                     : "Working. Actions show here as they happen."}
                 </p>
               )}

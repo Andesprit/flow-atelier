@@ -6,6 +6,7 @@ started from the CLI, the dashboard or the scheduler.
 """
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 
 from flow_atelier.modules.conditions import DependencyParseError, parse_dependency
@@ -108,7 +109,7 @@ def build_task_log(
     :param tool: the task's tool (``tool:bash``, ``harness:codex``, ...).
     :param progress: the task's saved progress, or ``None`` if it never started.
     :param entries: the task's finished attempts from ``logs.jsonl``.
-    :param steps: the task's live agent steps from ``steps.jsonl``.
+    :param steps: the task's live steps from ``steps.jsonl``.
     :returns: the task log's read model.
     """
     iterations = sorted({e.iteration for e in entries} | {s.iteration for s in steps})
@@ -251,7 +252,8 @@ def _entry_lines(
     if attempt and of_attempts:
         start.text += f"  (attempt {attempt} of {of_attempts})"
 
-    lines = [start, *_step_lines(steps)]
+    printed = (StepKind.stdout, StepKind.stderr)
+    lines = [start, *_step_lines([s for s in steps if s.kind not in printed])]
     if tool.startswith("harness:"):
         said = entry.last_turn_output or entry.output
         if said.strip():
@@ -260,8 +262,21 @@ def _entry_lines(
         if entry.output.strip():
             lines.append(TaskLogLine(kind="answer", text=_redact(entry.output.strip())))
     else:
-        lines.extend(_output_lines(entry.stdout, "out", "info"))
-        lines.extend(_output_lines(entry.stderr, "err", "error" if failed else "warn"))
+        err_level = "error" if failed else "warn"
+        saved = [
+            *_output_lines(entry.stdout, "out", "info"),
+            *_output_lines(entry.stderr, "err", err_level),
+        ]
+        recorded = _step_lines([s for s in steps if s.kind in printed])
+        # The recorded lines carry the time each was printed, but a capped or
+        # cut-short recording is missing some; the saved output never is.
+        if Counter((x.kind, x.text) for x in recorded) == Counter((x.kind, x.text) for x in saved):
+            for line in recorded:
+                if line.kind == "err":
+                    line.level = err_level
+            lines.extend(recorded)
+        else:
+            lines.extend(saved)
     lines.append(
         TaskLogLine(
             at=entry.finished_at,
@@ -294,7 +309,7 @@ def _output_lines(text: str, kind: str, level: str) -> list[TaskLogLine]:
 
 
 def _step_lines(steps: list[IntermediateStep]) -> list[TaskLogLine]:
-    """Return one line per agent action, each tool result folded into its call.
+    """Return one line per action or printed line, each tool result folded into its call.
 
     A result that succeeded adds nothing; one that failed turns its call into
     an error line that says why.
@@ -347,6 +362,18 @@ def _step_lines(steps: list[IntermediateStep]) -> list[TaskLogLine]:
         elif step.kind == StepKind.interaction:
             lines.append(
                 TaskLogLine(at=step.timestamp, kind="ask", text=_redact(step.text.strip()))
+            )
+        elif step.kind in (StepKind.stdout, StepKind.stderr):
+            out = step.kind == StepKind.stdout
+            lines.extend(
+                TaskLogLine(
+                    at=step.timestamp,
+                    kind="out" if out else "err",
+                    text=_redact(line.rstrip()),
+                    level="info" if out else "warn",
+                )
+                for line in step.text.splitlines()
+                if line.strip()
             )
     return lines
 

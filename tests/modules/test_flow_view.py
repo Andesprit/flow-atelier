@@ -216,3 +216,55 @@ def test_task_log_gives_each_retry_the_steps_it_recorded():
         ("done", "exit 0 · 10s"),
     ]
     assert log.rounds[0].status == "completed"
+
+
+def test_task_log_shows_shell_output_while_the_round_runs():
+    """Recorded output lines appear, with their times, before the round ends."""
+    steps = [
+        _step(StepKind.stdout, "2026-09-25T14:00:01Z", text="collected 44 items"),
+        _step(StepKind.stderr, "2026-09-25T14:00:02Z", text="warning: slow"),
+        _step(StepKind.stdout, "2026-09-25T14:00:03Z", text="test_a PASSED\ntest_b PASSED"),
+    ]
+    progress = TaskProgress(status=TaskStatus.running)
+
+    log = build_task_log("t", "tool:bash", progress, [], steps)
+
+    (only,) = log.rounds
+    assert only.status == "running"
+    assert [(line.at, line.kind, line.text) for line in only.lines] == [
+        ("2026-09-25T14:00:01Z", "out", "collected 44 items"),
+        ("2026-09-25T14:00:02Z", "err", "warning: slow"),
+        ("2026-09-25T14:00:03Z", "out", "test_a PASSED"),
+        ("2026-09-25T14:00:03Z", "out", "test_b PASSED"),
+    ]
+
+
+def test_task_log_keeps_recorded_lines_once_the_round_ends():
+    """A finished round keeps each line's time when the recording is complete."""
+    entries = [_entry(exit_code=1, stdout="round 1\n1 failed\n", stderr="E boom\n")]
+    steps = [
+        _step(StepKind.stdout, "2026-09-25T14:00:01Z", text="round 1"),
+        _step(StepKind.stderr, "2026-09-25T14:00:05Z", text="E boom"),
+        _step(StepKind.stdout, "2026-09-25T14:00:06Z", text="1 failed"),
+    ]
+
+    log = build_task_log("t", "tool:bash", None, entries, steps)
+
+    lines = [(line.at, line.kind, line.text, line.level) for line in log.rounds[0].lines]
+    assert lines[1:4] == [
+        ("2026-09-25T14:00:01Z", "out", "round 1", "info"),
+        ("2026-09-25T14:00:05Z", "err", "E boom", "error"),
+        ("2026-09-25T14:00:06Z", "out", "1 failed", "info"),
+    ]
+    assert len(lines) == 5
+
+
+def test_task_log_falls_back_to_saved_output_when_the_recording_is_partial():
+    """A capped or cut-short recording yields to the output saved at the end."""
+    entries = [_entry(stdout="a\nb\nc\n")]
+    steps = [_step(StepKind.stdout, "2026-09-25T14:00:01Z", text="a")]
+
+    log = build_task_log("t", "tool:bash", None, entries, steps)
+
+    out = [(line.at, line.text) for line in log.rounds[0].lines if line.kind == "out"]
+    assert out == [(None, "a"), (None, "b"), (None, "c")]

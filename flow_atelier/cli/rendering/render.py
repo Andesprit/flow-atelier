@@ -181,6 +181,8 @@ def _render_step(step: IntermediateStep, task: str = "") -> Text:
         else:
             t.append("   ✓ ", style="green")
             t.append(step.tool_status, style="green")
+    elif step.kind in (StepKind.stdout, StepKind.stderr):
+        t.append(_redact(step.text), style="dim" if step.kind == StepKind.stdout else "red dim")
     return t
 
 

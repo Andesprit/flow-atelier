@@ -18,6 +18,7 @@ from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import TIMELINE_MAX_STEPS, _render_log_entry
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.modules.liveness import is_crashed
+from flow_atelier.schemas.log import StepKind
 from flow_atelier.schemas.progress import FlowStatus
 
 _LOG_SHOW_CHOICES = ("output", "stdout", "stderr", "steps", "all")
@@ -266,6 +267,9 @@ def _follow_logs(
             fresh = []
         for record in fresh:
             if task is not None and record.task != task:
+                continue
+            # A shell task's entry below prints the same lines when it ends.
+            if record.step.kind in (StepKind.stdout, StepKind.stderr):
                 continue
             console.print(_render_step(record.step, task=record.task))
 

@@ -108,7 +108,8 @@ def test_orphan_group_is_capped(flow_with_orphans, workdir):
     """Grouping keeps only the render cap's worth of steps per iteration."""
     _, flow_id = flow_with_orphans
     atelier = Atelier()
-    grouped = _orphan_steps(atelier, flow_id, entries=[], task=None)
+    entries = atelier.store.read_logs(flow_id)
+    grouped = _orphan_steps(atelier, flow_id, entries=entries, task=None)
     assert list(grouped) == [("ghost", 1)]
     steps = grouped[("ghost", 1)]
     assert len(steps) == TIMELINE_MAX_STEPS

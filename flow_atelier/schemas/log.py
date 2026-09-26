@@ -15,6 +15,9 @@ class StepKind(str, Enum):
     thinking = "thinking"
     tool_call = "tool_call"
     tool_result = "tool_result"
+    # Lines a shell task printed, recorded as they arrive.
+    stdout = "stdout"
+    stderr = "stderr"
 
 
 def _now_iso() -> str:
@@ -30,7 +33,7 @@ class IntermediateStep(BaseModel):
 
     kind: StepKind
     timestamp: str = Field(default_factory=_now_iso)
-    # thinking
+    # thinking, stdout, stderr
     text: str = ""
     # tool_call / tool_result
     tool_call_id: str = ""
@@ -46,11 +49,11 @@ class StepRecord(BaseModel):
     """One intermediate step, persisted the moment it arrives.
 
     A :class:`LogEntry` is only written once its task returns, so a run that
-    is stopped, crashes, or is still in flight leaves no trace of what the
-    agent was doing. These records are appended live to ``steps.jsonl`` so
+    is stopped, crashes, or is still in flight leaves no trace of what its
+    tasks were doing. These records are appended live to ``steps.jsonl`` so
     that history survives a kill and is readable from another terminal
-    mid-run. They are redundant with ``LogEntry.steps`` once the task
-    completes normally.
+    mid-run. Once the task completes normally they repeat its ``LogEntry``:
+    an agent's ``steps``, or a shell task's ``stdout`` and ``stderr``.
     """
 
     task: str

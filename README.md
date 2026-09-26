@@ -1352,7 +1352,7 @@ Flow Atelier visual frontend connects to.
 Every run also has a page at `/runs/<flow_id>`: a map of its tasks with the
 ones running now framed, and the log of whichever task you click. It works for
 runs started from the CLI, the dashboard or the scheduler, and refreshes while
-the run is going. Shell output appears when each round ends.
+the run is going. Shell output appears line by line as it is printed.
 
 Binds to `127.0.0.1:8000` by default; pass `--host 0.0.0.0` to expose
 on the LAN — which requires `ATELIER_API_TOKEN`, see [Security](#security).

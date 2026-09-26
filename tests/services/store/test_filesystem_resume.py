@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from flow_atelier.schemas.flow import new_flow_id
+from flow_atelier.schemas.progress import Progress
 from flow_atelier.services.store.filesystem import FilesystemStore
 
 
@@ -28,16 +29,17 @@ def test_list_child_flows_empty(store):
     assert store.list_child_flows(parent) == []
 
 
-def test_list_child_flows_returns_children(store):
-    """Verify list_child_flows returns child flow ids sorted.
+def test_list_child_flows_returns_children_oldest_first(store):
+    """Children come back in start order, whatever their random id part says.
 
     :param store: FilesystemStore fixture.
     """
     parent = store.create_flow("hello", {})
-    child_a = store.create_flow("hello", {}, parent_flow_id=parent)
-    child_b = store.create_flow("hello", {}, parent_flow_id=parent)
-    children = store.list_child_flows(parent)
-    assert sorted([child_a, child_b]) == children
+    ids = ["20260925_ffffffff_hello", "20260925_00000000_hello", "20260925_88888888_hello"]
+    for minute, fid in enumerate(ids):
+        store.create_flow("hello", {}, parent_flow_id=parent, flow_id=fid)
+        store.write_progress(fid, Progress(started_at=f"2026-09-25T14:0{minute}:00Z"))
+    assert store.list_child_flows(parent) == ids
 
 
 def test_list_child_flows_excludes_parent(store):

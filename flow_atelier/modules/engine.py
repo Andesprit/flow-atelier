@@ -362,10 +362,12 @@ class Engine:
         :param parent_flow_id: parent flow id for nested ``tool:conduit`` runs
         :param on_task_event: optional callback invoked after each task
             iteration with a :class:`TaskEvent`; used by the CLI renderer.
-        :param on_flow_started: optional callback invoked exactly once with
-            the new flow id, immediately after it is created and before any
-            task runs. Lets callers (e.g. the CLI) record the id so they
-            can surface it even if the flow later fails.
+        :param on_flow_started: optional callback invoked with the new flow
+            id, immediately after it is created and before any task runs.
+            Lets callers (e.g. the CLI) record the id so they can surface it
+            even if the flow later fails. It is forwarded to nested
+            ``tool:conduit`` runs, so it fires again for each child: the first
+            call of a fresh run is this flow. Not called for a resumed flow.
         :param on_task_starting: optional callback invoked once per task as it
             transitions to running for the first time, with ``(task_name, tool)``.
         :param show_steps: whether nested executors should surface per-step

@@ -243,7 +243,9 @@ def schedule_run_now_cmd(
 
         :param fid: the flow id assigned when the run starts.
         """
-        captured["id"] = fid
+        # The engine also reports each nested tool:conduit run; keep the first.
+        if captured["id"] is None:
+            captured["id"] = fid
 
     try:
         flow_id = asyncio.run(

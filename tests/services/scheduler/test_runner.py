@@ -551,3 +551,29 @@ async def test_fire_runs_concurrently_for_distinct_schedules(
     await asyncio.gather(daemon._fire(a.id), daemon._fire(b.id))
     ids = {c[0].id for c in executor.calls}
     assert ids == {a.id, b.id}
+
+
+async def test_fire_records_the_top_flow_not_a_nested_one(tmp_path, monkeypatch, store):
+    """A conduit that nests another records its own id, not its child's.
+
+    :param tmp_path: pytest temp directory fixture.
+    :param monkeypatch: pytest monkeypatch fixture.
+    :param store: ScheduleStore fixture.
+    """
+    monkeypatch.setenv("ATELIER_GLOBAL_ATELIER_DIR", str(tmp_path / "global"))
+    project = tmp_path / "project"
+    conduits = project / ".atelier" / "conduits"
+    for name, task, tool in (("child", "echo hi", "tool:bash"), ("parent", "child", "tool:conduit")):
+        (conduits / name).mkdir(parents=True)
+        (conduits / name / "conduit.yaml").write_text(
+            f"name: {name}\ndescription: d\ntasks:\n  - t:\n      description: t\n"
+            f"      task: {task}\n      tool: {tool}\n      depends_on: []\n"
+        )
+    job = store.create(_recurring(conduit="parent", run_path=str(project)))
+    daemon = SchedulerDaemon(store, default_zone=UTC, default_working_dir=tmp_path)
+
+    await daemon._fire(job.id)
+
+    (record,) = store.run_history(job.id)
+    assert record.status == "succeeded"
+    assert record.flow_id.endswith("_parent")

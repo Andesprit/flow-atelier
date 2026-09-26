@@ -607,7 +607,9 @@ class Atelier:
 
             :param fid: flow id assigned by the engine.
             """
-            captured["id"] = fid
+            # The engine also reports each nested tool:conduit run; keep the first.
+            if captured["id"] is None:
+                captured["id"] = fid
 
         # A failing task is a result, not a transport error — the run happened,
         # it just didn't succeed — so it stays a 200 and reports itself in the

@@ -248,6 +248,18 @@ def _build_round(
             lines=lines,
         )
     last = entries[-1]
+    # A retry, or a resume of this round, runs on after an attempt that failed.
+    if (
+        progress is not None
+        and progress.status == TaskStatus.running
+        and progress.iteration == iteration
+    ):
+        return TaskLogRound(
+            iteration=iteration,
+            status="running",
+            started_at=entries[0].started_at,
+            lines=lines,
+        )
     return TaskLogRound(
         iteration=iteration,
         status="completed" if last.exit_code == 0 else "failed",

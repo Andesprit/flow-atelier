@@ -379,3 +379,18 @@ def test_update_carries_a_sub_run_that_just_started():
         "20260925_aaaaaaaa_child",
         [],
     )
+
+
+def test_task_log_shows_a_round_running_again_after_a_failed_attempt():
+    """A resumed or retried round runs on; its earlier failure stays in its lines."""
+    entries = [_entry(iteration=2, of=3, exit_code=1, stderr="E boom\n")]
+    running = TaskProgress(status=TaskStatus.running, iteration=2, of=3)
+
+    (round_,) = build_task_log("t", "tool:bash", running, entries, []).rounds
+
+    assert (round_.status, round_.exit_code, round_.duration_seconds) == ("running", None, None)
+    assert round_.lines[-1].kind == "failed"
+
+    failed = TaskProgress(status=TaskStatus.failed, of=3)
+    (round_,) = build_task_log("t", "tool:bash", failed, entries, []).rounds
+    assert round_.status == "failed"

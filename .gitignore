@@ -11,7 +11,9 @@ wheels/
 
 # Virtual environments
 .venv*
-.claude
+# Claude Code's local files stay out; the shared project settings are tracked.
+**/.claude/*
+!/.claude/settings.json
 .atelier/flows
 .devtool
 claude.md

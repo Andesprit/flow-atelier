@@ -24,6 +24,11 @@ class FlowContext:
     store: StoreBase
     inputs: dict[str, Any]
     task_outputs: dict[str, str] = field(default_factory=dict)
+    task_tools: dict[str, str] = field(default_factory=dict)
+    """The tool every task of this flow actually runs on, backing
+    ``{{<task>.tool}}`` when an executor resolves its own templates. Already
+    reflects this run's per-task agent selections, so it is what ran, not
+    what the recipe named."""
     timeout: int = 3600
     working_dir: Path | None = None
     """Working directory for subprocess / agent execution. When ``None``,

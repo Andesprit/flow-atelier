@@ -69,7 +69,9 @@ def build_flow_view(
         tasks.append(
             FlowTaskView(
                 name=t.name,
-                tool=t.tool,
+                # What ran, not what the recipe named: a run that chose another
+                # agent for this task recorded that choice on its progress.
+                tool=progress.task_agents.get(t.name, t.tool),
                 description=t.description,
                 depends_on=_dependency_names(t.depends_on),
                 status=p.status.value if p else TaskStatus.pending.value,

@@ -280,7 +280,10 @@ def validate_conduit(conduit: Conduit) -> dict[str, list[Dependency]]:
             targets += [v for v in t.inputs.values() if isinstance(v, str)]
         for template in targets:
             for ref in extract_template_refs(template):
-                if ref.kind == "task":
+                # `.tool` carries no output, so it cannot race — but holding it
+                # to the same dependency rule keeps a label and the result it
+                # attributes pinned to the same edge.
+                if ref.kind in ("task", "task_tool"):
                     if ref.value not in task_names:
                         raise ConduitValidationError(
                             f"task {t.name!r} references unknown task "
@@ -354,6 +357,7 @@ class Engine:
         ancestor_conduits: tuple[str, ...] = (),
         stoppable: bool = False,
         invoking_task: str | None = None,
+        task_agents: Mapping[str, str] | None = None,
     ) -> str:
         """Execute a conduit to completion, returning the flow id.
 
@@ -388,6 +392,11 @@ class Engine:
             parent step that spawned this child; recorded on the child's
             progress so resume can match the right child when a parent has two
             steps invoking the same sub-conduit. ``None`` for top-level runs.
+        :param task_agents: the per-task agent selections already applied to
+            ``conduit``, recorded on this run's progress before any task
+            executes so a later resume or re-run can reuse them. Not forwarded
+            to nested ``tool:conduit`` runs: a selection names a task of the
+            recipe it was given for, never a same-named task in a child.
         :returns: the new flow id on success
         :raises ConduitValidationError: DAG is invalid (cycle, unknown dep, bad regex)
         :raises ConduitCycleError: nested conduits form a cycle or exceed depth
@@ -484,6 +493,7 @@ class Engine:
             run_path=run_path,
             invoking_task=invoking_task,
             stoppable=install_stop_handler,
+            task_agents=dict(task_agents or {}),
         )
         self.store.write_progress(flow_id, progress)
 
@@ -494,6 +504,10 @@ class Engine:
         outputs: dict[str, str] = {}
         skip_reasons: dict[str, str] = {}
         task_map = {t.name: t for t in conduit.tasks}
+        # What `{{<task>.tool}}` resolves to: the tool each task runs on in
+        # *this* flow. Selections are already applied to ``conduit``, so this
+        # is the effective choice, not the recipe's default.
+        effective_tools = {name: t.tool for name, t in task_map.items()}
 
         # Seed state from prior run when resuming
         prior_iterations: dict[str, list[str]] = {}
@@ -709,6 +723,7 @@ class Engine:
                         loop_history_limit=self.loop_history_limit,
                         loop_history_entry_chars=self.loop_history_entry_chars,
                         conduit_dir=task_conduit_dir,
+                        task_tools=effective_tools,
                     )
 
                 try:
@@ -751,6 +766,7 @@ class Engine:
                         if conduit.interaction and conduit.interaction.supervisor else None
                     ),
                     task_outputs=outputs,
+                    task_tools=effective_tools,
                     timeout=effective_timeout,
                     working_dir=working_dir,
                     show_steps=show_steps,

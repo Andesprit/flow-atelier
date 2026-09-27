@@ -4,12 +4,18 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from flow_atelier.core.settings import AtelierSettings
+from flow_atelier.modules.binding import (
+    BindingError,
+    bind_conduit,
+    check_replaceable,
+)
 from flow_atelier.modules.engine import (
     Engine,
     FlowStartedCallback,
@@ -161,6 +167,70 @@ class Atelier:
         for name, argv in self.settings.harnesses.items():
             self.executors[f"harness:{name}"] = make(list(argv))
 
+    def bind_agents(
+        self,
+        conduit: Conduit,
+        agents: Mapping[str, str],
+        *,
+        origin: str = "--agent",
+    ) -> Conduit:
+        """Return the conduit to run with ``agents`` applied, or raise.
+
+        The shape checks live in :mod:`flow_atelier.modules.binding`; this
+        layer adds the one question only it can answer — whether an executor is
+        actually registered for the named agent. Nothing is written and no
+        agent is started: the installed recipe, the registry snapshot and the
+        process's launcher table are all left untouched.
+
+        :param conduit: the recipe as installed.
+        :param agents: mapping of top-level task name to harness tool.
+        :param origin: what asked for the change, for the diagnostics.
+        :returns: the conduit to hand the engine.
+        :raises BindingError: a selector or an agent name is unusable.
+        """
+        bound = bind_conduit(conduit, agents, origin=origin)
+        for task, tool in agents.items():
+            if resolve_executor(self.executors, tool) is None:
+                raise BindingError(
+                    f"{origin}: task {task!r} names unknown agent {tool!r} — run "
+                    "'atelier list harnesses' to see the registered names, or "
+                    "register your own with ATELIER_HARNESSES",
+                    code=1,
+                )
+        return bound
+
+    def _inherit_agents(
+        self, conduit: Conduit, flow_id: str, prior: Progress, agents: Mapping[str, str]
+    ) -> tuple[Conduit, dict[str, str]]:
+        """Apply a prior run's saved agent choices, then this call's overrides.
+
+        Saved choices are validated against the recipe *as it is now*: a
+        selector the recipe no longer has, or one that now names a
+        ``tool:`` task, fails here rather than silently reverting that task to
+        the recipe's agent.
+
+        :param conduit: the recipe as installed right now.
+        :param flow_id: the flow whose choices are being inherited.
+        :param prior: that flow's saved progress.
+        :param agents: this call's explicit overrides, applied on top.
+        :returns: ``(conduit to run, effective assignment map)``.
+        :raises BindingError: a saved or requested selection is unusable.
+        """
+        saved = dict(prior.task_agents)
+        try:
+            bound = self.bind_agents(
+                conduit, saved, origin=f"flow {flow_id} saved agent choices"
+            )
+        except BindingError as exc:
+            raise BindingError(
+                f"{exc} — the recipe changed since that run, so its saved "
+                f"choices cannot be replayed; start a fresh run with "
+                f"`atelier run {conduit.name} --agent ...`",
+                code=1,
+            ) from exc
+        bound = self.bind_agents(bound, agents)
+        return bound, {**saved, **agents}
+
     def tool_readiness(self, conduit: Conduit) -> list[str]:
         """Report why a conduit can't run, before any task executes.
 
@@ -206,6 +276,7 @@ class Atelier:
         show_steps: bool = True,
         working_dir: Path | str | None = None,
         stoppable: bool = False,
+        agents: Mapping[str, str] | None = None,
     ) -> str:
         """Start a new flow for the named conduit.
 
@@ -228,10 +299,18 @@ class Atelier:
             ``None``, executors use the process cwd.
         :param stoppable: install a SIGTERM stop handler for this run (the
             ``atelier stop`` path); only the foreground CLI sets this.
+        :param agents: per-task agent selections for this run only, as
+            ``{task_name: "harness:<name>[:<model>[:<effort>]]"}``. Applied to
+            the loaded conduit in memory and recorded on the flow's progress;
+            the installed recipe is never rewritten.
         :returns: the newly created flow id
+        :raises BindingError: a selection names no top-level harness task of
+            the conduit, or an agent nothing is registered for
         """
         wd = Path(working_dir) if working_dir is not None else None
         conduit = self.store.read_conduit(name)
+        agents = dict(agents or {})
+        conduit = self.bind_agents(conduit, agents)
         return await self.engine.run(
             conduit,
             inputs,
@@ -241,6 +320,7 @@ class Atelier:
             show_steps=show_steps,
             working_dir=wd,
             stoppable=stoppable,
+            task_agents=agents,
         )
 
     async def resume_flow(
@@ -252,6 +332,7 @@ class Atelier:
         show_steps: bool = True,
         working_dir: Path | str | None = None,
         stoppable: bool = False,
+        agents: Mapping[str, str] | None = None,
     ) -> str:
         """Resume a failed or crashed flow, skipping already-completed tasks.
 
@@ -280,8 +361,14 @@ class Atelier:
         :param working_dir: working directory for task execution
         :param stoppable: install a SIGTERM stop handler for this run (the
             ``atelier stop`` path); only the foreground CLI sets this.
+        :param agents: replacement agents for tasks this resume has still to
+            run. Omit it and the flow's saved choices are reused as they are.
+            Only a pending or failed task may be re-pointed, and every check
+            happens before any saved byte is touched.
         :returns: the flow id (same as input)
         :raises ValueError: if the flow is not in failed or running status
+        :raises BindingError: a saved or requested selection is unusable, or a
+            task whose assignment is already fixed was named
         """
         prior = self.store.read_progress(flow_id)
         if prior.status not in (FlowStatus.failed, FlowStatus.running):
@@ -295,6 +382,14 @@ class Atelier:
             )
         conduit_name, _, _ = parse_flow_id(flow_id)
         conduit = self.store.read_conduit(conduit_name)
+        requested = dict(agents or {})
+        if requested:
+            check_replaceable(
+                prior, requested, partial=self._partly_looped(flow_id, conduit)
+            )
+        conduit, effective = self._inherit_agents(
+            conduit, flow_id, prior, requested
+        )
         inputs = self.store.read_input(flow_id)
         if working_dir is None and prior.run_path:
             working_dir = prior.run_path
@@ -309,7 +404,28 @@ class Atelier:
             working_dir=wd,
             resume_from=flow_id,
             stoppable=stoppable,
+            task_agents=effective,
         )
+
+    def _partly_looped(self, flow_id: str, conduit: Conduit) -> set[str]:
+        """Return the looping tasks of ``flow_id`` that already succeeded once.
+
+        Their ``{{loop.history}}`` was produced by the agent they started
+        with, so a later resume may not hand the rest of the loop to another
+        one. Read from the log the engine itself replays on resume.
+
+        :param flow_id: the flow whose log to read.
+        :param conduit: the recipe, for each task's ``repeat``.
+        :returns: names of looping tasks with a successful iteration on record.
+        """
+        looping = {t.name for t in conduit.tasks if t.repeat > 1}
+        if not looping:
+            return set()
+        return {
+            entry.task
+            for entry in self.store.read_logs(flow_id)
+            if entry.task in looping and entry.exit_code == 0
+        }
 
     async def rerun_flow(
         self,
@@ -321,6 +437,7 @@ class Atelier:
         show_steps: bool = True,
         working_dir: Path | str | None = None,
         stoppable: bool = False,
+        agents: Mapping[str, str] | None = None,
     ) -> str:
         """Start a brand-new flow of a past run's conduit, reusing its inputs.
 
@@ -344,16 +461,22 @@ class Atelier:
             falls back to the source flow's recorded ``run_path``
         :param stoppable: install a SIGTERM stop handler for this run (the
             ``atelier stop`` path); only the foreground CLI sets this.
+        :param agents: per-task agent selections applied on top of the source
+            run's saved choices. The new flow records its own assignment map;
+            the source run is not modified.
         :returns: the newly created flow id (distinct from ``flow_id``)
         :raises FileNotFoundError: if the source flow or its conduit is gone
+        :raises BindingError: a saved or requested selection is unusable
         """
         conduit_name, _, _ = parse_flow_id(flow_id)
         conduit = self.store.read_conduit(conduit_name)
         inputs = {**self.store.read_input(flow_id), **(overrides or {})}
-        if working_dir is None:
-            stored_run_path = self.store.read_progress(flow_id).run_path
-            if stored_run_path:
-                working_dir = stored_run_path
+        prior = self.store.read_progress(flow_id)
+        conduit, effective = self._inherit_agents(
+            conduit, flow_id, prior, dict(agents or {})
+        )
+        if working_dir is None and prior.run_path:
+            working_dir = prior.run_path
         wd = Path(working_dir) if working_dir is not None else None
         return await self.engine.run(
             conduit,
@@ -364,6 +487,7 @@ class Atelier:
             show_steps=show_steps,
             working_dir=wd,
             stoppable=stoppable,
+            task_agents=effective,
         )
 
     def get_status(self, flow_id: str) -> Progress:

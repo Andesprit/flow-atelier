@@ -349,7 +349,11 @@ def test_wait_latest_with_no_flows_exits_1(workdir, monkeypatch):
 
 
 def test_wait_fails_cleanly_on_an_invalid_child_record(workdir, monkeypatch):
-    """A corrupt child progress breaks resolution with one line, not a traceback."""
+    """A corrupt child progress ends the wait with one line, not a traceback.
+
+    The id itself resolves — the directory is there — so the diagnostic is about
+    the unreadable record rather than about the lookup.
+    """
     atelier = Atelier()
     parent = atelier.store.create_flow("parent", {})
     child = atelier.store.create_flow("child", {}, parent_flow_id=parent)
@@ -359,7 +363,7 @@ def test_wait_fails_cleanly_on_an_invalid_child_record(workdir, monkeypatch):
     result = CliRunner().invoke(app, ["wait", child])
 
     assert result.exit_code == 1
-    assert "cannot resolve a flow to wait for" in result.stderr
+    assert f"invalid progress record for {child}" in result.stderr
     assert result.exception is None or isinstance(result.exception, SystemExit)
 
 

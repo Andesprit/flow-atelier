@@ -515,8 +515,8 @@ printed for you to run: diagnose starts no agent and writes nothing.
 What it refuses to claim matters as much. A saved `running` status is only
 called *crashed* when the runner is provably gone on this machine; on another
 host, with no pid, or with a pid it cannot probe, the state stays uncertain and
-no resume is recommended. A stopped or completed run is pointed at
-`atelier run --again` instead. Resume re-reads the conduit file as it stands
+no resume is recommended. A stopped run is pointed at `atelier run --again`
+instead, and a completed one is told there is nothing to recover. Resume re-reads the conduit file as it stands
 now, so the report names any task that file has gained or lost since the run
 rather than promising the old shape will run again.
 

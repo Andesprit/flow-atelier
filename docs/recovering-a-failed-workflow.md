@@ -141,8 +141,9 @@ The second report now says *completed*, with nothing to recover.
   with a pid that cannot be probed, the state stays uncertain and no resume is
   recommended — resuming a run that is in fact alive runs the work twice.
 - **What a stopped run would do next.** Resume does not take a stopped or
-  completed flow. The report points at `atelier run --again <id>` instead,
-  which starts a fresh run of the same recipe and inputs.
+  completed flow. A stopped run is pointed at `atelier run --again <id>`, which
+  starts a fresh run of the same recipe and inputs; a completed run is told
+  there is nothing to recover, with no command to run.
 - **Anything it had to guess.** A missing outputs file, a task with no log
   entry, a recipe that no longer parses: each is reported as unavailable, with
   the evidence that *does* exist. A task whose only record is the live steps

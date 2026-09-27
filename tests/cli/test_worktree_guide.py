@@ -186,8 +186,9 @@ def test_the_published_guide_runs_and_separates_the_two_agents(tmp_path, guide_e
     # naming a single path.
     merged = [p for p in _prompts(records["gemini"]) if "WORKSPACE PROVENANCE" in p]
     assert merged, _prompts(records["gemini"])
-    assert str(spaces / "step_1") in merged[0]
-    assert str(spaces / "step_2") in merged[0]
+    named = dict(re.findall(r"^(step_\d) worked in (.+)$", merged[0], re.MULTILINE))
+    assert Path(named["step_1"]).samefile(spaces / "step_1")
+    assert Path(named["step_2"]).samefile(spaces / "step_2")
 
     # The resume went back to the same directory and kept what was in it.
     draft = work / ".atelier" / "workspaces" / broken_id / "synthesis" / "DRAFT.md"

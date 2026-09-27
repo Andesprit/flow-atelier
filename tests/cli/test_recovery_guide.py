@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from flow_atelier.services.store.filesystem import FilesystemStore
-from tests._shell import bash, run_script, write_shim
+from tests._shell import bash, host_path, run_script, write_shim
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GUIDE = _REPO_ROOT / "docs" / "recovering-a-failed-workflow.md"
@@ -92,7 +92,9 @@ class Guide:
         done = run_script(body, self.tmp_path / name, self.tmp_path, self.env, timeout)
         for line in done.stdout.splitlines():
             if line.startswith("working in: "):
-                self.workspace = Path(line.removeprefix("working in: ").strip())
+                self.workspace = host_path(
+                    line.removeprefix("working in: ").strip(), self.env
+                )
         return done
 
     def prompts(self) -> list[str]:

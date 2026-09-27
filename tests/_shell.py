@@ -72,6 +72,22 @@ def record_path(shell_var: str, marker_env: str) -> str:
     )
 
 
+def host_path(shown: str, env: dict) -> Path:
+    """Turn a path a script printed into one this Python can open.
+
+    Git Bash prints ``/tmp/...`` or ``/c/...``; ``cygpath -w`` gives the drive
+    path back. Everywhere else the printed path already is a host path.
+
+    :param shown: the path as the shell printed it.
+    :param env: the child environment, for the same bash.
+    :returns: the host path.
+    """
+    if sys.platform != "win32":
+        return Path(shown)
+    done = run_expression(f'cygpath -w "{shown}"', Path.cwd(), env, 30)
+    return Path(done.stdout.strip())
+
+
 def run_script(body: str, script: Path, cwd: Path, env: dict, timeout: float):
     """Run ``body`` as one shell script under the resolved bash.
 

@@ -384,7 +384,7 @@ def test_a_checkout_the_record_does_not_name_is_refused(repo, tmp_path):
         verify_worktrees(forged, ["writer_b"], owned_root=tmp_path / "ws")
     assert exc.value.code == 1
     assert "no longer says where writer_b worked" in str(exc.value)
-    assert str(tmp_path / "ws") in str(exc.value)
+    assert repr(str(tmp_path / "ws")) in str(exc.value)
 
 
 def test_a_run_that_isolated_only_some_tasks_is_complete(repo, tmp_path):

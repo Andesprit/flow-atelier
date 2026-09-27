@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._shell import CLI
+from tests._shell import CLI, host_path
 
 FAKE_AGENT = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
 
@@ -482,7 +482,8 @@ def test_a_shell_task_can_be_isolated_too(tmp_path):
     saved = p.status(p.flow_id(done))["workspaces"]
     build = Path(saved["paths"]["build"])
     assert (build / "NOTES.md").read_text(encoding="utf-8") == "built\n"
-    assert Path((build / "WHERE.txt").read_text(encoding="utf-8").strip()).samefile(build)
+    where = host_path((build / "WHERE.txt").read_text(encoding="utf-8").strip(), p.env)
+    assert where.samefile(build)
     assert (Path(saved["paths"]["writer_a"]) / "NOTES.md").read_text(
         encoding="utf-8"
     ) == EDIT["claude-code"]
@@ -925,6 +926,7 @@ def test_again_can_add_a_task_to_the_inherited_policy(project):
 # ------------------------------------------------- setup and interruption
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="chmod cannot make a folder read-only on Windows")
 def test_a_run_that_cannot_record_itself_keeps_what_it_built(project):
     """The checkouts exist before the flow does, and are not tidied away."""
     flows = project.work / ".atelier" / "flows"
@@ -947,6 +949,7 @@ def test_a_run_that_cannot_record_itself_keeps_what_it_built(project):
     project.source_untouched()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGTERM semantics differ on Windows")
 def test_stopping_a_run_leaves_every_checkout_in_place(project):
     """SIGTERM mid-flight: no false success, and nothing is cleaned up."""
     project.set_agent("claude-code", writes=EDIT["claude-code"], delay=6)
@@ -1307,7 +1310,8 @@ def test_again_refuses_when_the_recorded_repository_is_gone(project, tmp_path):
     )
     assert first.returncode == 0, first.stdout + first.stderr
     old_id = project.flow_id(first)
-    shutil.rmtree(project.work)
+    # Git's object files are read-only, which Windows will not delete as is.
+    shutil.rmtree(project.work, onexc=lambda _f, path, _e: (os.chmod(path, 0o700), os.unlink(path)))
 
     elsewhere = Project(tmp_path / "another")
     project.work = elsewhere.work

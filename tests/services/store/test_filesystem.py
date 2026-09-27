@@ -247,6 +247,28 @@ def test_flow_dir_falls_back_to_scan_for_nested(store):
     assert fresh._flow_dir(child).parent.name == "flows"
 
 
+def test_flow_dir_never_resolves_a_retained_workspace(store):
+    """A run's checkouts share its id but are not a record of it.
+
+    ``workspaces/<flow_id>`` is deliberately outside ``flows/`` so that
+    :meth:`delete_flow` cannot reach it. An unrestricted scan would undo that
+    the moment the record itself was gone, and delete an agent's edits.
+
+    :param store: seeded FilesystemStore fixture.
+    """
+    fid = store.create_flow("hello", {})
+    kept = store.workspace_dir(fid) / "writer_a"
+    kept.mkdir(parents=True)
+    (kept / "NOTES.md").write_text("an agent's work\n", encoding="utf-8")
+
+    assert store.delete_flow(fid) is True
+    fresh = FilesystemStore(store.base_dir)
+    with pytest.raises(FileNotFoundError):
+        fresh._flow_dir(fid)
+    assert fresh.delete_flow(fid) is False
+    assert (kept / "NOTES.md").read_text(encoding="utf-8") == "an agent's work\n"
+
+
 def test_read_unknown_conduit_raises(store):
     """Verify read_conduit raises FileNotFoundError for unknown names.
 

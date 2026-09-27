@@ -169,9 +169,17 @@ class FilesystemStore(StoreBase):
         if top_level.is_dir():
             self._flow_paths[flow_id] = top_level
             return top_level
-        # fall-back: search (for nested flows after restart)
-        for candidate in self.base_dir.rglob(flow_id):
-            if candidate.is_dir() and candidate.name == flow_id:
+        # fall-back: search (for nested flows after restart). Confined to the
+        # record tree, and to directories a `flows/` parent proves are records:
+        # a retained worktree lives at `workspaces/<flow_id>` and shares its
+        # run's name, so an unrestricted scan would hand an agent's edits to
+        # :meth:`delete_flow` the moment the run's own record was pruned.
+        for candidate in (self.base_dir / "flows").rglob(flow_id):
+            if (
+                candidate.is_dir()
+                and candidate.name == flow_id
+                and candidate.parent.name == "flows"
+            ):
                 self._flow_paths[flow_id] = candidate
                 return candidate
         raise FileNotFoundError(f"flow not found: {flow_id}")

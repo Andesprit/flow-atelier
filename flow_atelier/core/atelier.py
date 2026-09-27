@@ -24,6 +24,7 @@ from flow_atelier.modules.engine import (
     TaskStartingCallback,
     check_unknown_inputs,
     resolve_executor,
+    validate_conduit,
 )
 from flow_atelier.modules.flow_view import build_flow_view, build_task_log
 from flow_atelier.modules.liveness import is_runner_alive
@@ -304,6 +305,7 @@ class Atelier:
         tasks: Sequence[str],
         flow_id: str,
         source_dir: Path | None,
+        inputs: Mapping[str, Any],
         *,
         origin: str = "--worktree",
     ) -> Workspaces:
@@ -321,11 +323,23 @@ class Atelier:
         :param source_dir: the directory to resolve the source checkout from,
             or ``None`` for the process's. A rerun inheriting a saved policy
             passes the repository the first run recorded, not the caller's.
+        :param inputs: the inputs the run was given, before defaults.
         :param origin: what asked for the isolation, for the diagnostics.
         :returns: the :class:`Workspaces` to record on the run.
         :raises WorkspaceError: a selector, the source or a destination is
             unusable.
+        :raises ValueError: the engine would refuse the run itself — an
+            invalid recipe or a missing required input. Checked here too,
+            because checkouts made for a run that never starts are recorded
+            nowhere.
         """
+        validate_conduit(conduit)
+        missing = [
+            k for k, spec in conduit.inputs.items()
+            if spec.default is None and k not in inputs
+        ]
+        if missing:
+            raise ValueError(f"missing required inputs: {missing}")
         check_selectors(conduit, tasks, origin=origin)
         source = resolve_source_repo(source_dir, origin=origin)
         return create_worktrees(source, self.store.workspace_dir(flow_id), tasks)
@@ -457,7 +471,7 @@ class Atelier:
         # before the checkouts do. The engine takes it as given.
         flow_id = new_flow_id(name) if worktrees else None
         spaces = (
-            self._new_workspaces(conduit, list(worktrees), flow_id, wd)
+            self._new_workspaces(conduit, list(worktrees), flow_id, wd, inputs)
             if worktrees
             else None
         )
@@ -727,6 +741,7 @@ class Atelier:
                 wanted,
                 new_id,
                 source_dir,
+                inputs,
                 origin=(
                     "--worktree" if not inherited
                     else f"flow {flow_id} saved worktrees"

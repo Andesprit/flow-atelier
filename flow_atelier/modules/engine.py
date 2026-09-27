@@ -758,6 +758,12 @@ class Engine:
                 task_conduit_dir: Path | str | None = conduit_dir
                 if conduit_dir is not None and t.tool == ToolType.bash:
                     task_conduit_dir = to_bash_path(conduit_dir)
+                # Same for `{{<task>.workspace}}` in a shell body.
+                task_workspaces = (
+                    {n: to_bash_path(d) for n, d in task_dirs.items()}
+                    if t.tool == ToolType.bash
+                    else task_dirs
+                )
 
                 def _resolve_task() -> str:
                     text = resolve(
@@ -767,7 +773,7 @@ class Engine:
                         loop_history_entry_chars=self.loop_history_entry_chars,
                         conduit_dir=task_conduit_dir,
                         task_tools=effective_tools,
-                        task_workspaces=task_dirs,
+                        task_workspaces=task_workspaces,
                     )
                     # An agent reading a result must be told who produced it. A
                     # label written before this run chose its agents can say

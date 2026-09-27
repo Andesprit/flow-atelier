@@ -450,3 +450,26 @@ def test_directory_size_counts_the_files_it_can_read(repo, tmp_path):
     assert size >= len("base\n") + len("print(1)\n")
     assert directory_size(tmp_path / "nowhere") == 0
     assert saved.paths["writer_a"]
+
+
+def test_the_checkouts_do_not_show_up_in_the_source_s_status(repo):
+    """They live inside the source's tree, so they must be ignored there."""
+    create_worktrees(
+        resolve_source_repo(repo), repo / ".atelier" / "workspaces" / "f1", ["writer_a"]
+    )
+    assert git("status", "--porcelain", "--untracked-files=all", cwd=repo) == ""
+
+
+def test_a_link_the_platform_does_not_report_is_still_refused(repo, tmp_path, monkeypatch):
+    """A Windows junction is not a symlink to is_symlink(); Git still tells.
+
+    Simulated with a real symlink the check is told is not one, which is how a
+    junction to the source checkout looks to everything but Git.
+    """
+    saved = create_worktrees(resolve_source_repo(repo), tmp_path / "ws", ["writer_a"])
+    git("worktree", "remove", "--force", saved.paths["writer_a"], cwd=repo)
+    (tmp_path / "ws" / "writer_a").symlink_to(repo, target_is_directory=True)
+    monkeypatch.setattr(type(tmp_path), "is_symlink", lambda self: False)
+
+    with pytest.raises(WorkspaceError, match="main checkout"):
+        verify_worktrees(saved, ["writer_a"], owned_root=tmp_path / "ws")

@@ -523,6 +523,99 @@ def test_a_nested_conduit_does_not_inherit_the_selection(tmp_path):
     assert (p.work / "NOTES.md").read_text(encoding="utf-8") == EDIT["codex"]
 
 
+
+BROKEN = """\
+name: broken
+description: reads a result it does not wait for
+tasks:
+  - name: writer_a
+    description: agent
+    task: "use {{writer_b.output}}"
+    tool: harness:claude-code
+    depends_on: []
+  - name: writer_b
+    description: agent
+    task: "draft"
+    tool: harness:codex
+    depends_on: []
+"""
+
+
+def test_an_invalid_recipe_costs_no_checkout(project):
+    """The engine would refuse it, so no worktree is made for a run that never starts."""
+    project.install("broken", BROKEN)
+    done = project.cli("run", "broken", "--worktree", "writer_a", "--hide-steps")
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert not project.workspaces_root().exists() or not any(
+        project.workspaces_root().iterdir()
+    )
+    assert len(git("worktree", "list", cwd=project.work).splitlines()) == 1
+
+
+def test_again_with_a_newly_required_input_costs_no_checkout(project):
+    first = project.cli(
+        "run", "pair", "--worktree", "writer_a", "--input", f"brief={BRIEF}", "--hide-steps"
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    before = sorted(p.name for p in project.workspaces_root().iterdir())
+    project.install(
+        "pair", PAIR.replace("inputs:\n", "inputs:\n  extra:\n    description: new\n", 1)
+    )
+
+    again = project.cli("run", "--again", project.flow_id(first), "--hide-steps")
+    assert again.returncode != 0, again.stdout + again.stderr
+    assert "missing required inputs" in _flat(again.stdout + again.stderr)
+    assert sorted(p.name for p in project.workspaces_root().iterdir()) == before
+
+
+def test_a_shell_step_can_read_another_task_s_checkout(tmp_path):
+    """`{{writer_a.workspace}}` in a shell body is a path that shell can open."""
+    p = Project(tmp_path)
+    p.install("readback", READBACK)
+    p.set_agent("claude-code", writes=EDIT["claude-code"])
+
+    done = p.cli("run", "readback", "--worktree", "writer_a", "--hide-steps")
+    assert done.returncode == 0, done.stdout + done.stderr
+    shown = p.cli("outputs", p.flow_id(done), "--task", "show")
+    assert EDIT["claude-code"].strip() in shown.stdout
+
+
+READBACK = """\
+name: readback
+description: a shell step reading an isolated agent's checkout
+tasks:
+  - name: writer_a
+    description: agent
+    task: "edit it"
+    tool: harness:claude-code
+    depends_on: []
+  - name: show
+    description: shell
+    task: 'cat "{{writer_a.workspace}}/NOTES.md"'
+    tool: tool:bash
+    depends_on: [writer_a]
+"""
+
+
+def test_status_names_the_parent_s_agent_not_a_nested_namesake(tmp_path):
+    """The child's writer_a ran on codex; the parent's row must still say claude."""
+    p = Project(tmp_path)
+    p.install("parent", PARENT + """\
+  - name: wrap
+    description: summarize
+    task: "wrap up"
+    tool: harness:claude-code
+    depends_on: [sub]
+""")
+    p.install("child", CHILD)
+
+    done = p.cli("run", "parent", "--agent", "wrap=gemini", "--hide-steps")
+    assert done.returncode == 0, done.stdout + done.stderr
+    shown = p.cli("status", p.flow_id(done))
+    [row] = [line for line in shown.stdout.splitlines() if "writer_a" in line]
+    assert "harness:claude-code (recipe)" in row
+    assert "codex" not in row
+
 # ----------------------------------------------------------------- previews
 
 

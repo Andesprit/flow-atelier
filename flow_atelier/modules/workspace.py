@@ -257,6 +257,12 @@ def create_worktrees(
     names = list(tasks)
     try:
         dest_root.mkdir(parents=True, exist_ok=True)
+        # The checkouts live inside the source's working tree. Unignored, a
+        # later `git add -A` in the source commits them as gitlinks, and every
+        # edit in one then makes the source look dirty.
+        ignore = dest_root / ".gitignore"
+        if not ignore.exists():
+            ignore.write_text("*\n", encoding="utf-8")
     except OSError as exc:
         raise WorkspaceError(
             f"--worktree: cannot create {str(dest_root)!r}: {exc}", code=1
@@ -437,7 +443,7 @@ def check_unrecorded(owned_root: Path) -> None:
     :raises WorkspaceError: checkouts exist that no record accounts for.
     """
     try:
-        found = sorted(item.name for item in owned_root.iterdir())
+        found = sorted(item.name for item in owned_root.iterdir() if item.is_dir())
     except OSError:
         return
     if found:
@@ -499,10 +505,20 @@ def verify_worktrees(
                 f"({(common.stderr or expected.stderr).strip()})",
                 code=1,
             )
-        if (
-            (path / common.stdout.strip()).resolve()
-            != (Path(saved.source) / expected.stdout.strip()).resolve()
-        ):
+        common_dir = (path / common.stdout.strip()).resolve()
+        # A linked worktree has its own git dir under the common one; only a
+        # main checkout shares it. This holds whatever led here, including a
+        # Windows junction that neither is_symlink nor resolve() gives away.
+        own = _git(["rev-parse", "--absolute-git-dir"], path)
+        if own.returncode != 0 or Path(own.stdout.strip()).resolve() == common_dir:
+            raise WorkspaceError(
+                f"task {name!r} has to continue in {str(path)!r}, and that is "
+                "now a repository's main checkout, not a worktree this run "
+                "created; refusing to run an agent in it. Put the original "
+                f"checkout back, or {DAMAGED_RECORD_ADVICE}",
+                code=1,
+            )
+        if common_dir != (Path(saved.source) / expected.stdout.strip()).resolve():
             raise WorkspaceError(
                 f"task {name!r} has to continue in {str(path)!r}, and that "
                 f"checkout now belongs to a different repository than the "

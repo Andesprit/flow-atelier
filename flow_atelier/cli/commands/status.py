@@ -78,7 +78,8 @@ def status_cmd(
     # run's agents are the recipe's, and a column of blanks says nothing.
     show_agent = bool(progress.task_agents)
     # The other tasks ran on the recipe's own choice; the log says which.
-    ran_on = {entry.task: entry.tool for entry in logs}
+    # Entries tagged with a flow_id are a nested run's, not these rows'.
+    ran_on = {e.task: e.tool for e in logs if "flow_id" not in e.extra}
     spaces = progress.workspaces
     columns = ["task", "status"]
     if show_agent:

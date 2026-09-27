@@ -858,3 +858,114 @@ def test_a_recipe_using_the_template_label_gains_no_provenance_block(project):
     handoff = project.prompts("codex")[0]
     assert "--- BEGIN RESULT FROM step_1 (harness:gemini) ---" in handoff
     assert "AGENT PROVENANCE" not in handoff
+
+
+# ------------------------------- continuing work an agent that is gone finished
+
+
+def test_a_resume_keeps_a_finished_step_whose_custom_agent_was_uninstalled(project):
+    """Housebot's saved answer is on disk; resuming must not need Housebot back."""
+    project.break_agent("codex")
+    failed = project.cli(
+        "run", "chain", "--agent", "step_1=housebot", "--input", f"brief={BRIEF}"
+    )
+    assert failed.returncode == 1, failed.stdout
+    flow_id = project.flow_id(failed)
+    # The agent that failed is repaired, then the custom agent that already
+    # finished step_1 is uninstalled. That order matters: repairing rewrites the
+    # whole agent table, which would put Housebot back.
+    project.fix_agent("codex")
+    project.remove_agent("housebot")
+
+    resumed = project.cli("run", "--resume", flow_id)
+
+    assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+    # Housebot was asked exactly once, in the first run.
+    assert len(project.prompts("housebot")) == 1
+    handoff = project.prompts("codex")[0]
+    assert SAID["housebot"] in handoff
+    assert "--- BEGIN RESULT FROM step_1 (harness:housebot) ---" in handoff
+    assert project.status(flow_id)["task_agents"]["step_1"] == "harness:housebot"
+    saved = project.cli("outputs", flow_id, "--task", "step_1")
+    assert SAID["housebot"] in saved.stdout
+
+
+LOOP_CHAIN = """\
+name: chain
+description: a loop, then a handoff
+inputs:
+  brief:
+    description: the shared task
+tasks:
+  - name: step_1
+    description: draft twice
+    task: "Propose one fix: {{inputs.brief}}"
+    tool: harness:claude-code
+    repeat: 2
+    depends_on: []
+  - name: step_2
+    description: review
+    task: |
+      Review the proposal.
+
+      --- BEGIN RESULT FROM step_1 ({{step_1.tool}}) ---
+      {{step_1.output}}
+      --- END RESULT FROM step_1 ---
+    tool: harness:codex
+    depends_on: [step_1]
+"""
+
+
+def test_a_finished_loop_does_not_block_a_resume_when_the_recipe_drifts(project):
+    """Both iterations ran, so no remaining history can be split across agents."""
+    project.install("chain", LOOP_CHAIN)
+    project.break_agent("codex")
+    failed = project.cli("run", "chain", "--input", f"brief={BRIEF}")
+    assert failed.returncode == 1, failed.stdout
+    flow_id = project.flow_id(failed)
+    assert project.status(flow_id)["tasks"]["step_1"]["of"] == 2
+    # The recipe's default for the finished loop changes under the flow.
+    project.install(
+        "chain", LOOP_CHAIN.replace("tool: harness:claude-code", "tool: harness:gemini")
+    )
+
+    resumed = project.cli("run", "--resume", flow_id, "--agent", "step_2=housebot")
+
+    assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+    # No iteration re-ran, and nothing is attributed to the recipe's new name.
+    assert len(project.prompts("claude-code")) == 2
+    assert project.prompts("gemini") == []
+    handoff = project.prompts("housebot")[0]
+    assert "--- BEGIN RESULT FROM step_1 (harness:claude-code) ---" in handoff
+    assert "harness:gemini" not in handoff
+    assert project.status(flow_id)["task_agents"]["step_1"] == "harness:claude-code"
+
+
+# The same loop, left owing an iteration: it never matches its predicate, so it
+# fails with history on record and a resume would continue it.
+UNFINISHED_LOOP = LOOP_CHAIN.replace(
+    "    repeat: 2\n",
+    '    repeat: 2\n    until: output.match(NEVER_APPEARS)\n    on_exhaust: fail\n',
+)
+
+
+def test_a_half_run_loop_still_refuses_the_recipe_that_changed_its_agent(project):
+    """The guard that matters stays: a loop with an iteration left is refused."""
+    project.install("chain", UNFINISHED_LOOP)
+    failed = project.cli("run", "chain", "--input", f"brief={BRIEF}")
+    assert failed.returncode == 1, failed.stdout
+    flow_id = project.flow_id(failed)
+    assert project.status(flow_id)["tasks"]["step_1"]["status"] != "completed"
+    before = project.saved_bytes(flow_id)
+    # The recipe's default for the unfinished loop changes under the flow.
+    project.install(
+        "chain",
+        UNFINISHED_LOOP.replace("tool: harness:claude-code", "tool: harness:gemini"),
+    )
+
+    resumed = project.cli("run", "--resume", flow_id)
+
+    assert resumed.returncode == 1, resumed.stdout
+    assert "recorded iterations on harness:claude-code" in _flat(resumed.stdout)
+    assert project.prompts("gemini") == []
+    assert project.saved_bytes(flow_id) == before

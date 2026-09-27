@@ -821,3 +821,109 @@ async def test_a_partly_looped_task_refuses_a_recipe_that_changed_its_agent(work
     flaky.fail = False
     await atelier.resume_flow(flow_id)
     assert atelier.get_status(flow_id).status is FlowStatus.completed
+
+
+# ------------------------------- work already done, by an agent no longer here
+
+
+async def test_resume_keeps_a_completed_step_whose_agent_was_uninstalled(workspace):
+    """A finished step's agent is a record of who did it, not a choice to remake."""
+    atelier, seen, agents = workspace
+    agents["beta"].fail = True
+    with pytest.raises(RuntimeError):
+        await atelier.run_conduit(
+            "chain", {"brief": "B"}, agents={"step_1": "harness:gamma"}
+        )
+    flow_id = atelier.list_flows()[-1]
+    # The custom agent that already did step_1 is dropped entirely, and the
+    # agent that failed is repaired.
+    del atelier.executors["harness:gamma"]
+    agents["beta"].fail = False
+    seen.clear()
+
+    await atelier.resume_flow(flow_id)
+
+    # Only the unfinished step runs, and it is handed the retained output.
+    assert [name for name, _ in seen] == ["step_2"]
+    assert "GAMMA_SAID" in seen[0][1]
+    assert "[harness:gamma]" in seen[0][1]
+    progress = atelier.get_status(flow_id)
+    assert progress.status is FlowStatus.completed
+    assert progress.task_agents["step_1"] == "harness:gamma"
+    assert atelier.get_outputs(flow_id) == {
+        "step_1": "GAMMA_SAID", "step_2": "BETA_SAID"
+    }
+
+
+async def test_again_still_refuses_an_uninstalled_agent_for_a_completed_step(workspace):
+    """A re-run from the top would have to run that step, so it must be startable."""
+    atelier, seen, agents = workspace
+    agents["beta"].fail = True
+    with pytest.raises(RuntimeError):
+        await atelier.run_conduit(
+            "chain", {"brief": "B"}, agents={"step_1": "harness:gamma"}
+        )
+    source = atelier.list_flows()[-1]
+    before = _saved_files(atelier, source)
+    del atelier.executors["harness:gamma"]
+    agents["beta"].fail = False
+    seen.clear()
+
+    with pytest.raises(BindingError) as err:
+        await atelier.rerun_flow(source)
+    assert "unknown agent 'harness:gamma'" in str(err.value)
+    assert seen == []
+    assert _saved_files(atelier, source) == before
+
+
+LOOPING_CHAIN = {
+    "name": "chain",
+    "description": "a loop, then a handoff",
+    "inputs": {"brief": {"description": "the shared task"}},
+    "tasks": [
+        {
+            "name": "step_1",
+            "description": "iterate",
+            "task": "Draft: {{inputs.brief}}",
+            "tool": "harness:alpha",
+            "repeat": 2,
+            "depends_on": [],
+        },
+        {
+            "name": "step_2",
+            "description": "second",
+            "task": "Review [{{step_1.tool}}]: {{step_1.output}}",
+            "tool": "harness:beta",
+            "depends_on": ["step_1"],
+        },
+    ],
+}
+
+
+async def test_a_finished_loop_does_not_block_a_resume_when_the_recipe_drifts(workspace):
+    """Every iteration ran, so no history is left for a second agent to join."""
+    atelier, seen, agents = workspace
+    atelier.store.write_conduit(Conduit.model_validate(LOOPING_CHAIN))
+    agents["beta"].fail = True
+    with pytest.raises(RuntimeError):
+        await atelier.run_conduit("chain", {"brief": "B"})
+    flow_id = atelier.list_flows()[-1]
+    assert atelier.get_status(flow_id).tasks["step_1"].of == 2
+    # The recipe's default for the finished loop changes under the flow.
+    drifted = dict(LOOPING_CHAIN)
+    drifted["tasks"] = [
+        {**LOOPING_CHAIN["tasks"][0], "tool": "harness:gamma"}, LOOPING_CHAIN["tasks"][1]
+    ]
+    atelier.store.write_conduit(Conduit.model_validate(drifted))
+    seen.clear()
+
+    await atelier.resume_flow(flow_id, agents={"step_2": "harness:gamma"})
+
+    # No iteration re-ran, and the handoff still names the agent that looped.
+    assert [name for name, _ in seen] == ["step_2"]
+    assert "[harness:alpha]" in seen[0][1]
+    assert "harness:gamma" not in seen[0][1]
+    progress = atelier.get_status(flow_id)
+    assert progress.status is FlowStatus.completed
+    assert progress.task_agents["step_1"] == "harness:alpha"
+    assert atelier.get_outputs(flow_id)["step_2"] == "GAMMA_SAID"

@@ -218,7 +218,13 @@ class Atelier:
                 )
 
     def _inherit_agents(
-        self, conduit: Conduit, flow_id: str, prior: Progress, agents: Mapping[str, str]
+        self,
+        conduit: Conduit,
+        flow_id: str,
+        prior: Progress,
+        agents: Mapping[str, str],
+        *,
+        executes: Container[str] | None = None,
     ) -> tuple[Conduit, dict[str, str]]:
         """Apply a prior run's saved agent choices, then this call's overrides.
 
@@ -228,15 +234,20 @@ class Atelier:
         than silently reverting that task to the recipe's agent.
 
         Whether an agent is still configured on this machine is asked of the
-        merged result only. A saved choice this call replaces is on its way out,
-        so an agent uninstalled since that run must not block the replacement
-        that recovers from exactly that.
+        work this call will actually hand to an executor. A saved choice this
+        call replaces is on its way out, and one whose task is already done is
+        only a record of who did it, so an agent uninstalled since that run must
+        block neither the replacement nor the retained output — recovering from
+        a removed agent is exactly what both are for.
 
         :param conduit: the recipe as installed right now.
         :param flow_id: the flow whose choices are being inherited.
         :param prior: that flow's saved progress.
         :param agents: this call's explicit overrides, already normalized,
             applied on top.
+        :param executes: the task names this call will run, when it will not run
+            them all. ``None`` — a re-run from the top — holds every effective
+            agent to being registered.
         :returns: ``(conduit to run, effective assignment map)``.
         :raises BindingError: a saved or requested selection is unusable.
         """
@@ -265,7 +276,10 @@ class Atelier:
         # failure a replacement recovers from.
         self._require_registered(agents, origin="--agent")
         self._require_registered(
-            {t: v for t, v in saved.items() if t not in agents},
+            {
+                t: v for t, v in saved.items()
+                if t not in agents and (executes is None or t in executes)
+            },
             origin=f"{origin} (replace it with `--agent <task>=<agent>`)",
         )
         return bound, effective
@@ -451,11 +465,20 @@ class Atelier:
         conduit_name, _, _ = parse_flow_id(flow_id)
         conduit = self.store.read_conduit(conduit_name)
         requested = normalize_bindings(dict(agents or {}))
-        partial = self._partly_looped(flow_id, conduit)
+        # Every gate below asks about the work this resume will hand to an
+        # executor. A completed task is not re-run: its agent is a record of who
+        # produced the saved output, not a choice this run has to be able to make
+        # again.
+        unfinished = {
+            t.name for t in conduit.tasks
+            if prior.tasks.get(t.name) is None
+            or prior.tasks[t.name].status != TaskStatus.completed
+        }
+        partial = self._partly_looped(flow_id, conduit, unfinished)
         if requested:
             check_replaceable(prior, requested, partial=partial)
         conduit, effective = self._inherit_agents(
-            conduit, flow_id, prior, requested
+            conduit, flow_id, prior, requested, executes=unfinished
         )
         by_name = {t.name: t.tool for t in conduit.tasks}
         for tname, ran_on in partial.items():
@@ -470,14 +493,7 @@ class Atelier:
                 code=1,
             )
         if effective:
-            self._require_ready(
-                conduit,
-                only={
-                    t.name for t in conduit.tasks
-                    if prior.tasks.get(t.name) is None
-                    or prior.tasks[t.name].status != TaskStatus.completed
-                },
-            )
+            self._require_ready(conduit, only=unfinished)
         inputs = self.store.read_input(flow_id)
         if working_dir is None and prior.run_path:
             working_dir = prior.run_path
@@ -495,20 +511,31 @@ class Atelier:
             task_agents=effective,
         )
 
-    def _partly_looped(self, flow_id: str, conduit: Conduit) -> dict[str, str]:
-        """Return the looping tasks of ``flow_id`` that already succeeded once.
+    def _partly_looped(
+        self, flow_id: str, conduit: Conduit, unfinished: Container[str]
+    ) -> dict[str, str]:
+        """Return the looping tasks of ``flow_id`` left half-run.
 
         Their ``{{loop.history}}`` was produced by the tool they started with,
         so a later resume may neither hand the rest of the loop to another one
         nor let the recipe's own edit do it silently. Read from the log the
         engine itself replays on resume.
 
+        A loop that ran every iteration is not half-run: the resume replays its
+        saved output and starts no iteration, so there is no remaining history
+        for a second agent to join. Only a loop that still owes iterations is
+        reported here.
+
         :param flow_id: the flow whose log to read.
         :param conduit: the recipe, for each task's ``repeat``.
+        :param unfinished: the task names this resume will execute.
         :returns: mapping of looping task name to the tool its recorded
-            iterations ran on, for those with a successful iteration.
+            iterations ran on, for those with a successful iteration still to
+            be continued.
         """
-        looping = {t.name for t in conduit.tasks if t.repeat > 1}
+        looping = {
+            t.name for t in conduit.tasks if t.repeat > 1 and t.name in unfinished
+        }
         if not looping:
             return {}
         return {

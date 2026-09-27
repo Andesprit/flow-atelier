@@ -773,7 +773,8 @@ def test_unreadable_logs_do_not_cost_the_report(failed_run, workdir):
     assert [f["task"] for f in payload["failures"]] == ["worker_b"]
     assert payload["failures"][0]["reason"] == "exit=1 stderr=boom"
     assert payload["failures"][0]["excerpt"] is None
-    assert any("logs.jsonl cannot be read" in n for n in payload["unavailable"])
+    assert any("the saved log cannot be read" in n for n in payload["unavailable"])
+    assert any("logs.jsonl or logs.json" in n for n in payload["unavailable"])
     # The saved reason is still the evidence, so the task is not called silent.
     assert payload["failures"][0]["evidence"] == "reason"
     assert _run("diagnose", FLOW).exit_code == 0
@@ -851,6 +852,85 @@ def test_a_session_refusal_is_read_from_what_the_agent_said(workdir):
     payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
     assert payload["failures"][0]["kind"] == "agent_session"
     assert "logged in" in _flat(_run("diagnose", FLOW).stdout)
+
+
+def test_a_shell_task_that_printed_a_401_is_not_a_session_failure(workdir):
+    """Authentication words are not a session: only an agent has one to open.
+
+    A ``tool:bash`` task can run, change files and then report an HTTP 401 from
+    something it called. Reading its words as a refused agent session would
+    claim no work was asked of it, while its side effect is already on disk.
+    """
+    atelier = Atelier()
+    _seed(
+        atelier,
+        tasks={"worker_b": TaskProgress(status=TaskStatus.failed, reason="exit=22")},
+        entries=[
+            _entry(
+                "worker_b",
+                "tool:bash",
+                exit_code=22,
+                stderr="HTTP 401 Unauthorized from application endpoint",
+            )
+        ],
+    )
+    payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    failure = payload["failures"][0]
+    assert failure["kind"] == "task"
+    assert failure["excerpt"]["text"] == "HTTP 401 Unauthorized from application endpoint"
+    flat = _flat(_run("diagnose", FLOW).stdout)
+    assert "no work was asked of it" not in flat
+    assert "refused to open a session" not in flat
+
+
+def test_an_agent_that_had_begun_working_is_not_a_session_failure(workdir):
+    """A session that opened cannot be the thing that refused to open.
+
+    The same words late in an agent's own output place the failure inside the
+    work, so the report must not send the reader to a login for it.
+    """
+    atelier = Atelier()
+    _seed(
+        atelier,
+        tasks={"worker_b": TaskProgress(status=TaskStatus.failed, reason="exit=1")},
+        entries=[
+            _entry(
+                "worker_b",
+                "harness:codex",
+                exit_code=1,
+                output="I called the deploy API and it answered",
+                stderr="Authentication required by the endpoint I called",
+            )
+        ],
+    )
+    payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    assert payload["failures"][0]["kind"] == "task"
+    assert "no work was asked of it" not in _flat(_run("diagnose", FLOW).stdout)
+
+
+def test_a_malformed_legacy_log_file_does_not_cost_the_report(failed_run, workdir):
+    """A legacy logs.json holding the wrong shape parses and cannot be iterated.
+
+    ``null`` and a bare scalar both read back fine as JSON, so the failure is a
+    TypeError from inside the reader rather than a parse error. The report has
+    to survive it exactly as it survives broken syntax.
+    """
+    flow_dir = _flow_dir(Atelier())
+    flow_dir.joinpath("logs.jsonl").unlink()
+    for shape in ("null", "7"):
+        flow_dir.joinpath("logs.json").write_text(shape)
+        result = _run("diagnose", FLOW, "--json")
+        assert result.exit_code == 0, result.output
+        assert "Traceback" not in result.output
+        payload = json.loads(result.stdout)
+        assert [f["task"] for f in payload["failures"]] == ["worker_b"]
+        assert payload["failures"][0]["reason"] == "exit=1 stderr=boom"
+        assert any("the saved log cannot be read" in n for n in payload["unavailable"])
+        rendered = _run("diagnose", FLOW)
+        assert rendered.exit_code == 0, rendered.output
+        assert "what failed" in _flat(rendered.stdout)
+    # The report read the files and changed none of them.
+    assert flow_dir.joinpath("logs.json").read_text() == "7"
 
 
 def test_an_unplaceable_agent_failure_says_so(workdir):

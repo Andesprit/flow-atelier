@@ -34,8 +34,11 @@ EXCERPT_MAX_LINES = 12
 
 # What an unreadable saved file raises. Only ``progress.json`` is fatal here:
 # every other file is one source of evidence among several, so a corrupt one
-# costs its own contribution and nothing else.
-UNREADABLE = (yaml.YAMLError, ValidationError, ValueError, OSError)
+# costs its own contribution and nothing else. ``TypeError`` belongs in the list
+# because a saved file can hold the wrong *shape* as well as broken syntax — a
+# legacy ``logs.json`` holding ``null`` parses fine and then cannot be iterated —
+# and a report that dies on one such file hides every fact it could still give.
+UNREADABLE = (yaml.YAMLError, ValidationError, ValueError, TypeError, OSError)
 
 # The harness and the shell executor both write this phrase with this exit code
 # when a task runs out of time. Together they are the timeout's own record —
@@ -407,6 +410,12 @@ def _failure_kind(report: TaskReport, last: LogEntry | None) -> str:
     guessed — an agent that timed out mid-prompt leaves exactly the silence a
     logged-out one does, and advising a login for it sends the user nowhere.
 
+    A session refusal needs more than the words: only an agent has a session to
+    open, and only a task that recorded nothing of its own can be said to have
+    done no work. A shell task that ran, changed files and then printed an HTTP
+    401 of its own is an ordinary task failure with an authentication message in
+    it, so it is reported as one.
+
     :param report: the task report so far, for its attribution and exit code.
     :param last: the task's last log entry, when it has one.
     :returns: ``timeout``, ``agent_session``, ``unclear_stage`` or ``task``.
@@ -419,10 +428,11 @@ def _failure_kind(report: TaskReport, last: LogEntry | None) -> str:
     ).lower()
     if report.exit_code == TIMEOUT_EXIT and TIMEOUT_MARKER in said:
         return "timeout"
-    if any(marker in said for marker in SESSION_REFUSALS):
-        return "agent_session"
     on_harness = (report.ran_on.value or "").startswith("harness:")
-    if on_harness and not report.step_records and (last is None or not last.output):
+    began = bool(report.step_records) or (last is not None and bool(last.output))
+    if on_harness and not began:
+        if any(marker in said for marker in SESSION_REFUSALS):
+            return "agent_session"
         return "unclear_stage"
     return "task"
 
@@ -713,9 +723,9 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
     except UNREADABLE as exc:
         entries = []
         unavailable.append(
-            f"log entries — logs.jsonl cannot be read ({_why(exc)}), so no task's own "
-            "output is shown below; the saved statuses and reasons are unaffected. "
-            f"Read that file directly in the flow directory of {flow_id}"
+            f"log entries — the saved log cannot be read ({_why(exc)}), so no task's "
+            "own output is shown below; the saved statuses and reasons are unaffected. "
+            f"Read logs.jsonl or logs.json directly in the flow directory of {flow_id}"
         )
     else:
         if not entries:

@@ -33,7 +33,16 @@ EXCERPT_MAX_LINES = 12
 
 
 class DiagnoseError(Exception):
-    """A flow cannot be diagnosed, with the text the user has to act on."""
+    """A flow cannot be diagnosed, with the text the user has to act on.
+
+    :param message: what went wrong and what it means.
+    :param hint: one command that would resolve it, kept separate so the caller
+        can print it unwrapped and copyable.
+    """
+
+    def __init__(self, message: str, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.hint = hint
 
 
 class Provenance(BaseModel):
@@ -150,8 +159,13 @@ class DiagnoseReport(BaseModel):
     next_steps: list[NextStep] = Field(default_factory=list)
 
 
-def _tail(text: str) -> Excerpt | None:
-    """Bound ``text`` to its last lines and characters.
+def _bound(text: str) -> Excerpt | None:
+    """Keep both ends of ``text`` and say how much was dropped between them.
+
+    Both ends, because which one matters depends on what failed: a harness
+    announces its verdict on the first line of stderr, while a shell script's
+    reason for dying is usually on the last. Cutting only one end would hide
+    exactly one of the two.
 
     :param text: the raw channel contents.
     :returns: the bounded excerpt, or None when there is nothing to show.
@@ -162,11 +176,19 @@ def _tail(text: str) -> Excerpt | None:
     lines = stripped.splitlines()
     truncated = False
     if len(lines) > EXCERPT_MAX_LINES:
-        lines = lines[-EXCERPT_MAX_LINES:]
+        head = lines[: EXCERPT_MAX_LINES // 3]
+        tail = lines[-(EXCERPT_MAX_LINES - len(head) - 1) :]
+        omitted = len(lines) - len(head) - len(tail)
+        lines = [*head, f"... {omitted} lines omitted ...", *tail]
         truncated = True
     kept = "\n".join(lines)
     if len(kept) > EXCERPT_MAX_CHARS:
-        kept = kept[-EXCERPT_MAX_CHARS:]
+        head_chars = EXCERPT_MAX_CHARS // 3
+        kept = (
+            kept[:head_chars]
+            + "\n... trimmed ...\n"
+            + kept[-(EXCERPT_MAX_CHARS - head_chars) :]
+        )
         truncated = True
     return Excerpt(channel="", text=kept, truncated=truncated)
 
@@ -178,7 +200,7 @@ def _excerpt_of(entry: LogEntry) -> Excerpt | None:
     :returns: a bounded excerpt naming its channel, or None when all are empty.
     """
     for channel in ("stderr", "output", "stdout"):
-        found = _tail(getattr(entry, channel))
+        found = _bound(getattr(entry, channel))
         if found is not None:
             return found.model_copy(update={"channel": channel})
     return None
@@ -412,6 +434,30 @@ def _children(atelier: Any, flow_id: str) -> tuple[list[ChildPointer], list[str]
     return pointers, notes
 
 
+def _unfinished_count(
+    progress: Progress, conduit: Conduit | None, reports: list[TaskReport]
+) -> int:
+    """Count the work a resume would still have to do.
+
+    Taken from the rule resume itself applies — a task of the recipe it reads
+    whose saved status is not ``completed``. With no readable recipe there is no
+    such list, so the run's own record is the only thing left to count.
+
+    :param progress: the run's progress snapshot.
+    :param conduit: the recipe as it stands now, when readable.
+    :param reports: the per-task reports, for the no-recipe fallback.
+    :returns: how many tasks are not completed.
+    """
+    if conduit is not None:
+        return sum(
+            1
+            for task in conduit.tasks
+            if progress.tasks.get(task.name) is None
+            or progress.tasks[task.name].status != TaskStatus.completed
+        )
+    return sum(1 for r in reports if r.status != TaskStatus.completed.value)
+
+
 def _next_steps(
     flow_id: str,
     observed: Observation,
@@ -523,7 +569,7 @@ def _next_steps(
                 command=f"atelier run --resume {quoted}",
                 side_effects=(
                     "runs the tasks this run did not complete; if the original runner "
-                    "is in fact alive, both will work at once"
+                    "is in fact alive, both work at once — a double-run"
                 ),
             )
         )
@@ -565,8 +611,8 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
         raise DiagnoseError(
             f"cannot read the saved progress of {flow_id}: {exc}. The flow directory "
             "is there but its progress.json is not a valid record, so nothing can be "
-            "said about what ran. Inspect the file directly, or delete the flow with "
-            f"`atelier rm flow {flow_id}`."
+            "said about what ran. Inspect that file directly, or drop the flow:",
+            hint=f"atelier rm flow {shlex.quote(flow_id)}",
         ) from exc
 
     try:
@@ -583,9 +629,11 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
     step_counts: dict[str, int] = {}
     try:
         records, _ = atelier.store.read_steps(flow_id)
-        for record in records:
-            step_counts[record.task] = step_counts.get(record.task, 0) + 1
     except (FileNotFoundError, OSError):
+        records = []
+    for record in records:
+        step_counts[record.task] = step_counts.get(record.task, 0) + 1
+    if not records:
         unavailable.append("live step records — none recorded for this run")
     outputs = atelier.store.read_outputs(flow_id)
     if not outputs:
@@ -680,7 +728,7 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
             observed,
             failures,
             kept,
-            len(reports) - len(kept),
+            _unfinished_count(progress, conduit, reports),
             recipe,
         ),
     )

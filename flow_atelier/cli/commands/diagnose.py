@@ -65,6 +65,9 @@ def diagnose_cmd(
         report = build_report(atelier, flow_id)
     except DiagnoseError as exc:
         out.print(f"[red]{escape(str(exc))}[/red]")
+        if exc.hint:
+            # Unwrapped: a command broken across two lines cannot be copied.
+            out.print(f"[cyan]{escape(exc.hint)}[/cyan]", soft_wrap=True)
         raise typer.Exit(code=1) from exc
 
     if json_mode:

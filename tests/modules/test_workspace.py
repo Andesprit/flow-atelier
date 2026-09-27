@@ -265,7 +265,7 @@ def test_verify_passes_for_the_checkouts_it_recorded(repo, tmp_path):
     saved = create_worktrees(
         resolve_source_repo(repo), tmp_path / "ws", ["writer_a", "writer_b"]
     )
-    verify_worktrees(saved, ["writer_a", "writer_b"])
+    verify_worktrees(saved, ["writer_a", "writer_b"], owned_root=tmp_path / "ws")
 
 
 def test_a_deleted_checkout_is_never_silently_replaced(repo, tmp_path):
@@ -273,7 +273,7 @@ def test_a_deleted_checkout_is_never_silently_replaced(repo, tmp_path):
     git("worktree", "remove", "--force", saved.paths["writer_a"], cwd=repo)
 
     with pytest.raises(WorkspaceError) as exc:
-        verify_worktrees(saved, ["writer_a"])
+        verify_worktrees(saved, ["writer_a"], owned_root=tmp_path / "ws")
     assert exc.value.code == 1
     assert "that directory is gone" in str(exc.value)
     assert "--again" in str(exc.value)
@@ -285,7 +285,7 @@ def test_a_finished_task_s_checkout_is_not_required(repo, tmp_path):
         resolve_source_repo(repo), tmp_path / "ws", ["writer_a", "writer_b"]
     )
     git("worktree", "remove", "--force", saved.paths["writer_a"], cwd=repo)
-    verify_worktrees(saved, ["writer_b"])
+    verify_worktrees(saved, ["writer_b"], owned_root=tmp_path / "ws")
 
 
 def test_a_plain_directory_in_its_place_is_refused(repo, tmp_path):
@@ -294,7 +294,7 @@ def test_a_plain_directory_in_its_place_is_refused(repo, tmp_path):
     (tmp_path / "ws" / "writer_a").mkdir()
 
     with pytest.raises(WorkspaceError, match="no longer the root of a Git checkout"):
-        verify_worktrees(saved, ["writer_a"])
+        verify_worktrees(saved, ["writer_a"], owned_root=tmp_path / "ws")
 
 
 def test_a_checkout_of_another_repository_is_refused(repo, tmp_path):
@@ -311,12 +311,70 @@ def test_a_checkout_of_another_repository_is_refused(repo, tmp_path):
     git("worktree", "add", "--detach", saved.paths["writer_a"], "HEAD", cwd=other)
 
     with pytest.raises(WorkspaceError, match="different repository"):
-        verify_worktrees(saved, ["writer_a"])
+        verify_worktrees(saved, ["writer_a"], owned_root=tmp_path / "ws")
 
 
-def test_legacy_flows_without_a_recorded_source_are_not_verified():
-    """Nothing selected, nothing to check — the old shared-directory shape."""
-    verify_worktrees(Workspaces(source="/nowhere", base="0" * 40), ["writer_a"])
+def test_a_record_that_lists_no_checkout_is_refused(tmp_path):
+    """A run with nothing isolated records no Workspaces at all.
+
+    So a record with an empty mapping is damaged, and reading it as "share one
+    directory" would silently undo the isolation the run was asked for.
+    """
+    with pytest.raises(WorkspaceError) as exc:
+        verify_worktrees(
+            Workspaces(source="/nowhere", base="0" * 40),
+            ["writer_a"],
+            owned_root=tmp_path / "ws",
+        )
+    assert exc.value.code == 1
+    assert "lists none of them" in str(exc.value)
+
+
+def test_a_record_without_a_source_or_base_is_refused(tmp_path):
+    for damaged in (
+        Workspaces(source="", base="0" * 40, paths={"writer_a": "/w/writer_a"}),
+        Workspaces(source="/nowhere", base="  ", paths={"writer_a": "/w/writer_a"}),
+    ):
+        with pytest.raises(WorkspaceError, match="no source repository or base"):
+            verify_worktrees(damaged, ["writer_a"], owned_root=tmp_path / "ws")
+
+
+def test_the_source_checkout_in_place_of_a_task_is_refused(repo, tmp_path):
+    """The user's own files are the first thing a redirected resume destroys."""
+    saved = create_worktrees(resolve_source_repo(repo), tmp_path / "ws", ["writer_a"])
+    retargeted = saved.model_copy(update={"paths": {"writer_a": str(repo)}})
+
+    with pytest.raises(WorkspaceError) as exc:
+        verify_worktrees(retargeted, ["writer_a"], owned_root=tmp_path / "ws")
+    assert exc.value.code == 1
+    assert "not the checkout this run created for it" in str(exc.value)
+
+
+def test_another_task_s_checkout_in_place_of_one_is_refused(repo, tmp_path):
+    """Two tasks pointed at one directory is the overwriting this prevents."""
+    saved = create_worktrees(
+        resolve_source_repo(repo), tmp_path / "ws", ["writer_a", "writer_b"]
+    )
+    shared = saved.paths["writer_a"]
+    retargeted = saved.model_copy(
+        update={"paths": {"writer_a": shared, "writer_b": shared}}
+    )
+
+    with pytest.raises(WorkspaceError, match="not the checkout this run created"):
+        verify_worktrees(retargeted, ["writer_b"], owned_root=tmp_path / "ws")
+
+
+def test_a_completed_task_pointed_somewhere_else_is_refused_too(repo, tmp_path):
+    """Its path is read for provenance even when the task is not re-run."""
+    saved = create_worktrees(
+        resolve_source_repo(repo), tmp_path / "ws", ["writer_a", "writer_b"]
+    )
+    retargeted = saved.model_copy(
+        update={"paths": {**saved.paths, "writer_a": str(repo)}}
+    )
+
+    with pytest.raises(WorkspaceError, match="not the checkout this run created"):
+        verify_worktrees(retargeted, ["writer_b"], owned_root=tmp_path / "ws")
 
 
 # --------------------------------------------------------------------- cost

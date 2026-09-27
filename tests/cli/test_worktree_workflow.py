@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -840,3 +841,164 @@ def test_an_ordinary_run_gains_no_such_block(project):
     assert done.returncode == 0, done.stdout + done.stderr
     [merged] = project.prompts("gemini")
     assert "WORKSPACE PROVENANCE" not in merged
+
+
+# ------------------------------------------------ damaged recovery metadata
+
+
+@pytest.mark.parametrize("damage", ["source_checkout", "sibling_checkout", "no_paths"])
+def test_resume_refuses_a_workspace_record_it_does_not_own(project, damage):
+    """A retargeted or gutted record must stop the resume, not redirect it.
+
+    Each case is a directory the run never created: the user's own checkout, the
+    finished sibling's, or none at all. Honouring any of them would overwrite
+    files the resume is supposed to protect, so the run has to refuse before it
+    prompts anyone.
+    """
+    flow_id, a, b = _fail_writer_b(project)
+    progress = project.work / ".atelier" / "flows" / flow_id / "progress.json"
+    payload = json.loads(progress.read_text(encoding="utf-8"))
+    if damage == "source_checkout":
+        payload["workspaces"]["paths"]["writer_b"] = str(project.work)
+    elif damage == "sibling_checkout":
+        payload["workspaces"]["paths"]["writer_b"] = str(a)
+    else:
+        del payload["workspaces"]["paths"]
+    progress.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    before = progress.read_bytes()
+    prompts = {name: len(project.prompts(name)) for name in AGENTS}
+    project.set_agent("codex", writes="RESUMED IN THE WRONG PLACE\n")
+
+    done = project.cli("run", "--resume", flow_id, "--hide-steps")
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "--again" in _flat(done.stdout + done.stderr)
+
+    # Nothing was started, nothing was rewritten, nothing was overwritten.
+    assert all(len(project.prompts(name)) == n for name, n in prompts.items())
+    assert progress.read_bytes() == before
+    assert (a / "NOTES.md").read_text(encoding="utf-8") == EDIT["claude-code"]
+    assert (b / "NOTES.md").read_text(encoding="utf-8") == EDIT["codex"]
+    project.source_untouched()
+
+
+def test_the_facade_refuses_the_same_record_without_the_cli(project):
+    """The guard is in the API, so calling it directly cannot get past it."""
+    flow_id, _a, b = _fail_writer_b(project)
+    progress = project.work / ".atelier" / "flows" / flow_id / "progress.json"
+    payload = json.loads(progress.read_text(encoding="utf-8"))
+    payload["workspaces"]["paths"]["writer_b"] = str(project.work)
+    progress.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    script = (
+        "import asyncio, os\n"
+        "from flow_atelier.core.atelier import Atelier\n"
+        "from flow_atelier.modules.workspace import WorkspaceError\n"
+        f"os.chdir({str(project.work)!r})\n"
+        "try:\n"
+        f"    asyncio.run(Atelier().resume_flow({flow_id!r}, show_steps=False))\n"
+        "except WorkspaceError as exc:\n"
+        "    print('refused:', exc)\n"
+        "else:\n"
+        "    raise SystemExit('the facade resumed a record it does not own')\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(project.work),
+        env=project.env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "refused:" in done.stdout
+    assert (b / "NOTES.md").read_text(encoding="utf-8") == EDIT["codex"]
+    project.source_untouched()
+
+
+def test_again_keeps_the_recorded_repository_when_started_elsewhere(project, tmp_path):
+    """`--again` repeats the brief on the same code, wherever it is invoked."""
+    first = project.cli(
+        "run", "pair", "--worktree", "writer_a", "--worktree", "writer_b",
+        "--input", f"brief={BRIEF}", "--hide-steps",
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    old_id = project.flow_id(first)
+    old = project.status(old_id)["workspaces"]
+    git("checkout", "-q", "--", "NOTES.md", cwd=project.work)
+
+    # Same store, different repository to stand in — an unrelated checkout that
+    # the rerun must not touch or base itself on.
+    elsewhere = Project(tmp_path / "another")
+    project.env["ATELIER_ATELIER_DIR"] = str(project.work / ".atelier")
+    source = project.work
+    project.work = elsewhere.work
+
+    second = project.cli("run", "--again", old_id, "--hide-steps")
+    assert second.returncode == 0, second.stdout + second.stderr
+    new = project.status(project.flow_id(second))["workspaces"]
+    assert Path(new["source"]).samefile(source)
+    assert new["base"] == git("rev-parse", "HEAD", cwd=source)
+    assert sorted(new["paths"]) == ["writer_a", "writer_b"]
+    assert new["paths"] != old["paths"]
+    for path in new["paths"].values():
+        assert (Path(path) / "NOTES.md").exists()
+    # The repository the command was typed in was left completely alone.
+    elsewhere.source_untouched()
+    assert elsewhere.flows() == []
+
+
+def test_again_refuses_when_the_recorded_repository_is_gone(project, tmp_path):
+    """No silent substitute: a missing source stops the rerun before prompts."""
+    # A store outside the repository, so the flow record and the checkouts
+    # outlive the source directory itself.
+    store = tmp_path / "outside store"
+    recipe = store / "conduits" / "pair"
+    recipe.mkdir(parents=True)
+    (recipe / "conduit.yaml").write_text(PAIR, encoding="utf-8")
+    project.env["ATELIER_ATELIER_DIR"] = str(store)
+
+    first = project.cli(
+        "run", "pair", "--worktree", "writer_a",
+        "--input", f"brief={BRIEF}", "--hide-steps",
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    old_id = project.flow_id(first)
+    shutil.rmtree(project.work)
+
+    elsewhere = Project(tmp_path / "another")
+    project.work = elsewhere.work
+    prompts = len(project.prompts("claude-code"))
+
+    done = project.cli("run", "--again", old_id, "--hide-steps")
+    assert done.returncode == 1, done.stdout + done.stderr
+    flat = _flat(done.stdout + done.stderr)
+    assert "saved worktrees" in flat
+    assert "does not exist" in flat
+    # The repository the command was typed in was neither used nor written to.
+    assert len(project.prompts("claude-code")) == prompts
+    assert elsewhere.flows() == []
+    elsewhere.source_untouched()
+
+
+def test_a_flow_recorded_before_checkouts_existed_still_resumes(project):
+    """Older records have no `workspaces` key at all; they share a directory."""
+    project.set_agent("codex", writes=EDIT["codex"], fail=True, delay=3)
+    first = project.cli(
+        "run", "pair", "--input", f"brief={BRIEF}", "--hide-steps"
+    )
+    assert first.returncode == 1, first.stdout + first.stderr
+    flow_id = project.flow_id(first)
+    progress = project.work / ".atelier" / "flows" / flow_id / "progress.json"
+    payload = json.loads(progress.read_text(encoding="utf-8"))
+    del payload["workspaces"]
+    progress.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    project.set_agent("codex", writes="# second attempt\n")
+
+    done = project.cli("run", "--resume", flow_id, "--hide-steps")
+    assert done.returncode == 0, done.stdout + done.stderr
+    payload = project.status(flow_id)
+    assert payload["status"] == "completed"
+    assert payload["workspaces"] is None
+    # One shared directory, as it always was: the source itself.
+    assert (project.work / "NOTES.md").read_text(encoding="utf-8") == "# second attempt\n"
+    assert len(project.prompts("claude-code")) == 1

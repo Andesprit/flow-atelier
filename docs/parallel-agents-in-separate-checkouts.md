@@ -197,6 +197,14 @@ their directories are untouched.
 `--resume` and `--worktree` are mutually exclusive, for the same reason: a new
 selection would mean abandoning the edits the run already has.
 
+A resume also checks the record before it starts anything. Every path has to be
+the checkout that run created for that task; a record pointing a task at your
+source checkout, at another task's directory, or listing no checkouts at all is
+refused by name, and nothing is prompted, rewritten or overwritten. That is a
+damaged or hand-edited record, and the only safe reading of it is to stop:
+`atelier run --again <flow_id>` starts fresh checkouts when that is what you
+want.
+
 ## 8. Do it again, with fresh checkouts
 
 ```bash
@@ -215,6 +223,12 @@ echo "the recipe is byte-identical after three runs"
 gets new checkouts, cut from the source repository's HEAD **as it is now** —
 not from the old run's base. The old run keeps its own directories, status and
 outputs.
+
+The repository is the one the first run recorded, not the directory you happen
+to be standing in. A `--again` typed from somewhere else repeats the same brief
+on the same code; if that repository has gone, the rerun says so and stops
+before any agent is prompted, rather than quietly working on whatever is
+checked out where you are.
 
 `git worktree list` shows every checkout Git knows about, including all of
 these. They are yours now. When you are done reading them:

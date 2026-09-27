@@ -158,7 +158,9 @@ def _git(args: list[str], cwd: Path | str) -> subprocess.CompletedProcess[str]:
         ) from exc
 
 
-def resolve_source_repo(working_dir: Path | str | None) -> SourceRepo:
+def resolve_source_repo(
+    working_dir: Path | str | None, *, origin: str = "--worktree"
+) -> SourceRepo:
     """Return the checkout the worktrees will be cut from, or refuse.
 
     Resolved from the run's effective working directory, so a run started in a
@@ -174,6 +176,9 @@ def resolve_source_repo(working_dir: Path | str | None) -> SourceRepo:
 
     :param working_dir: the run's working directory; ``None`` means the
         process's current directory.
+    :param origin: what asked for the isolation, for the diagnostics — a
+        resume or rerun inheriting a saved policy names the flow instead of
+        the option nobody typed this time.
     :returns: the resolved :class:`SourceRepo`.
     :raises WorkspaceError: there is no usable repository, no commit to base
         on, or the tracked source is dirty.
@@ -181,13 +186,13 @@ def resolve_source_repo(working_dir: Path | str | None) -> SourceRepo:
     where = Path(working_dir) if working_dir is not None else Path.cwd()
     if not where.is_dir():
         raise WorkspaceError(
-            f"--worktree: working directory {str(where)!r} does not exist",
+            f"{origin}: working directory {str(where)!r} does not exist",
             code=1,
         )
     top = _git(["rev-parse", "--show-toplevel"], where)
     if top.returncode != 0:
         raise WorkspaceError(
-            f"--worktree: {str(where)!r} is not inside a Git repository "
+            f"{origin}: {str(where)!r} is not inside a Git repository "
             f"({top.stderr.strip() or 'git rev-parse failed'}) — a separate "
             "checkout per task needs one to copy from",
             code=1,
@@ -196,7 +201,7 @@ def resolve_source_repo(working_dir: Path | str | None) -> SourceRepo:
     head = _git(["rev-parse", "HEAD"], root)
     if head.returncode != 0:
         raise WorkspaceError(
-            f"--worktree: {str(root)!r} has no commit to base a worktree on "
+            f"{origin}: {str(root)!r} has no commit to base a worktree on "
             f"({head.stderr.strip() or 'git rev-parse HEAD failed'}); commit "
             "something first",
             code=1,
@@ -204,7 +209,7 @@ def resolve_source_repo(working_dir: Path | str | None) -> SourceRepo:
     dirty = _git(["status", "--porcelain", "--untracked-files=no"], root)
     if dirty.returncode != 0:
         raise WorkspaceError(
-            f"--worktree: cannot read the state of {str(root)!r} "
+            f"{origin}: cannot read the state of {str(root)!r} "
             f"({dirty.stderr.strip() or 'git status failed'})",
             code=1,
         )
@@ -212,7 +217,7 @@ def resolve_source_repo(working_dir: Path | str | None) -> SourceRepo:
     if changed:
         shown = ", ".join(changed[:5]) + (" …" if len(changed) > 5 else "")
         raise WorkspaceError(
-            f"--worktree: {str(root)!r} has uncommitted changes to tracked "
+            f"{origin}: {str(root)!r} has uncommitted changes to tracked "
             f"files ({shown}); a worktree is cut from a commit, so those edits "
             "would not be in it — commit or stash them first",
             code=1,
@@ -297,12 +302,67 @@ def _partial(message: str, made: Mapping[str, str]) -> str:
     )
 
 
-def verify_worktrees(saved: Workspaces, tasks: Iterable[str]) -> None:
+def check_record(saved: Workspaces, owned_root: Path) -> None:
+    """Refuse a workspace record that is not the one this run wrote.
+
+    A run creates its checkouts at ``<owned_root>/<task>`` and nowhere else, so
+    that is the whole test: any other path in the record — the source checkout,
+    a sibling task's directory, another run's — was not put there by the run
+    that owns it, and honouring it would point an agent at somebody else's
+    files. An empty ``paths`` is refused for the same reason: a run with no
+    isolated task records no ``Workspaces`` at all, so a record that lists none
+    is damaged, and reading it as "share one directory" is exactly the silent
+    fallback the option exists to prevent.
+
+    A flow that never isolated anything has ``workspaces`` absent or ``None``
+    and never reaches here, which is what keeps older runs readable.
+
+    :param saved: the workspaces recorded on the flow.
+    :param owned_root: the directory that flow's checkouts belong under, from
+        :meth:`FilesystemStore.workspace_dir`.
+    :raises WorkspaceError: the record is incomplete, or a path is not the
+        checkout the run created for that task.
+    """
+    if not saved.source.strip() or not saved.base.strip():
+        raise WorkspaceError(
+            "this run's saved worktree record names no source repository or "
+            "base commit, so there is no way to tell what its checkouts hold; "
+            "refusing to run against it — start a new run with `atelier run "
+            "--again <flow_id>`",
+            code=1,
+        )
+    if not saved.paths:
+        raise WorkspaceError(
+            "this run recorded separate checkouts but lists none of them, so "
+            "continuing would quietly put every task back in one shared "
+            "directory; refusing to run against a damaged record — start a new "
+            "run with `atelier run --again <flow_id>`",
+            code=1,
+        )
+    for name, path in saved.paths.items():
+        owned = owned_root / name
+        if Path(path).resolve() != owned.resolve():
+            raise WorkspaceError(
+                f"task {name!r} is recorded in {str(path)!r}, which is not the "
+                f"checkout this run created for it ({str(owned)!r}); refusing "
+                "to run an agent in a directory the run does not own — a "
+                "source checkout or another task's directory would be "
+                "overwritten. Start a new run with `atelier run --again "
+                "<flow_id>`",
+                code=1,
+            )
+
+
+def verify_worktrees(
+    saved: Workspaces, tasks: Iterable[str], *, owned_root: Path
+) -> None:
     """Refuse a resume whose recorded checkouts are gone or not the same ones.
 
-    Asked only about the work the resume will actually run: a task whose result
-    is already saved is not started again, so its checkout is a record of where
-    the edits went, not something this run needs back.
+    The record itself is checked in full first (:func:`check_record`), because a
+    damaged mapping is a reason to stop whatever it points at. The filesystem is
+    then asked only about the work the resume will actually run: a task whose
+    result is already saved is not started again, so its checkout is a record of
+    where the edits went, not something this run needs back.
 
     Substituting a fresh checkout would silently discard a failed worker's
     partial edits — the exact thing a resume is for — so a missing or foreign
@@ -310,9 +370,12 @@ def verify_worktrees(saved: Workspaces, tasks: Iterable[str]) -> None:
 
     :param saved: the workspaces recorded by the run being resumed.
     :param tasks: the task names this resume will execute.
-    :raises WorkspaceError: a required checkout is missing, is not a worktree,
-        or belongs to a different repository.
+    :param owned_root: the directory this flow's checkouts belong under.
+    :raises WorkspaceError: the record is damaged or retargeted, or a required
+        checkout is missing, is not a worktree, or belongs to a different
+        repository.
     """
+    check_record(saved, owned_root)
     wanted = [t for t in tasks if t in saved.paths]
     for name in wanted:
         path = Path(saved.paths[name])

@@ -42,7 +42,13 @@ class Workspaces(BaseModel):
     base: str
     """The exact commit every worktree of this run was created at."""
     paths: dict[str, str] = Field(default_factory=dict)
-    """Task name to the absolute path of its own checkout."""
+    """Task name to the absolute path of its own checkout.
+
+    Never legitimately empty: a run that isolated nothing records no
+    ``Workspaces`` at all. Resume and rerun therefore refuse a record that
+    lists none rather than falling back to one shared directory (see
+    :func:`flow_atelier.modules.workspace.check_record`).
+    """
 
 
 class Progress(BaseModel):

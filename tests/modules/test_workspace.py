@@ -330,6 +330,70 @@ def test_a_record_that_lists_no_checkout_is_refused(tmp_path):
     assert "lists none of them" in str(exc.value)
 
 
+def test_a_record_that_does_not_say_what_it_isolated_is_refused(tmp_path):
+    """Without the selection there is nothing to measure the mapping against."""
+    with pytest.raises(WorkspaceError) as exc:
+        verify_worktrees(
+            Workspaces(
+                source="/nowhere", base="0" * 40, paths={"writer_a": "/w/writer_a"}
+            ),
+            ["writer_a"],
+            owned_root=tmp_path / "ws",
+        )
+    assert exc.value.code == 1
+    assert "does not say which tasks it isolated" in str(exc.value)
+
+
+def test_a_record_missing_one_of_its_checkouts_is_refused(repo, tmp_path):
+    """Losing an entry is the quiet failure: it reads as "never isolated".
+
+    The task would then be run in the shared source checkout and overwrite the
+    user's own files, so the run's own record of what it isolated is what the
+    mapping has to match.
+    """
+    saved = create_worktrees(
+        resolve_source_repo(repo), tmp_path / "ws", ["writer_a", "writer_b"]
+    )
+    gutted = saved.model_copy(
+        update={"paths": {"writer_a": saved.paths["writer_a"]}}
+    )
+
+    with pytest.raises(WorkspaceError) as exc:
+        verify_worktrees(gutted, ["writer_b"], owned_root=tmp_path / "ws")
+    assert exc.value.code == 1
+    assert "no longer says where writer_b worked" in str(exc.value)
+
+
+def test_a_checkout_the_record_does_not_name_is_refused(repo, tmp_path):
+    """The directories on disk are evidence the record cannot edit away.
+
+    Dropping writer_b from ``selected`` as well as ``paths`` makes the record
+    self-consistent, so only its own checkout still proves it was isolated.
+    """
+    saved = create_worktrees(
+        resolve_source_repo(repo), tmp_path / "ws", ["writer_a", "writer_b"]
+    )
+    forged = saved.model_copy(
+        update={
+            "selected": ["writer_a"],
+            "paths": {"writer_a": saved.paths["writer_a"]},
+        }
+    )
+
+    with pytest.raises(WorkspaceError) as exc:
+        verify_worktrees(forged, ["writer_b"], owned_root=tmp_path / "ws")
+    assert exc.value.code == 1
+    assert "no longer says where writer_b worked" in str(exc.value)
+    assert str(tmp_path / "ws") in str(exc.value)
+
+
+def test_a_run_that_isolated_only_some_tasks_is_complete(repo, tmp_path):
+    """A smaller selection is a choice, not damage: the rest share a directory."""
+    saved = create_worktrees(resolve_source_repo(repo), tmp_path / "ws", ["writer_a"])
+    verify_worktrees(saved, ["writer_a", "writer_b"], owned_root=tmp_path / "ws")
+    assert saved.selected == ["writer_a"]
+
+
 def test_a_record_without_a_source_or_base_is_refused(tmp_path):
     for damaged in (
         Workspaces(source="", base="0" * 40, paths={"writer_a": "/w/writer_a"}),

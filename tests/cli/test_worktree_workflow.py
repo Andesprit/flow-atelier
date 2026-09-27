@@ -734,6 +734,65 @@ def test_again_makes_new_checkouts_and_leaves_the_old_ones(project):
     )
 
 
+@pytest.mark.parametrize("damage", ["one_path", "path_and_selection"])
+def test_again_refuses_an_incomplete_record_rather_than_inheriting_less(
+    project, damage
+):
+    """A rerun inherits the policy from this record, so it has to trust it.
+
+    Read as written, a mapping that has lost writer_b would isolate only
+    writer_a and quietly send the other writer into the user's checkout.
+    """
+    flow_id, a, _b = _fail_writer_b(project)
+    progress = _damage(project, flow_id, damage, a)
+    before = progress.read_bytes()
+    prompts = {name: len(project.prompts(name)) for name in AGENTS}
+    flows = project.flows()
+
+    done = project.cli("run", "--again", flow_id, "--hide-steps")
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "no longer says where writer_b worked" in _flat(done.stdout + done.stderr)
+
+    # No new flow, no new checkout, no prompt, and the old record untouched.
+    assert project.flows() == flows
+    assert sorted(p.name for p in project.workspaces_root().iterdir()) == [flow_id]
+    assert all(len(project.prompts(name)) == n for name, n in prompts.items())
+    assert progress.read_bytes() == before
+    project.source_untouched()
+
+
+def test_deleting_the_same_run_twice_still_leaves_the_edits(project):
+    """The checkouts share their run's name; they are not a flow record.
+
+    A second deletion — the API after the CLI, a prune after an `rm` — must not
+    find ``workspaces/<flow_id>`` in place of the record it just removed.
+    """
+    done = project.cli(
+        "run", "pair", "--worktree", "writer_a",
+        "--input", f"brief={BRIEF}", "--hide-steps",
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    flow_id = project.flow_id(done)
+    path = Path(project.status(flow_id)["workspaces"]["paths"]["writer_a"])
+
+    assert project.cli("rm", flow_id, "--yes").returncode == 0
+    script = (
+        "from flow_atelier.core.atelier import Atelier\n"
+        f"print(Atelier().delete_flow({flow_id!r}))\n"
+    )
+    repeat = subprocess.run(
+        [sys.executable, "-B", "-c", script],
+        cwd=str(project.work),
+        env=project.env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    assert repeat.returncode == 0, repeat.stdout + repeat.stderr
+    assert repeat.stdout.strip() == "False"
+    assert (path / "NOTES.md").read_text(encoding="utf-8") == EDIT["claude-code"]
+
+
 def test_again_can_add_a_task_to_the_inherited_policy(project):
     first = project.cli(
         "run", "pair", "--worktree", "writer_a",
@@ -846,32 +905,64 @@ def test_an_ordinary_run_gains_no_such_block(project):
 # ------------------------------------------------ damaged recovery metadata
 
 
-@pytest.mark.parametrize("damage", ["source_checkout", "sibling_checkout", "no_paths"])
-def test_resume_refuses_a_workspace_record_it_does_not_own(project, damage):
-    """A retargeted or gutted record must stop the resume, not redirect it.
+def _damage(project, flow_id, damage, a):
+    """Rewrite one run's saved workspace record the way a corruption would.
 
-    Each case is a directory the run never created: the user's own checkout, the
-    finished sibling's, or none at all. Honouring any of them would overwrite
-    files the resume is supposed to protect, so the run has to refuse before it
-    prompts anyone.
+    :param project: the :class:`Project` holding the flow.
+    :param flow_id: the flow whose record to damage.
+    :param damage: which way to break it.
+    :param a: the finished sibling's checkout, for the retargeting cases.
+    :returns: the progress file's path.
     """
-    flow_id, a, b = _fail_writer_b(project)
     progress = project.work / ".atelier" / "flows" / flow_id / "progress.json"
     payload = json.loads(progress.read_text(encoding="utf-8"))
+    spaces = payload["workspaces"]
     if damage == "source_checkout":
-        payload["workspaces"]["paths"]["writer_b"] = str(project.work)
+        spaces["paths"]["writer_b"] = str(project.work)
     elif damage == "sibling_checkout":
-        payload["workspaces"]["paths"]["writer_b"] = str(a)
+        spaces["paths"]["writer_b"] = str(a)
+    elif damage == "no_paths":
+        del spaces["paths"]
+    elif damage == "one_path":
+        del spaces["paths"]["writer_b"]
     else:
-        del payload["workspaces"]["paths"]
+        del spaces["paths"]["writer_b"]
+        spaces["selected"] = ["writer_a"]
     progress.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return progress
+
+
+DAMAGE = [
+    "source_checkout",
+    "sibling_checkout",
+    "no_paths",
+    "one_path",
+    "path_and_selection",
+]
+
+
+@pytest.mark.parametrize("damage", DAMAGE)
+def test_resume_refuses_a_workspace_record_it_does_not_own(project, damage):
+    """A retargeted, gutted or incomplete record must stop the resume.
+
+    The first three name a directory the run never created: the user's own
+    checkout, the finished sibling's, or none at all. The last two have *lost*
+    writer_b, which is worse than naming the wrong place — an unlisted task
+    looks like one that was never isolated, so it would be run in the shared
+    source checkout. Honouring any of them overwrites files the resume exists to
+    protect, so the run has to refuse before it prompts anyone.
+    """
+    flow_id, a, b = _fail_writer_b(project)
+    progress = _damage(project, flow_id, damage, a)
     before = progress.read_bytes()
     prompts = {name: len(project.prompts(name)) for name in AGENTS}
     project.set_agent("codex", writes="RESUMED IN THE WRONG PLACE\n")
 
     done = project.cli("run", "--resume", flow_id, "--hide-steps")
     assert done.returncode == 1, done.stdout + done.stderr
-    assert "--again" in _flat(done.stdout + done.stderr)
+    # The advice has to be a command that works: --again reads this same
+    # record, so it names a fresh run of the recipe instead.
+    assert "--worktree" in _flat(done.stdout + done.stderr)
 
     # Nothing was started, nothing was rewritten, nothing was overwritten.
     assert all(len(project.prompts(name)) == n for name, n in prompts.items())

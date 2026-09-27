@@ -123,7 +123,8 @@ git -C "$ws/step_2" diff --stat "$base" || exit 1
 `status` grows a `checkout` column with the absolute path of each task's
 directory, and names the source and the commit they were cut from. A blank cell
 is a task that ran in the shared working directory. `status --json` carries the
-same thing under `workspaces` as `source`, `base` and `paths`.
+same thing under `workspaces` as `source`, `base`, `selected` (the tasks
+`--worktree` named) and `paths`.
 
 Each directory is a normal checkout: `git -C <path> diff`, `git -C <path> log`,
 your editor, your test runner. Nothing was merged and nothing will be — reading
@@ -197,13 +198,22 @@ their directories are untouched.
 `--resume` and `--worktree` are mutually exclusive, for the same reason: a new
 selection would mean abandoning the edits the run already has.
 
-A resume also checks the record before it starts anything. Every path has to be
-the checkout that run created for that task; a record pointing a task at your
-source checkout, at another task's directory, or listing no checkouts at all is
-refused by name, and nothing is prompted, rewritten or overwritten. That is a
-damaged or hand-edited record, and the only safe reading of it is to stop:
-`atelier run --again <flow_id>` starts fresh checkouts when that is what you
-want.
+A resume also checks the record before it starts anything, and so does an
+`--again` inheriting its policy. Every path has to be the checkout that run
+created for that task, and the record has to be complete: one pointing a task at
+your source checkout, at another task's directory, listing no checkouts at all,
+or having *lost* the entry for a task it isolated, is refused by name with
+nothing prompted, rewritten or overwritten. A lost entry is the dangerous one —
+a task the mapping does not mention looks exactly like a task that was never
+isolated, so continuing would run it in your own checkout. Completeness is
+checked against both the selection the run recorded and the directories actually
+sitting under `.atelier/workspaces/<flow_id>`, which is evidence an edited
+record cannot talk its way out of.
+
+A damaged record is where recovery from that run ends: `--again` reads the same
+record, so it is refused for the same reason. Run the recipe again with the
+`--worktree` selections you want — a fresh run, fresh checkouts, and the old
+run's directories left exactly where they are for you to read.
 
 ## 8. Do it again, with fresh checkouts
 
@@ -241,7 +251,9 @@ rm -rf "$(dirname "$work_dir")"                                      # the whole
 
 `atelier rm <flow_id>` deletes the run record only. It does not touch a
 checkout, and it never will: a pruned log should not take an agent's work with
-it.
+it. The checkouts live beside the records under `.atelier/workspaces/` and share
+their run's name, but they are not records — deleting the same run twice, or
+pruning after an `rm`, finds nothing the second time rather than finding them.
 
 ## What isolation is, and what it is not
 

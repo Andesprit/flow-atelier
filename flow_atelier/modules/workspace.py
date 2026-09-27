@@ -32,6 +32,14 @@ from flow_atelier.schemas.progress import Workspaces
 # approval step has no working directory to give.
 ISOLATABLE_TOOL_PREFIXES = ("harness:", "tool:bash")
 
+# What to do about a damaged record. Not `--again`: an inherited policy reads
+# this very record, so a rerun is refused for the same reason. A fresh run of
+# the recipe with the selectors typed again is the path that actually works.
+DAMAGED_RECORD_ADVICE = (
+    "start a fresh run of the recipe with the `--worktree` selections you "
+    "want (`--again` reads this same record, so it is refused too)"
+)
+
 
 class WorkspaceError(ValueError):
     """A worktree request the user has to fix, carrying its own exit code.
@@ -282,7 +290,9 @@ def create_worktrees(
                 code=1,
             )
         made[name] = str(dest.resolve())
-    return Workspaces(source=str(source.root), base=source.head, paths=made)
+    return Workspaces(
+        source=str(source.root), base=source.head, selected=names, paths=made
+    )
 
 
 def _partial(message: str, made: Mapping[str, str]) -> str:
@@ -302,6 +312,27 @@ def _partial(message: str, made: Mapping[str, str]) -> str:
     )
 
 
+def _missing(names: Iterable[str], why: str) -> WorkspaceError:
+    """Return the refusal for a record that has lost some of its checkouts.
+
+    Dropping an entry is worse than corrupting one: a task the record no longer
+    mentions looks exactly like a task that was never isolated, so it would be
+    run in the shared source directory and overwrite the user's own files.
+
+    :param names: the selected tasks whose checkout the mapping omits.
+    :param why: how the omission was detected, for the diagnostic.
+    :returns: the :class:`WorkspaceError` to raise.
+    """
+    listed = ", ".join(sorted(names))
+    return WorkspaceError(
+        f"this run's saved worktree record no longer says where {listed} "
+        f"worked ({why}); continuing would run that task in the shared source "
+        "checkout and overwrite it. Refusing to run against an incomplete "
+        f"record — {DAMAGED_RECORD_ADVICE}",
+        code=1,
+    )
+
+
 def check_record(saved: Workspaces, owned_root: Path) -> None:
     """Refuse a workspace record that is not the one this run wrote.
 
@@ -309,10 +340,16 @@ def check_record(saved: Workspaces, owned_root: Path) -> None:
     that is the whole test: any other path in the record — the source checkout,
     a sibling task's directory, another run's — was not put there by the run
     that owns it, and honouring it would point an agent at somebody else's
-    files. An empty ``paths`` is refused for the same reason: a run with no
-    isolated task records no ``Workspaces`` at all, so a record that lists none
-    is damaged, and reading it as "share one directory" is exactly the silent
-    fallback the option exists to prevent.
+    files.
+
+    The record also has to be *complete*, checked two ways because a missing
+    entry is silent where a wrong one is loud. ``selected`` is the run's own
+    statement of which tasks it isolated, so a record that omits it, or a
+    ``paths`` that covers fewer of them, is damaged; and the directories
+    actually sitting under ``owned_root`` were created by this run and by
+    nothing else, so one the mapping does not mention is damage the record
+    cannot admit to on its own. An empty ``paths`` is refused for the same
+    reason: a run with no isolated task records no ``Workspaces`` at all.
 
     A flow that never isolated anything has ``workspaces`` absent or ``None``
     and never reaches here, which is what keeps older runs readable.
@@ -327,17 +364,28 @@ def check_record(saved: Workspaces, owned_root: Path) -> None:
         raise WorkspaceError(
             "this run's saved worktree record names no source repository or "
             "base commit, so there is no way to tell what its checkouts hold; "
-            "refusing to run against it — start a new run with `atelier run "
-            "--again <flow_id>`",
+            f"refusing to run against it — {DAMAGED_RECORD_ADVICE}",
             code=1,
         )
     if not saved.paths:
         raise WorkspaceError(
             "this run recorded separate checkouts but lists none of them, so "
             "continuing would quietly put every task back in one shared "
-            "directory; refusing to run against a damaged record — start a new "
-            "run with `atelier run --again <flow_id>`",
+            "directory; refusing to run against a damaged record — "
+            f"{DAMAGED_RECORD_ADVICE}",
             code=1,
+        )
+    if not saved.selected:
+        raise WorkspaceError(
+            "this run's saved worktree record does not say which tasks it "
+            "isolated, so there is nothing to check its checkouts against and "
+            "a lost one would pass unnoticed; refusing to run against a "
+            f"damaged record — {DAMAGED_RECORD_ADVICE}",
+            code=1,
+        )
+    if dropped := set(saved.selected) - set(saved.paths):
+        raise _missing(
+            dropped, f"the run isolated {', '.join(sorted(saved.selected))}"
         )
     for name, path in saved.paths.items():
         owned = owned_root / name
@@ -347,10 +395,22 @@ def check_record(saved: Workspaces, owned_root: Path) -> None:
                 f"checkout this run created for it ({str(owned)!r}); refusing "
                 "to run an agent in a directory the run does not own — a "
                 "source checkout or another task's directory would be "
-                "overwritten. Start a new run with `atelier run --again "
-                "<flow_id>`",
+                f"overwritten. Instead, {DAMAGED_RECORD_ADVICE}",
                 code=1,
             )
+    # Evidence the record cannot forge: this directory holds one checkout per
+    # task the run isolated and nothing else, so a checkout the mapping does
+    # not name means the mapping lost it — including when `selected` was
+    # edited to match. A gone `owned_root` is not evidence either way;
+    # :func:`verify_worktrees` then says which required checkout is missing.
+    try:
+        found = {item.name for item in owned_root.iterdir() if item.is_dir()}
+    except OSError:
+        return
+    if unnamed := found - set(saved.paths):
+        raise _missing(
+            unnamed, f"their checkouts are still in {str(owned_root)!r}"
+        )
 
 
 def verify_worktrees(

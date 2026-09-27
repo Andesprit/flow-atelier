@@ -184,7 +184,12 @@ def test_the_published_guide_runs_and_separates_the_two_agents(tmp_path, guide_e
 
     # The synthesis was told where each candidate lives, without the recipe
     # naming a single path.
-    merged = [p for p in _prompts(records["gemini"]) if "WORKSPACE PROVENANCE" in p]
+    # This flow's synthesis prompt; the guide runs gemini in later flows too,
+    # and per-process logs are not in time order on Windows.
+    merged = [
+        p for p in _prompts(records["gemini"])
+        if "WORKSPACE PROVENANCE" in p and flow_id in p
+    ]
     assert merged, _prompts(records["gemini"])
     named = dict(re.findall(r"^(step_\d) worked in (.+)$", merged[0], re.MULTILINE))
     assert Path(named["step_1"]).samefile(spaces / "step_1")

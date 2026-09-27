@@ -163,7 +163,10 @@ A step names any harness `atelier list harnesses` shows, with or without the
 ```
 
 `atelier harness check codex` lists the models the agent offers, and
-`atelier harness check codex:<model>` the efforts that model offers.
+`atelier harness check codex:<model>` the efforts that model offers. To ask
+every agent of one workflow at once instead of naming them yourself, see
+[Checking the whole agent team before a
+run](checking-the-team-before-a-run.md).
 
 The name a step carries is its default, not a lock: `atelier run <name>
 --agent <task>=<harness>` runs one task on another agent without touching the

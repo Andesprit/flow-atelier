@@ -447,6 +447,31 @@ atelier run --resume <flow_id> --agent step_2=codex
 [Running one workflow with different
 agents](docs/reusing-a-workflow-with-other-agents.md) walks it end to end.
 
+### Checking the whole agent team before a run
+
+`atelier check <name>` reads files. `atelier check <name> --probe` asks the
+agents: it starts every distinct agent the workflow would use, opens a
+session with each and stops, so a logged-out or missing agent is found
+before the first task rather than four minutes into a run. No prompt is
+sent. It takes the same `--agent <task>=<harness>` mapping as `run`, so the
+team you check is the team you run:
+
+```bash
+atelier check triage --probe --recursive --timeout 60   # the whole call tree
+atelier check triage --probe --agent step_2=claude-code \
+  && atelier run triage --agent step_2=claude-code --input brief="..."
+```
+
+Each distinct `harness:<name>[:<model>[:<effort>]]` is started once and its
+verdict is attributed to every task it answers for; failures are collected
+across the team instead of stopping at the first. `--probe --json` emits the
+same report as one document for a script or a coding agent. Passing proves
+startup only — not prompt-time authentication, quota, model access or output
+quality — and nothing is remembered: `--agent` applies to that one command.
+
+[Checking the whole agent team before a
+run](docs/checking-the-team-before-a-run.md) walks it end to end.
+
 ### Reading a conduit before you run it
 
 Conduits arrive from `atelier init`, `atelier create`, a teammate's

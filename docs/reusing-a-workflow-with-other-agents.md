@@ -99,8 +99,9 @@ atelier outputs "$flow_id" --task step_2 || exit 1
 ```
 
 `status` grows an `agent` column listing the choices this run was launched
-with, and says in one line that the conduit file is unchanged. `status --json`
-carries the same thing as `task_agents`, so a script can read which agent
+with, and says in one line that the conduit file is unchanged. A task left on
+the recipe's own agent shows the tool it ran on, marked `(recipe)`. `status
+--json` carries the choices as `task_agents`, so a script can read which agent
 produced which output. A run started without `--agent` shows no such column and
 its `task_agents` is the empty object `{}`.
 

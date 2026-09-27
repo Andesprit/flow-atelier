@@ -42,7 +42,8 @@ def status_cmd(
         console.print(f"[red]unknown flow:[/red] {flow_id}")
         raise typer.Exit(code=1)
 
-    usage_totals = _flow_usage_totals(atelier.get_flow_logs(flow_id))
+    logs = atelier.get_flow_logs(flow_id)
+    usage_totals = _flow_usage_totals(logs)
 
     if json_mode:
         payload = progress.model_dump(mode="json")
@@ -76,6 +77,8 @@ def status_cmd(
     # resumed step actually ran on — has anything to say here; every other
     # run's agents are the recipe's, and a column of blanks says nothing.
     show_agent = bool(progress.task_agents)
+    # The other tasks ran on the recipe's own choice; the log says which.
+    ran_on = {entry.task: entry.tool for entry in logs}
     spaces = progress.workspaces
     columns = ["task", "status"]
     if show_agent:
@@ -89,7 +92,13 @@ def status_cmd(
     for name, tp in progress.tasks.items():
         row = [escape(name), tp.status.value]
         if show_agent:
-            row.append(escape(progress.task_agents.get(name, "")))
+            chosen = progress.task_agents.get(name)
+            if chosen:
+                row.append(escape(chosen))
+            elif name in ran_on:
+                row.append(f"{escape(ran_on[name])} [dim](recipe)[/dim]")
+            else:
+                row.append("[dim](recipe)[/dim]")
         if spaces is not None:
             row.append(escape(spaces.paths.get(name, "")))
         if show_iteration:
@@ -99,8 +108,9 @@ def status_cmd(
     if show_agent:
         console.print(
             "[dim]agent: what this run uses for that task, whether chosen with "
-            "--agent or recorded from the run that produced its result; the "
-            "conduit file is unchanged[/dim]"
+            "--agent or recorded from the run that produced its result; "
+            "(recipe) marks the conduit's own choice, and the conduit file is "
+            "unchanged[/dim]"
         )
     if spaces is not None:
         console.print(

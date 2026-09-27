@@ -406,6 +406,9 @@ def test_the_human_status_view_names_the_chosen_agent(project):
     assert shown.returncode == 0, shown.stdout + shown.stderr
     assert "agent" in shown.stdout and "harness:housebot" in shown.stdout
     assert "the conduit file is unchanged" in shown.stdout
+    # The task left on the recipe's agent is named too, not left blank.
+    [step_1] = [line for line in shown.stdout.splitlines() if "step_1" in line]
+    assert "harness:claude-code (recipe)" in step_1
 
 
 def test_two_invocations_keep_their_own_mappings(project):

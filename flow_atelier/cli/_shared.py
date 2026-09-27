@@ -65,19 +65,22 @@ def _parse_inputs(pairs: list[str]) -> dict[str, str]:
     return out
 
 
-def parse_agents_option(raw: list[str]) -> dict[str, str]:
+def parse_agents_option(raw: list[str], out: Console | None = None) -> dict[str, str]:
     """Parse ``--agent TASK=HARNESS`` values, exiting with the diagnostic.
 
-    Shared by ``run`` and ``plan`` so the two can never disagree about what a
-    selection means.
+    Shared by ``run``, ``plan`` and ``check`` so they can never disagree about
+    what a selection means.
 
     :param raw: the option values as typed.
+    :param out: where the diagnostic goes; defaults to stdout. A command whose
+        stdout is a machine-readable document passes ``err_console``, so a
+        rejected option leaves that document unwritten rather than corrupt.
     :returns: mapping of top-level task name to harness tool.
     """
     try:
         return parse_agent_bindings(raw)
     except BindingError as exc:
-        console.print(f"[red]{escape(str(exc))}[/red]")
+        (out or console).print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=exc.code) from exc
 
 

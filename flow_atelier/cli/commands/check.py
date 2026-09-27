@@ -1,28 +1,57 @@
 """`atelier check` command — validate conduits without running them."""
 from __future__ import annotations
 
+import asyncio
 import json
+import math
+import time
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import typer
 from pydantic import ValidationError
 from rich.markup import escape
 
-from flow_atelier.cli._shared import _exit_unknown_conduit, console, err_console
+from flow_atelier.cli._shared import (
+    _exit_unknown_conduit,
+    console,
+    err_console,
+    parse_agents_option,
+)
 from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import format_conduit_error
 from flow_atelier.core.atelier import Atelier
+from flow_atelier.modules.conditions import ConditionalDependency, parse_dependency
 from flow_atelier.modules.engine import (
     MAX_NESTED_CONDUIT_DEPTH,
     ConduitValidationError,
     check_unknown_inputs,
+    resolve_executor,
     validate_conduit,
 )
 from flow_atelier.schemas.conduit import Conduit, TaskDefinition, ToolType
+from flow_atelier.services.executor.harness import PROBE_TIMEOUT_SECONDS, ProbeResult
 
 # Errors the per-conduit job can legitimately produce; a programming error
 # still crashes rather than becoming a polite failed row.
 _EXPECTED = (ValidationError, OSError, UnicodeDecodeError, ConduitValidationError, ValueError)
+
+# What a passing probe does *not* prove. Printed with every probe report so
+# "ok" is never read as "this run will work".
+_STARTUP_ONLY = (
+    "startup only: the agent started and opened a session. That is not proof "
+    "of prompt-time authentication, quota, model access or output quality."
+)
+
+# What a probe may cost. `initialize` and `session/new` are the only calls
+# made — no prompt is ever sent — but an npx/uvx launcher fetches its package
+# on first use and opening a session is a real request to the provider.
+_PROBE_COST = (
+    "no prompt is sent; a launcher may still fetch its package and opening a "
+    "session can have provider-side effects"
+)
 
 
 class _NestedProblem(Exception):
@@ -57,6 +86,73 @@ def _chain(hops: list[tuple[str, str]], target: str | None = None) -> str:
     """
     text = " -> ".join(f"{conduit}.{task}" for conduit, task in hops)
     return f"{text} -> {target}" if target is not None else text
+
+
+@dataclass(frozen=True)
+class _TeamTask:
+    """One piece of agent work the selected scope would hand to a harness.
+
+    :param path: where it sits — ``<conduit>.<task>`` for a task of the root,
+        and the full call chain (``root.call -> child.task``) below it.
+    :param tool: the harness tool that would run it, after ``--agent``.
+    :param conditional: its dependencies carry an output predicate, so a run
+        may skip it. Included anyway; a check that silently dropped it would
+        miss exactly the agent a rare branch needs.
+    """
+
+    path: str
+    tool: str
+    conditional: bool
+
+
+def _is_conditional(task: TaskDefinition) -> bool:
+    """Report whether a run could skip ``task`` on a dependency's verdict.
+
+    :param task: an already-validated task.
+    :returns: true when any dependency is an output predicate.
+    """
+    return any(
+        isinstance(parse_dependency(dep), ConditionalDependency)
+        for dep in task.depends_on
+    )
+
+
+def _team_of(conduit: Conduit, hops: list[tuple[str, str]]) -> list[_TeamTask]:
+    """List the harness work ``conduit`` itself defines, in task order.
+
+    Its own tasks only: a ``tool:conduit`` call contributes the child's tasks,
+    which are collected when that child is walked.
+
+    :param conduit: an already-validated conduit.
+    :param hops: ``(conduit, calling task)`` pairs above it; empty at the root.
+    :returns: one entry per harness task, plus the supervisor when the
+        conduit's interaction policy actually consults one.
+    """
+    def path(name: str) -> str:
+        """Render one task's place in the call tree.
+
+        :param name: the task's own name.
+        :returns: the qualified path.
+        """
+        here = f"{conduit.name}.{name}"
+        return _chain(hops, here) if hops else here
+
+    out = [
+        _TeamTask(path(task.name), task.tool, _is_conditional(task))
+        for task in conduit.tasks
+        if task.tool.startswith("harness:")
+    ]
+    # The same supervisor condition `Atelier.tool_readiness` gates on, so the
+    # probe never checks fewer agents than the static check already did.
+    policy = conduit.interaction
+    if (
+        policy
+        and policy.supervisor is not None
+        and {policy.questions, policy.permissions} & {"supervisor", "hybrid"}
+        and policy.supervisor.tool.startswith("harness:")
+    ):
+        out.append(_TeamTask(path("supervisor"), policy.supervisor.tool, False))
+    return out
 
 
 def _load_child(
@@ -140,6 +236,7 @@ def _walk_calls(
     hops: list[tuple[str, str]],
     cache: dict[str, tuple[Conduit, str]],
     seen: set[tuple[str, int]],
+    team: list[_TeamTask] | None = None,
 ) -> None:
     """Follow ``conduit``'s ``tool:conduit`` calls depth-first, in order.
 
@@ -160,6 +257,9 @@ def _walk_calls(
     :param hops: ``(conduit, calling task)`` pairs above ``conduit``.
     :param cache: invocation-local name -> ``(conduit, file path)`` cache.
     :param seen: ``(name, level)`` pairs already walked for this root.
+    :param team: when given, every walked child's harness work is appended to
+        it, under the call chain that reached it. A child walked once for a
+        given depth contributes once, however many callers share it.
     :raises _NestedProblem: the first failure reachable from ``conduit``.
     """
     for task in conduit.tasks:
@@ -186,8 +286,10 @@ def _walk_calls(
         if (target, level + 1) in seen:
             continue
         seen.add((target, level + 1))
+        if team is not None:
+            team.extend(_team_of(child, here))
         _walk_calls(
-            atelier, child, level + 1, ancestors | {target}, here, cache, seen
+            atelier, child, level + 1, ancestors | {target}, here, cache, seen, team
         )
 
 
@@ -197,6 +299,8 @@ def _check_one(
     source: str,
     recursive: bool = False,
     cache: dict[str, tuple[Conduit, str]] | None = None,
+    agents: Mapping[str, str] | None = None,
+    team: list[_TeamTask] | None = None,
 ) -> dict[str, Any]:
     """Validate one conduit fully without executing it.
 
@@ -216,6 +320,12 @@ def _check_one(
     :param source: ``project`` or ``global``, as reported by the store.
     :param recursive: also follow this conduit's ``tool:conduit`` calls.
     :param cache: invocation-local child cache shared across a batch.
+    :param agents: ``--agent`` selections for this root, applied in memory
+        before readiness is judged — so replacing an agent you cannot run is
+        enough to pass, and an unusable *replacement* is what fails. Top-level
+        only: a child's same-named task keeps its own recipe's agent.
+    :param team: when given, the harness work of the selected scope is
+        appended to it, ready to probe.
     :returns: one result row, the same shape ``--json`` emits.
     """
     path: str | None = None
@@ -225,14 +335,19 @@ def _check_one(
         path = str((atelier.store.conduit_dir(name) / "conduit.yaml").absolute())
         conduit = atelier.store.read_conduit(name)
         validate_conduit(conduit)
-        problems = atelier.tool_readiness(conduit)
+        # A selection that no longer fits the recipe, or names an agent this
+        # machine has nothing registered for, is a failed row like any other.
+        effective = atelier.bind_agents(conduit, agents) if agents else conduit
+        problems = atelier.tool_readiness(effective)
         if problems:
             error = "; ".join(problems)
         else:
+            if team is not None:
+                team.extend(_team_of(effective, []))
             if recursive:
                 _walk_calls(
-                    atelier, conduit, 0, frozenset({name}), [],
-                    {} if cache is None else cache, set(),
+                    atelier, effective, 0, frozenset({name}), [],
+                    {} if cache is None else cache, set(), team,
                 )
             # Child inputs are the parent's business at runtime, not extra
             # `--input` keys: the root's own declarations are what a caller
@@ -254,6 +369,168 @@ def _check_one(
     }
 
 
+def _probe_plan(team: list[_TeamTask]) -> dict[str, list[_TeamTask]]:
+    """Group the team's work by the exact configuration that would run it.
+
+    The key is the whole tool string, so ``codex:gpt-5.1:high`` and
+    ``codex:gpt-5.1:low`` are two checks and not one: a model or an effort the
+    agent refuses is a per-selection failure, and merging them by base harness
+    would report a refusal that never happened, or miss one that would.
+
+    :param team: the harness work of the selected scope, in encounter order.
+    :returns: tool string -> the tasks it would run, first appearance first.
+    """
+    plan: dict[str, list[_TeamTask]] = {}
+    for item in team:
+        plan.setdefault(item.tool, []).append(item)
+    return plan
+
+
+async def _probe_each(
+    atelier: Atelier,
+    plan: dict[str, list[_TeamTask]],
+    cwd: str,
+    timeout: float,
+    on_done: Callable[[str, ProbeResult, float], None],
+) -> dict[str, tuple[ProbeResult, float]]:
+    """Start each configuration once, in order, and report how far it got.
+
+    One agent at a time. A check is bounded by ``timeout`` per agent and the
+    executor's own lifecycle reaps the process on every exit — success,
+    refusal, timeout or a Ctrl-C that cancels this coroutine. Failures are
+    collected rather than raised: a team with two logged-out agents should
+    need one check, not two.
+
+    :param atelier: configured :class:`Atelier` holding the executor table.
+    :param plan: the grouping from :func:`_probe_plan`.
+    :param cwd: working directory to open each session in.
+    :param timeout: seconds allowed per agent.
+    :param on_done: called with ``(tool, result, seconds)`` as each finishes.
+    :returns: tool -> ``(result, seconds it took)``.
+    """
+    out: dict[str, tuple[ProbeResult, float]] = {}
+    for tool in plan:
+        executor = resolve_executor(atelier.executors, tool)
+        started = time.monotonic()
+        result = await executor.probe(cwd=cwd, timeout=timeout)  # type: ignore[union-attr]
+        elapsed = time.monotonic() - started
+        out[tool] = (result, elapsed)
+        on_done(tool, result, elapsed)
+    return out
+
+
+def _probe_hint(tool: str, result: ProbeResult) -> list[str]:
+    """Return the instructions for one failed configuration.
+
+    :param tool: the harness tool that was checked.
+    :param result: what the check observed.
+    :returns: the guidance lines, plus the one only the tool string explains.
+    """
+    lines = result.guidance()
+    if result.stage == "selection":
+        base = tool.split(":")[1] if tool.count(":") >= 1 else tool
+        lines = [
+            *lines,
+            f"this agent refused the model or effort in {tool!r} — run "
+            f"'atelier harness check {base}' to list what it offers",
+        ]
+    return lines
+
+
+def _render_team(
+    plan: dict[str, list[_TeamTask]], scope: str, calls_conduits: bool
+) -> None:
+    """Print what the probe is about to check, before it starts.
+
+    :param plan: the grouping from :func:`_probe_plan`.
+    :param scope: ``recursive`` or ``root``.
+    :param calls_conduits: the root calls at least one nested workflow.
+    """
+    tasks = sum(len(v) for v in plan.values())
+    console.print(
+        f"    [dim]team ({escape(scope)} scope): {tasks} agent "
+        f"task(s) on {len(plan)} configuration(s)[/dim]"
+    )
+    if scope == "root" and calls_conduits:
+        console.print(
+            "    [yellow]root only[/yellow] — this workflow calls other "
+            "workflows and their agents were not checked; add --recursive"
+        )
+    console.print(f"    [dim]{escape(_PROBE_COST)}[/dim]")
+
+
+def _render_agent(tool: str, result: ProbeResult, seconds: float, tasks: list[_TeamTask]) -> None:
+    """Print one configuration's outcome and everything it is answerable for.
+
+    :param tool: the harness tool that was checked.
+    :param result: what the check observed.
+    :param seconds: how long this one took.
+    :param tasks: every task the result applies to.
+    """
+    verdict = (
+        f"[green]ok[/green] — {escape(result.detail)}"
+        if result.ok
+        else f"[red]not usable[/red] — {escape(result.detail)}"
+    )
+    console.print(f"    {escape(tool)} [dim]({seconds:.1f}s)[/dim] — {verdict}")
+    for task in tasks:
+        suffix = " [dim](conditional; a run may skip it)[/dim]" if task.conditional else ""
+        console.print(f"      [dim]·[/dim] {escape(task.path)}{suffix}")
+    for line in _probe_hint(tool, result):
+        console.print(f"      [yellow]{escape(line)}[/yellow]")
+    for line in result.stderr.splitlines()[-5:]:
+        console.print(f"      [dim]{escape(line)}[/dim]")
+
+
+def _probe_row(
+    plan: dict[str, list[_TeamTask]],
+    results: dict[str, tuple[ProbeResult, float]],
+    *,
+    scope: str,
+    cwd: str,
+    timeout: float,
+    elapsed: float,
+) -> dict[str, Any]:
+    """Build the machine-readable half of a probe report.
+
+    :param plan: the grouping from :func:`_probe_plan`.
+    :param results: what each configuration answered.
+    :param scope: ``recursive`` or ``root``.
+    :param cwd: the working directory each session was opened in.
+    :param timeout: the per-agent budget that was allowed.
+    :param elapsed: seconds the whole probe took locally.
+    :returns: the ``probe`` object attached to the conduit's result row.
+    """
+    agents = []
+    for tool, tasks in plan.items():
+        result, seconds = results[tool]
+        agents.append(
+            {
+                "tool": tool,
+                "ok": result.ok,
+                "stage": result.stage,
+                "detail": result.detail,
+                "agent": result.agent,
+                "elapsed_seconds": round(seconds, 3),
+                "guidance": _probe_hint(tool, result),
+                "tasks": [
+                    {"path": t.path, "conditional": t.conditional} for t in tasks
+                ],
+            }
+        )
+    return {
+        "scope": scope,
+        "ran": True,
+        "working_dir": cwd,
+        "timeout_seconds": timeout,
+        "elapsed_seconds": round(elapsed, 3),
+        "ok": all(a["ok"] for a in agents),
+        "cost": _PROBE_COST,
+        "limitation": _STARTUP_ONLY,
+        "agents": agents,
+    }
+
+
 @app.command("check")
 def check_cmd(
     conduit_name: str = typer.Argument(
@@ -266,6 +543,32 @@ def check_cmd(
         False,
         "--recursive",
         help="Also check every conduit reachable through tool:conduit calls.",
+    ),
+    probe: bool = typer.Option(
+        False,
+        "--probe",
+        help=(
+            "Start each agent the workflow would use and open a session, to "
+            "catch a missing or logged-out agent before a run. Needs a "
+            "conduit name. Sends no prompt."
+        ),
+    ),
+    agents_raw: list[str] = typer.Option(
+        [],
+        "--agent",
+        help=(
+            "task=harness: check that task against that agent instead of the "
+            "one the recipe names (repeatable). The same mapping you would "
+            "pass to `atelier run`; nothing is saved."
+        ),
+    ),
+    timeout: float = typer.Option(
+        None,
+        "--timeout",
+        help=(
+            f"Seconds to allow each agent to start and open a session "
+            f"(default {PROBE_TIMEOUT_SECONDS:.0f}). Requires --probe."
+        ),
     ),
 ) -> None:
     """Validate hand-authored conduits without running any task.
@@ -289,6 +592,25 @@ def check_cmd(
     fails the check, and passing proves nothing about input *values* or
     runtime success.
 
+    `--probe` goes one step further and asks the agents themselves. It needs a
+    conduit name — without one it would start every agent you have installed —
+    and it starts each distinct `harness:<name>[:<model>[:<effort>]]` the
+    selected scope would use exactly once, completes the ACP handshake, opens
+    a session and stops. No prompt is sent. Every affected task is named under
+    the configuration that answers for it, failures are collected across the
+    whole team rather than stopping at the first, and each agent is bounded by
+    `--timeout`. A launcher may still fetch its own package, and opening a
+    session is a real request to the provider. What passing proves is startup:
+    not prompt-time authentication, quota, model access or output quality.
+
+    `--agent <task>=<harness>` checks a top-level task against another agent —
+    the same mapping `atelier run` takes, so what you check is what you then
+    run. It is applied in memory: the conduit file and the saved runs are
+    untouched, and nothing is remembered for next time. Top-level only, so a
+    same-named task inside a called workflow keeps its own recipe's agent. On
+    its own it stays static; with `--probe` the replacements are what get
+    started.
+
     :param conduit_name: a single conduit to check; when omitted, all
         project and global conduits are checked.
     :param json_mode: when true, emit machine-readable JSON instead of the
@@ -296,8 +618,28 @@ def check_cmd(
     :param recursive: when true, also validate conduits called with
         ``tool:conduit``, detecting missing children, unusable or missing
         input bindings, call cycles and excessive nesting.
+    :param probe: when true, start the selected scope's agents and open a
+        session with each, after the static check passes.
+    :param agents_raw: list of ``task=harness`` strings from ``--agent``.
+    :param timeout: seconds allowed per agent; requires ``--probe``.
     """
     out = err_console if json_mode else console
+    agents = parse_agents_option(agents_raw, out)
+    if timeout is not None and not probe:
+        out.print("[red]--timeout applies to --probe; pass both or neither[/red]")
+        raise typer.Exit(code=2)
+    if timeout is None:
+        timeout = PROBE_TIMEOUT_SECONDS
+    elif not math.isfinite(timeout) or timeout <= 0:
+        out.print(f"[red]--timeout must be a positive number of seconds, not {timeout}[/red]")
+        raise typer.Exit(code=2)
+    # An omitted name means "every conduit installed", which is a fine default
+    # for reading files and a terrible one for starting processes.
+    if conduit_name is None and (probe or agents):
+        flag = "--probe" if probe else "--agent"
+        out.print(f"[red]{flag} needs a conduit name — it acts on one workflow[/red]")
+        raise typer.Exit(code=2)
+
     try:
         atelier = Atelier()
         entries = atelier.store.list_conduits_with_source()
@@ -316,24 +658,90 @@ def check_cmd(
         targets = entries
 
     cache: dict[str, tuple[Conduit, str]] = {}
+    team: list[_TeamTask] = []
     rows = [
-        _check_one(atelier, name, source, recursive, cache) for name, source in targets
+        _check_one(
+            atelier, name, source, recursive, cache, agents, team if probe else None
+        )
+        for name, source in targets
     ]
+
+    def _render_row(row: dict[str, Any]) -> None:
+        """Print one conduit's verdict the way the terminal report does.
+
+        :param row: the result row to render.
+        """
+        label = rf"{escape(row['name'])} \[{escape(row['source'])}]"
+        if not row["ok"]:
+            console.print(f"{label} — [red]FAIL: {escape(row['error'])}[/red]")
+            return
+        console.print(f"{label} — [green]OK[/green]")
+        if row["required_inputs"]:
+            keys = ", ".join(escape(k) for k in row["required_inputs"])
+            console.print(f"    [dim]requires --input: {keys}[/dim]")
+
+    # Nothing is started until the definitions hold: probing a workflow that
+    # cannot run would report on agents the run would never reach, and a
+    # dynamic `tool:conduit` target has already failed the recursive check
+    # rather than been guessed at.
+    probing = probe and all(row["ok"] for row in rows)
+    if not json_mode:
+        for row in rows:
+            _render_row(row)
+        if not rows:
+            console.print("[yellow]no conduits found[/yellow]")
+
+    scope = "recursive" if recursive else "root"
+    if probe and not probing:
+        # Say it rather than leave the key off: a caller that asked for a
+        # probe has to be able to tell "every agent answered" from "no agent
+        # was ever started" without inferring it from a missing field.
+        rows[0]["probe"] = {
+            "scope": scope,
+            "ran": False,
+            "ok": False,
+            "reason": "the static check failed, so no agent was started",
+            "agents": [],
+        }
+        if not json_mode:
+            console.print("    [yellow]no agent was started[/yellow] — fix the above first")
+    elif probing:
+        plan = _probe_plan(team)
+        cwd = str(Path.cwd())
+        if not json_mode:
+            calls = any(
+                t.tool == ToolType.conduit
+                for t in atelier.store.read_conduit(rows[0]["name"]).tasks
+            )
+            _render_team(plan, scope, calls)
+        started = time.monotonic()
+        results = asyncio.run(
+            _probe_each(
+                atelier,
+                plan,
+                cwd,
+                timeout,
+                (lambda tool, result, secs: None)
+                if json_mode
+                else (
+                    lambda tool, result, secs: _render_agent(
+                        tool, result, secs, plan[tool]
+                    )
+                ),
+            )
+        )
+        rows[0]["probe"] = _probe_row(
+            plan, results, scope=scope, cwd=cwd, timeout=timeout,
+            elapsed=time.monotonic() - started,
+        )
+        if not json_mode:
+            console.print(f"    [dim]{escape(_STARTUP_ONLY)}[/dim]")
 
     if json_mode:
         typer.echo(json.dumps(rows, indent=2))
-    elif not rows:
-        console.print("[yellow]no conduits found[/yellow]")
-    else:
-        for row in rows:
-            label = rf"{escape(row['name'])} \[{escape(row['source'])}]"
-            if row["ok"]:
-                console.print(f"{label} — [green]OK[/green]")
-                if row["required_inputs"]:
-                    keys = ", ".join(escape(k) for k in row["required_inputs"])
-                    console.print(f"    [dim]requires --input: {keys}[/dim]")
-            else:
-                console.print(f"{label} — [red]FAIL: {escape(row['error'])}[/red]")
 
-    if any(not row["ok"] for row in rows):
+    failed = any(not row["ok"] for row in rows) or (
+        probing and not rows[0]["probe"]["ok"]
+    )
+    if failed:
         raise typer.Exit(code=1)

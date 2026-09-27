@@ -41,9 +41,11 @@ from flow_atelier.modules.liveness import is_crashed
 from flow_atelier.modules.templating import (
     SkipSignal,
     TemplateError,
+    extract_task_refs,
     extract_template_refs,
     resolve,
 )
+from flow_atelier.modules.workspace import workspace_note
 from flow_atelier.schemas.conduit import (
     CONDUIT_NAME_RE,
     Conduit,
@@ -774,6 +776,11 @@ class Engine:
                     # shell body is not prose and must not gain lines.
                     if t.tool.startswith("harness:"):
                         text += provenance_note(text, effective_tools)
+                        # And where the results it quotes were actually made,
+                        # when the workers had checkouts of their own.
+                        text += workspace_note(
+                            extract_task_refs(t.task), workspaces
+                        )
                     return text
 
                 try:

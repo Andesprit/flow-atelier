@@ -69,6 +69,36 @@ tasks:
     depends_on: [writer_a, writer_b]
 """
 
+PANEL = """\
+name: panel
+description: two writers and a synthesis that never mentions a directory
+max_concurrency: 2
+tasks:
+  - name: writer_a
+    description: first candidate
+    task: "Candidate A."
+    tool: harness:claude-code
+    depends_on: []
+  - name: writer_b
+    description: second candidate
+    task: "Candidate B."
+    tool: harness:codex
+    depends_on: []
+  - name: synthesis
+    description: merge
+    task: |
+      Merge both candidates.
+
+      --- BEGIN RESULT FROM writer_a ---
+      {{writer_a.output}}
+      --- END RESULT FROM writer_a ---
+      --- BEGIN RESULT FROM writer_b ---
+      {{writer_b.output}}
+      --- END RESULT FROM writer_b ---
+    tool: harness:gemini
+    depends_on: [writer_a, writer_b]
+"""
+
 SHELL = """\
 name: shell
 description: a shell worker beside an agent worker
@@ -780,3 +810,33 @@ def test_stopping_a_run_leaves_every_checkout_in_place(project):
         assert (Path(path) / "NOTES.md").exists(), name
         assert git("rev-parse", "HEAD", cwd=path) == project.base
     project.source_untouched()
+
+
+# --------------------------------------------------------- downstream context
+
+
+def test_a_synthesis_is_told_where_each_candidate_lives(project):
+    """No template reference in the recipe, and it still knows the paths."""
+    project.install("panel", PANEL)
+    done = project.cli(
+        "run", "panel", "--worktree", "writer_a", "--worktree", "writer_b",
+        "--hide-steps",
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    paths = project.status(project.flow_id(done))["workspaces"]["paths"]
+
+    [merged] = project.prompts("gemini")
+    assert "BEGIN WORKSPACE PROVENANCE (authoritative)" in merged
+    assert f"writer_a worked in {paths['writer_a']}" in merged
+    assert f"writer_b worked in {paths['writer_b']}" in merged
+    assert f"at commit {project.base}" in merged
+    # The author's own text is untouched, not rewritten.
+    assert "--- BEGIN RESULT FROM writer_a ---" in merged
+
+
+def test_an_ordinary_run_gains_no_such_block(project):
+    project.install("panel", PANEL)
+    done = project.cli("run", "panel", "--hide-steps")
+    assert done.returncode == 0, done.stdout + done.stderr
+    [merged] = project.prompts("gemini")
+    assert "WORKSPACE PROVENANCE" not in merged

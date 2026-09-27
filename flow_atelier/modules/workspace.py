@@ -356,6 +356,41 @@ def verify_worktrees(saved: Workspaces, tasks: Iterable[str]) -> None:
             )
 
 
+def workspace_note(refs: Iterable[str], saved: Workspaces | None) -> str:
+    """Return the block telling an agent where the results it quotes were made.
+
+    A downstream step is handed the *text* an upstream worker produced, which
+    says nothing about the checkout the work actually landed in. Without this a
+    synthesis cannot open either candidate, and the paths would have to be
+    pasted into every recipe by hand.
+
+    Appended rather than substituted, for the same reason the agent-provenance
+    block is: the user's prompt text is theirs. It appears only when a quoted
+    task had a checkout of its own, so an ordinary shared-directory run reads
+    exactly as it did.
+
+    :param refs: the task names whose output this prompt quotes.
+    :param saved: the run's recorded checkouts, or ``None``.
+    :returns: the block to append, or ``""`` when there is nothing to say.
+    """
+    if saved is None:
+        return ""
+    named = sorted(set(refs) & set(saved.paths))
+    if not named:
+        return ""
+    lines = "\n".join(
+        f"{task} worked in {saved.paths[task]}" for task in named
+    )
+    return (
+        "\n--- BEGIN WORKSPACE PROVENANCE (authoritative) ---\n"
+        f"{lines}\n"
+        f"Each is its own Git checkout of {saved.source} at commit "
+        f"{saved.base}. Nothing has been merged: open a directory to read what "
+        "that worker actually changed.\n"
+        "--- END WORKSPACE PROVENANCE (authoritative) ---\n"
+    )
+
+
 def directory_size(path: Path) -> int:
     """Return the bytes used by the files under ``path``.
 

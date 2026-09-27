@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from flow_atelier.services.store.filesystem import FilesystemStore
-from tests._shell import run_script, write_shim
+from tests._shell import run_expression, run_script, write_shim
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GUIDE = _REPO_ROOT / "docs" / "checking-the-team-before-a-run.md"
@@ -134,7 +134,13 @@ class Guide:
         # to — a marker written after the last block never would.
         for line in done.stdout.splitlines():
             if line.startswith("working in: "):
-                self.workspace = Path(line.removeprefix("working in: ").strip())
+                shown = line.removeprefix("working in: ").strip()
+                # Git Bash prints /tmp/...; Python on Windows needs the drive path.
+                if os.name == "nt":
+                    shown = run_expression(
+                        f'cygpath -w "{shown}"', self.tmp_path, self.env, 30
+                    ).stdout.strip()
+                self.workspace = Path(shown)
         return done
 
     def store(self) -> FilesystemStore:

@@ -212,8 +212,11 @@ def test_diagnose_then_resume_keeps_the_completed_agent_work(fixture):
     assert [f["task"] for f in report["failures"]] == ["worker_b"]
     assert report["failures"][0]["exit_code"] == 4
     assert "fixed.txt is missing" in report["failures"][0]["excerpt"]["text"]
-    assert [t["task"] for t in report["not_run"]] == ["synthesis"]
-    assert report["not_run"][0]["status"] == "cancelled"
+    assert report["not_run"] == []
+    assert [t["task"] for t in report["cancelled"]] == ["synthesis"]
+    assert report["cancelled"][0]["status"] == "cancelled"
+    # It never started, and nothing saved proves that, so the report says so.
+    assert report["cancelled"][0]["execution"] == "unknown"
     assert report["observed"] == {
         "state": "failed",
         "certainty": "proven",
@@ -290,5 +293,121 @@ def test_a_logged_out_agent_is_reported_as_a_session_failure(fixture):
     rendered = fixture.sh(f"atelier diagnose {flow_id}\n", "render.sh")
     assert rendered.returncode == 0, rendered.stdout + rendered.stderr
     flat = " ".join(rendered.stdout.split())
-    assert "the agent session failed before the agent produced any task output" in flat
+    assert "the agent refused to open a session" in flat
     assert "logged in" in flat
+
+
+PARALLEL_YAML = """
+name: parallel
+description: one worker is cut off while the other fails
+tasks:
+  - name: editing
+    description: change a file, then keep working
+    tool: tool:bash
+    task: |
+      echo changed > touched.txt
+      echo work-started
+      sleep 30
+  - name: failing
+    description: fail only once the sibling has edited
+    tool: tool:bash
+    task: |
+      while [ ! -f touched.txt ]; do sleep 0.05; done
+      sleep 0.2
+      echo deliberate-failure >&2
+      exit 7
+"""
+
+SLOW_YAML = """
+name: slow
+description: the agent opens a session, then takes too long to answer
+tasks:
+  - name: worker
+    description: served its prompt, out of time before the reply
+    tool: harness:codex
+    timeout: 1
+    task: "say something"
+"""
+
+
+def _install(fixture, name: str, body: str) -> None:
+    """Add one more conduit to the fixture workspace.
+
+    :param fixture: the prepared fixture.
+    :param name: the conduit name, also its directory.
+    :param body: the conduit YAML.
+    """
+    path = fixture.workspace / ".atelier" / "conduits" / name
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "conduit.yaml").write_text(body, newline="\n")
+
+
+def test_a_cancelled_task_that_had_already_run_is_not_called_unstarted(fixture):
+    """A real mid-flight cancellation kept its side effect, so the report says so.
+
+    Two parallel shell tasks: one writes a file and keeps going, the other waits
+    for that file and then fails. The first is cancelled while it is executing —
+    ``touched.txt`` is on disk to prove it. Reporting that as work that never
+    got to run would tell the user their tree is clean when it is not.
+    """
+    _install(fixture, "parallel", PARALLEL_YAML)
+    first = fixture.sh("atelier run parallel --hide-steps\n", "run.sh")
+    assert first.returncode != 0, first.stdout
+    flow_id = _flow_id(first.stdout)
+    assert (fixture.workspace / "touched.txt").read_text().strip() == "changed"
+
+    report = fixture.diagnose(flow_id)
+    assert [f["task"] for f in report["failures"]] == ["failing"]
+    # Not under not_run, and not described as never having run.
+    assert report["not_run"] == []
+    cut = report["cancelled"]
+    assert [t["task"] for t in cut] == ["editing"]
+    assert cut[0]["execution"] == "began"
+    assert cut[0]["evidence"] in ("log", "steps")
+
+    rendered = fixture.sh(f"atelier diagnose {flow_id}\n", "render.sh")
+    assert rendered.returncode == 0, rendered.stdout + rendered.stderr
+    flat = " ".join(rendered.stdout.split())
+    assert "never got to run" not in flat
+    assert "it was executing when the run failed" in flat
+    assert "stays changed" in flat
+
+
+def test_a_prompt_timeout_is_not_called_a_session_failure(fixture):
+    """The session opened and a prompt was served; only the reply ran out of time.
+
+    The distinction is the whole point of the failure kinds: advising a login
+    here would send the user to fix an agent that is installed and logged in.
+    """
+    _install(fixture, "slow", SLOW_YAML)
+    fixture.env["ATELIER_CODEX_LAUNCH_CMD"] = json.dumps(
+        [
+            sys.executable,
+            str(_FAKE_AGENT),
+            "--script",
+            json.dumps(
+                {
+                    "record_path": str(fixture.records["codex"]),
+                    "turns": [{"delay_before": 30, "chunks": ["eventually"]}],
+                }
+            ),
+        ]
+    )
+    first = fixture.sh("atelier run slow --hide-steps\n", "run.sh")
+    assert first.returncode != 0, first.stdout
+    flow_id = _flow_id(first.stdout)
+    # The agent's own log is the proof the session opened before the clock ran out.
+    assert len(fixture.prompts("codex")) == 1
+
+    report = fixture.diagnose(flow_id)
+    failure = report["failures"][0]
+    assert failure["task"] == "worker"
+    assert failure["exit_code"] == 124
+    assert failure["kind"] == "timeout"
+
+    rendered = fixture.sh(f"atelier diagnose {flow_id}\n", "render.sh")
+    assert rendered.returncode == 0, rendered.stdout + rendered.stderr
+    flat = " ".join(rendered.stdout.split())
+    assert "ran out of its own time limit" in flat
+    assert "refused to open a session" not in flat
+    assert "logged in" not in flat

@@ -39,6 +39,39 @@ _EVIDENCE_TEXT = {
     "none": "status only — nothing else was saved for it",
 }
 
+# What placing a failure means for the reader, and only where the run's own
+# records place it. "unclear_stage" says so instead of naming a stage.
+_KIND_TEXT = {
+    "agent_session": (
+        "the agent refused to open a session — its own words are in the tail "
+        "below. Check it is installed, logged in and allowed the model; no work "
+        "was asked of it"
+    ),
+    "timeout": (
+        "this task ran out of its own time limit and was cut off part-way, so "
+        "anything it had already changed on disk stays changed"
+    ),
+    "unclear_stage": (
+        "the agent saved no output and no live step, so what was saved does not "
+        "place this failure: whether the session ever opened, or the work began "
+        "and was cut off, cannot be settled from here"
+    ),
+}
+
+# Whether a cut-off task executed. Only its own saved records can say; where
+# they cannot, the report says that rather than assuming it never started.
+_EXECUTION_TEXT = {
+    "began": (
+        "it was executing when the run failed — anything it already changed on "
+        "disk stays changed"
+    ),
+    "unknown": (
+        "nothing saved says whether it had started, so treat any change it "
+        "could have made as unknown"
+    ),
+    "not_started": "the run never reached it",
+}
+
 
 @app.command("diagnose")
 def diagnose_cmd(
@@ -127,12 +160,8 @@ def _render(report: DiagnoseReport) -> None:
                 head += f"  exit={task.exit_code}"
             console.print(head)
             console.print(f"  agent: {_agent_text(task)}")
-            if task.kind == "agent_session":
-                console.print(
-                    "  [yellow]the agent session failed before the agent produced "
-                    "any task output — check that it is installed, logged in and "
-                    "allowed the model[/yellow]"
-                )
+            if task.kind in _KIND_TEXT:
+                console.print(f"  [yellow]{_KIND_TEXT[task.kind]}[/yellow]")
             if task.reason:
                 console.print(f"  reason: {escape(task.reason)}")
             console.print(f"  evidence: {_EVIDENCE_TEXT[task.evidence]}")
@@ -160,15 +189,31 @@ def _render(report: DiagnoseReport) -> None:
         console.print("\n[bold green]kept — completed and saved[/bold green]")
         table = Table("task", "agent", "saved result")
         for task in report.kept:
-            table.add_row(
-                escape(task.task),
-                _agent_text(task),
-                f"{task.output_chars} chars" if task.output_saved else "[dim]none[/dim]",
-            )
+            if task.output_saved is None:
+                result = "[yellow]unknown (unreadable)[/yellow]"
+            elif task.output_saved:
+                result = f"{task.output_chars} chars"
+            else:
+                result = "[dim]none[/dim]"
+            table.add_row(escape(task.task), _agent_text(task), result)
         console.print(table)
         console.print(
             "[dim]a resume does not run a completed task again; it replays this "
             "saved result[/dim]"
+        )
+
+    if report.cancelled:
+        console.print("\n[bold]cut off when the run failed[/bold]")
+        for task in report.cancelled:
+            console.print(f"  {escape(task.task)} [dim](cancelled)[/dim]")
+            console.print(f"    {_EXECUTION_TEXT[task.execution or 'unknown']}")
+            if task.reason:
+                console.print(f"    reason: {escape(task.reason)}")
+            if task.step_records:
+                console.print(f"    live steps recorded: {task.step_records}")
+        console.print(
+            "[dim]a cancelled task is not the failure — it was stopped because "
+            "another task failed[/dim]"
         )
 
     if report.not_run:
@@ -177,8 +222,8 @@ def _render(report: DiagnoseReport) -> None:
             why = f" — {escape(task.reason)}" if task.reason else ""
             console.print(f"  {escape(task.task)} [dim]({task.status})[/dim]{why}")
         console.print(
-            "[dim]a cancelled or pending task is not a failure: it never got to "
-            "run[/dim]"
+            "[dim]a skipped or pending task is not a failure: the run never "
+            "reached it[/dim]"
         )
 
     if report.children:
@@ -213,6 +258,8 @@ def _render(report: DiagnoseReport) -> None:
     for step in report.next_steps:
         console.print(f"  {escape(step.what)}")
         if step.command:
-            console.print(f"    [cyan]{escape(step.command)}[/cyan]")
+            # Unwrapped, like the error hint: a command split across two lines
+            # cannot be copied, and every one of these carries a full flow id.
+            console.print(f"    [cyan]{escape(step.command)}[/cyan]", soft_wrap=True)
         if step.side_effects:
             console.print(f"    [dim]{escape(step.side_effects)}[/dim]")

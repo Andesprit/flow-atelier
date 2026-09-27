@@ -504,8 +504,9 @@ atelier diagnose <flow_id> --json  # the same report as one object, for a script
 ```
 
 It names the task that actually failed, with a bounded tail of its own output,
-and lists a cancelled downstream task under *did not run* rather than as a
-second failure. It shows the work that completed, the agent that produced it —
+and lists a cancelled downstream task apart from it rather than as a second
+failure — while never calling that cancellation work that never ran, because a
+task can be cancelled mid-flight with its changes already on disk. It shows the work that completed, the agent that produced it —
 attributed from the log entry that proves what ran, from the run's saved choice,
 or called `unknown`, never guessed from the current recipe — and whether its
 result is still saved. Every suggested command carries the run's full id and is

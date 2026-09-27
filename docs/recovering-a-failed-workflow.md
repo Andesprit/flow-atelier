@@ -84,9 +84,12 @@ Read it top to bottom. It tells you four different things, and keeps them
 apart:
 
 - **What failed.** `verify`, exit 4, with the tail of its own output. The
-  cancelled `conclude` is listed under *did not run* — a cancellation is not a
-  second failure, and reporting it as one sends you hunting for a bug that
-  isn't there.
+  cancelled `conclude` is listed apart, under *cut off when the run failed* — a
+  cancellation is not a second failure, and reporting it as one sends you
+  hunting for a bug that isn't there. Nor is it reported as work that never
+  happened: a task can be cancelled while it is running, so the report says
+  whether its own saved records show it executing, and says *unknown* when they
+  cannot settle it rather than promising nothing was touched.
 - **What is kept.** `analyse`, the agent that actually produced it, and the
   size of its saved result. A resume replays that result; it does not ask the
   agent again.

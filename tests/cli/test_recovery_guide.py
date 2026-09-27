@@ -140,7 +140,8 @@ def test_the_guide_runs_end_to_end(guide):
     flat = " ".join(done.stdout.split())
     assert "what failed" in flat
     assert "approved.txt is missing" in flat
-    assert "did not run" in flat
+    assert "cut off when the run failed" in flat
+    assert "a cancelled task is not the failure" in flat
 
     store = guide.store()
     flows = store.list_flows("triage")

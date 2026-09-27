@@ -17,6 +17,7 @@ import shlex
 from datetime import datetime
 from typing import Any
 
+import yaml
 from pydantic import BaseModel, Field, ValidationError
 
 from flow_atelier.modules.liveness import is_crashed, is_runner_alive
@@ -30,6 +31,31 @@ from flow_atelier.schemas.progress import FlowStatus, Progress, TaskStatus
 # this is a reading bound rather than a retention decision.
 EXCERPT_MAX_CHARS = 700
 EXCERPT_MAX_LINES = 12
+
+# What an unreadable saved file raises. Only ``progress.json`` is fatal here:
+# every other file is one source of evidence among several, so a corrupt one
+# costs its own contribution and nothing else.
+UNREADABLE = (yaml.YAMLError, ValidationError, ValueError, OSError)
+
+# The harness and the shell executor both write this phrase with this exit code
+# when a task runs out of time. Together they are the timeout's own record —
+# which is why a timeout is never mistaken here for a failure to start.
+TIMEOUT_EXIT = 124
+TIMEOUT_MARKER = "timeout after "
+
+# An agent that will not open a session says so. Matching what it said is
+# reading evidence; concluding it from an absent output is not, because a
+# session that opened and then ran out of time leaves the same silence.
+SESSION_REFUSALS = (
+    "authentication required",
+    "authentication_required",
+    "not logged in",
+    "not authenticated",
+    "unauthenticated",
+    "unauthorized",
+    "please log in",
+    "login required",
+)
 
 
 class DiagnoseError(Exception):
@@ -79,10 +105,18 @@ class TaskReport(BaseModel):
     #: ``reason`` the saved reason only, ``none`` nothing beyond the status.
     evidence: str = "none"
     step_records: int = 0
-    output_saved: bool = False
+    #: None when ``outputs.yaml`` could not be read, so absence is not a claim
+    #: that this task saved nothing.
+    output_saved: bool | None = False
     output_chars: int | None = None
-    #: failures only — ``agent_session`` when a harness task failed before the
-    #: agent produced anything, ``task`` when the work ran and returned nonzero.
+    #: unfinished dispositions only — ``not_started`` the run never reached it,
+    #: ``began`` saved records prove it was executing before it was cut off,
+    #: ``unknown`` nothing saved settles whether it started.
+    execution: str | None = None
+    #: failures only — ``agent_session`` the agent's own words refuse a session,
+    #: ``timeout`` the executor recorded its own time limit, ``unclear_stage``
+    #: a harness task that saved nothing to place its failure by, ``task`` the
+    #: work ran and returned nonzero.
     kind: str | None = None
     excerpt: Excerpt | None = None
 
@@ -151,12 +185,28 @@ class DiagnoseReport(BaseModel):
     snapshot: Snapshot
     recipe: RecipeNote
     failures: list[TaskReport] = Field(default_factory=list)
+    #: Cut off when the run failed. Kept out of ``not_run`` on purpose: a task
+    #: can be cancelled mid-flight, having already changed files.
+    cancelled: list[TaskReport] = Field(default_factory=list)
     not_run: list[TaskReport] = Field(default_factory=list)
     running: list[TaskReport] = Field(default_factory=list)
     kept: list[TaskReport] = Field(default_factory=list)
     children: list[ChildPointer] = Field(default_factory=list)
     unavailable: list[str] = Field(default_factory=list)
     next_steps: list[NextStep] = Field(default_factory=list)
+
+
+def _why(exc: Exception) -> str:
+    """Collapse an exception's own words onto one line.
+
+    A YAML parse error arrives as a small indented report of its own; folded
+    into a note it breaks the layout for no gain, and the detail that matters
+    survives the collapse.
+
+    :param exc: the exception raised while reading a saved file.
+    :returns: its message on a single line.
+    """
+    return " ".join(str(exc).split())
 
 
 def _bound(text: str) -> Excerpt | None:
@@ -347,12 +397,42 @@ def _ran_on(task: str, entries: list[LogEntry], progress: Progress) -> Provenanc
     return Provenance(value=None, source="unknown")
 
 
+def _failure_kind(report: TaskReport, last: LogEntry | None) -> str:
+    """Place a failure by what the run recorded, never by what it omitted.
+
+    The two affirmative records are the executor's own timeout marker and the
+    agent's own refusal to open a session. Without either, a harness task that
+    saved no output and no step could have died at any point between spawning
+    and its last token, so the stage is reported as unsettled rather than
+    guessed — an agent that timed out mid-prompt leaves exactly the silence a
+    logged-out one does, and advising a login for it sends the user nowhere.
+
+    :param report: the task report so far, for its attribution and exit code.
+    :param last: the task's last log entry, when it has one.
+    :returns: ``timeout``, ``agent_session``, ``unclear_stage`` or ``task``.
+    """
+    # stderr and the saved reason only: those are where an executor and a
+    # harness explain themselves. A task's own output can discuss a login
+    # without that being what happened to it.
+    said = " ".join(
+        filter(None, [report.reason or "", last.stderr if last is not None else ""])
+    ).lower()
+    if report.exit_code == TIMEOUT_EXIT and TIMEOUT_MARKER in said:
+        return "timeout"
+    if any(marker in said for marker in SESSION_REFUSALS):
+        return "agent_session"
+    on_harness = (report.ran_on.value or "").startswith("harness:")
+    if on_harness and not report.step_records and (last is None or not last.output):
+        return "unclear_stage"
+    return "task"
+
+
 def _task_report(
     task: str,
     progress: Progress,
     entries: list[LogEntry],
     step_counts: dict[str, int],
-    outputs: dict[str, Any],
+    outputs: dict[str, Any] | None,
     current_tools: dict[str, str],
 ) -> TaskReport:
     """Assemble every saved fact about one task.
@@ -361,7 +441,8 @@ def _task_report(
     :param progress: the run's progress snapshot.
     :param entries: the run's log entries.
     :param step_counts: live step-record counts per task.
-    :param outputs: the saved ``outputs.yaml`` map.
+    :param outputs: the saved ``outputs.yaml`` map, or None when it could not
+        be read — which is not the same as a run that saved nothing.
     :param current_tools: task name to tool in the recipe as it stands now.
     :returns: the per-task report.
     """
@@ -377,7 +458,7 @@ def _task_report(
         evidence = "reason"
     else:
         evidence = "none"
-    value = outputs.get(task)
+    value = outputs.get(task) if outputs is not None else None
     report = TaskReport(
         task=task,
         status=saved.status.value,
@@ -387,17 +468,19 @@ def _task_report(
         current_tool=current_tools.get(task),
         evidence=evidence,
         step_records=steps,
-        output_saved=task in outputs and value is not None,
+        output_saved=None if outputs is None else value is not None,
         output_chars=len(str(value)) if value is not None else None,
     )
+    if saved.status in (TaskStatus.skipped, TaskStatus.pending):
+        report.execution = "not_started"
+    elif saved.status == TaskStatus.cancelled:
+        # A cancelled task may have been executing when the run failed. Its own
+        # log entry or live steps are the only proof either way, and without
+        # them non-execution is an assumption, not a reading.
+        report.execution = "began" if evidence in ("log", "steps") else "unknown"
     if saved.status == TaskStatus.failed:
         report.excerpt = _excerpt_of(last) if last is not None else None
-        harness = (report.ran_on.value or "").startswith("harness:")
-        report.kind = (
-            "agent_session"
-            if harness and report.excerpt is not None and not steps and not last.output
-            else "task"
-        )
+        report.kind = _failure_kind(report, last)
     return report
 
 
@@ -620,24 +703,57 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
     except ValueError as exc:
         raise DiagnoseError(f"not a flow id: {flow_id} ({exc})") from exc
 
+    # Everything below progress.json is optional evidence. A corrupt one is
+    # reported as unavailable and costs only itself: losing the whole report —
+    # the saved statuses, the reasons, the recovery commands — because one
+    # auxiliary file will not parse is the opposite of a post-mortem.
     unavailable: list[str] = []
-    entries = atelier.store.read_logs(flow_id)
-    if not entries:
+    try:
+        entries = atelier.store.read_logs(flow_id)
+    except UNREADABLE as exc:
+        entries = []
         unavailable.append(
-            "log entries — none recorded, so no task's own output can be shown"
+            f"log entries — logs.jsonl cannot be read ({_why(exc)}), so no task's own "
+            "output is shown below; the saved statuses and reasons are unaffected. "
+            f"Read that file directly in the flow directory of {flow_id}"
         )
+    else:
+        if not entries:
+            unavailable.append(
+                "log entries — none recorded, so no task's own output can be shown"
+            )
     step_counts: dict[str, int] = {}
     try:
         records, _ = atelier.store.read_steps(flow_id)
-    except (FileNotFoundError, OSError):
+    except UNREADABLE as exc:
         records = []
+        unavailable.append(
+            f"live step records — steps.jsonl cannot be read ({_why(exc)}); a task cut "
+            "off mid-flight may have left steps that cannot be shown here"
+        )
+    else:
+        if not records:
+            unavailable.append("live step records — none recorded for this run")
     for record in records:
         step_counts[record.task] = step_counts.get(record.task, 0) + 1
-    if not records:
-        unavailable.append("live step records — none recorded for this run")
-    outputs = atelier.store.read_outputs(flow_id)
-    if not outputs:
-        unavailable.append("saved outputs — none recorded, so no result can be reread")
+    outputs: dict[str, Any] | None
+    try:
+        outputs = atelier.store.read_outputs(flow_id)
+    except UNREADABLE as exc:
+        # None, not {}: an unreadable file must not be reported as a run that
+        # kept nothing, because a resume reads the same file and would then
+        # have to run the completed work again.
+        outputs = None
+        unavailable.append(
+            f"saved outputs — outputs.yaml cannot be read ({_why(exc)}), so whether each "
+            "completed task still has a result is unknown, and a resume will hit "
+            f"the same file. Repair or remove it in the flow directory of {flow_id}"
+        )
+    else:
+        if not outputs:
+            unavailable.append(
+                "saved outputs — none recorded, so no result can be reread"
+            )
     conduit, recipe = _read_recipe(atelier, conduit_name, progress)
     current_tools = (
         {t.name: t.tool for t in conduit.tasks} if conduit is not None else {}
@@ -656,15 +772,11 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
     failures = [r for r in reports if r.status == TaskStatus.failed.value]
     kept = [r for r in reports if r.status == TaskStatus.completed.value]
     running = [r for r in reports if r.status == TaskStatus.running.value]
+    cancelled = [r for r in reports if r.status == TaskStatus.cancelled.value]
     not_run = [
         r
         for r in reports
-        if r.status
-        in (
-            TaskStatus.cancelled.value,
-            TaskStatus.skipped.value,
-            TaskStatus.pending.value,
-        )
+        if r.status in (TaskStatus.skipped.value, TaskStatus.pending.value)
     ]
     observed = _observe(progress)
 
@@ -718,6 +830,7 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
         snapshot=snapshot,
         recipe=recipe,
         failures=failures,
+        cancelled=cancelled,
         not_run=not_run,
         running=running,
         kept=kept,

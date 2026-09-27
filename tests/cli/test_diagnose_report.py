@@ -194,9 +194,10 @@ def test_names_the_failure_and_not_the_cancellation(failed_run):
     assert result.exit_code == 0, result.output
     payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
     assert [f["task"] for f in payload["failures"]] == ["worker_b"]
-    assert [t["task"] for t in payload["not_run"]] == ["synthesis"]
-    assert payload["not_run"][0]["status"] == "cancelled"
-    assert "not a failure" in _flat(result.output)
+    assert payload["not_run"] == []
+    assert [t["task"] for t in payload["cancelled"]] == ["synthesis"]
+    assert payload["cancelled"][0]["status"] == "cancelled"
+    assert "not the failure" in _flat(result.output)
 
 
 def test_shows_the_kept_result_and_who_produced_it(failed_run):
@@ -245,6 +246,7 @@ def test_json_is_one_clean_object(failed_run):
         "snapshot",
         "recipe",
         "failures",
+        "cancelled",
         "not_run",
         "kept",
         "next_steps",
@@ -314,7 +316,7 @@ def test_unknown_attribution_is_labelled_unknown(workdir):
     atelier = Atelier()
     _seed(atelier, tasks={"synthesis": TaskProgress(status=TaskStatus.cancelled)})
     payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
-    assert payload["not_run"][0]["ran_on"] == {"value": None, "source": "unknown"}
+    assert payload["cancelled"][0]["ran_on"] == {"value": None, "source": "unknown"}
 
 
 # ------------------------------------------------------------------- evidence
@@ -725,3 +727,213 @@ def test_diagnose_writes_nothing(failed_run, workdir):
     assert _run("diagnose", FLOW).exit_code == 0
     assert _run("diagnose", FLOW, "--json").exit_code == 0
     assert digest() == before
+
+
+# ------------------------------------------------- corrupt optional evidence
+
+
+def _flow_dir(atelier: Atelier):
+    """Return the diagnosed flow's directory, for corrupting one file in it.
+
+    :param atelier: facade rooted at the test project.
+    :returns: the flow directory path.
+    """
+    return atelier.store._flow_dir(FLOW)
+
+
+def test_unreadable_outputs_do_not_cost_the_report(failed_run, workdir):
+    """A broken outputs.yaml costs its own line, not every other fact."""
+    _flow_dir(Atelier()).joinpath("outputs.yaml").write_text("worker_a: [unterminated")
+    result = _run("diagnose", FLOW, "--json")
+    assert result.exit_code == 0, result.output
+    assert "Traceback" not in result.output
+    payload = json.loads(result.stdout)
+    # Everything progress.json knows survived.
+    assert [f["task"] for f in payload["failures"]] == ["worker_b"]
+    assert payload["failures"][0]["reason"] == "exit=1 stderr=boom"
+    assert [k["task"] for k in payload["kept"]] == ["worker_a"]
+    # And the one thing that was lost is named, not guessed at as "nothing saved".
+    assert payload["kept"][0]["output_saved"] is None
+    assert any("outputs.yaml cannot be read" in n for n in payload["unavailable"])
+
+    rendered = _run("diagnose", FLOW)
+    assert rendered.exit_code == 0, rendered.output
+    flat = _flat(rendered.stdout)
+    assert "unknown (unreadable)" in flat
+    assert "what failed" in flat
+
+
+def test_unreadable_logs_do_not_cost_the_report(failed_run, workdir):
+    """Bytes that are not UTF-8 in logs.jsonl lose the excerpts and nothing else."""
+    _flow_dir(Atelier()).joinpath("logs.jsonl").write_bytes(bytes([255, 254, 10]))
+    result = _run("diagnose", FLOW, "--json")
+    assert result.exit_code == 0, result.output
+    assert "Traceback" not in result.output
+    payload = json.loads(result.stdout)
+    assert [f["task"] for f in payload["failures"]] == ["worker_b"]
+    assert payload["failures"][0]["reason"] == "exit=1 stderr=boom"
+    assert payload["failures"][0]["excerpt"] is None
+    assert any("logs.jsonl cannot be read" in n for n in payload["unavailable"])
+    # The saved reason is still the evidence, so the task is not called silent.
+    assert payload["failures"][0]["evidence"] == "reason"
+    assert _run("diagnose", FLOW).exit_code == 0
+
+
+def test_unreadable_steps_do_not_cost_the_report(failed_run, workdir):
+    """A corrupt steps.jsonl costs its own records, not the report.
+
+    The store already skips step lines it cannot parse, so this asserts the
+    report survives that rather than a note of its own.
+    """
+    _flow_dir(Atelier()).joinpath("steps.jsonl").write_bytes(bytes([255, 254, 10]))
+    result = _run("diagnose", FLOW, "--json")
+    assert result.exit_code == 0, result.output
+    assert "Traceback" not in result.output
+    payload = json.loads(result.stdout)
+    assert [f["task"] for f in payload["failures"]] == ["worker_b"]
+    assert _run("diagnose", FLOW).exit_code == 0
+
+
+def test_corrupt_progress_is_still_a_clean_failure(failed_run, workdir):
+    """The one required file stays fatal, and stays free of a traceback."""
+    _flow_dir(Atelier()).joinpath("progress.json").write_text("{not json")
+    result = _run("diagnose", FLOW, "--json")
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "cannot read the saved progress" in _flat(result.stderr)
+
+
+# ------------------------------------------------------- placing a failure
+
+
+def test_a_timeout_is_reported_as_a_timeout(workdir):
+    """The executor's own time-limit record places the failure, so nothing is guessed."""
+    atelier = Atelier()
+    _seed(
+        atelier,
+        tasks={
+            "worker_b": TaskProgress(
+                status=TaskStatus.failed,
+                reason="exit=124 stderr=harness timeout after 1s",
+            )
+        },
+        entries=[
+            _entry(
+                "worker_b",
+                "harness:codex",
+                exit_code=124,
+                stderr="harness timeout after 1s",
+            )
+        ],
+    )
+    payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    assert payload["failures"][0]["kind"] == "timeout"
+    flat = _flat(_run("diagnose", FLOW).stdout)
+    assert "ran out of its own time limit" in flat
+    assert "refused to open a session" not in flat
+
+
+def test_a_session_refusal_is_read_from_what_the_agent_said(workdir):
+    """agent_session comes from the agent's own words, never from a silence."""
+    atelier = Atelier()
+    _seed(
+        atelier,
+        tasks={"worker_b": TaskProgress(status=TaskStatus.failed, reason="exit=1")},
+        entries=[
+            _entry(
+                "worker_b",
+                "harness:codex",
+                exit_code=1,
+                stderr="RequestError: Authentication required",
+            )
+        ],
+    )
+    payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    assert payload["failures"][0]["kind"] == "agent_session"
+    assert "logged in" in _flat(_run("diagnose", FLOW).stdout)
+
+
+def test_an_unplaceable_agent_failure_says_so(workdir):
+    """No output, no step, no words of its own: the stage is unsettled, not named."""
+    atelier = Atelier()
+    _seed(
+        atelier,
+        tasks={"worker_b": TaskProgress(status=TaskStatus.failed, reason="exit=1")},
+        entries=[_entry("worker_b", "harness:codex", exit_code=1, stderr="died")],
+    )
+    payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    assert payload["failures"][0]["kind"] == "unclear_stage"
+    flat = _flat(_run("diagnose", FLOW).stdout)
+    assert "does not place this failure" in flat
+    assert "logged in" not in flat
+
+
+def test_an_agent_that_worked_and_failed_is_an_ordinary_task_failure(workdir):
+    """Output of its own proves work happened, so the failure is the work's."""
+    atelier = Atelier()
+    _seed(
+        atelier,
+        tasks={"worker_b": TaskProgress(status=TaskStatus.failed, reason="exit=2")},
+        entries=[
+            _entry(
+                "worker_b",
+                "harness:codex",
+                exit_code=2,
+                output="I looked and could not do it",
+                stderr="giving up",
+            )
+        ],
+    )
+    payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    assert payload["failures"][0]["kind"] == "task"
+    flat = _flat(_run("diagnose", FLOW).stdout)
+    assert "logged in" not in flat
+    assert "does not place this failure" not in flat
+
+
+# ------------------------------------------------------ a cut-off task
+
+
+def test_a_cancelled_task_with_live_steps_is_reported_as_having_run(workdir):
+    """Its own steps are the proof; absence of a log entry is not counter-proof."""
+    atelier = Atelier()
+    _seed(
+        atelier,
+        tasks={
+            "worker_a": TaskProgress(status=TaskStatus.cancelled),
+            "worker_b": TaskProgress(status=TaskStatus.failed, reason="exit=1"),
+        },
+        steps=[
+            StepRecord(
+                task="worker_a",
+                step=IntermediateStep(kind=StepKind.stdout, text="work-started"),
+            )
+        ],
+    )
+    payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    assert [t["task"] for t in payload["cancelled"]] == ["worker_a"]
+    assert payload["cancelled"][0]["execution"] == "began"
+    assert payload["cancelled"][0]["step_records"] == 1
+    flat = _flat(_run("diagnose", FLOW).stdout)
+    assert "it was executing when the run failed" in flat
+    assert "never got to run" not in flat
+
+
+def test_a_skipped_task_is_the_one_that_truly_never_ran(workdir):
+    """Skipped and pending are the dispositions the run provably never reached."""
+    atelier = Atelier()
+    _seed(
+        atelier,
+        tasks={
+            "worker_b": TaskProgress(status=TaskStatus.failed, reason="exit=1"),
+            "synthesis": TaskProgress(
+                status=TaskStatus.skipped, reason="its condition was false"
+            ),
+        },
+    )
+    payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    assert [t["task"] for t in payload["not_run"]] == ["synthesis"]
+    assert payload["not_run"][0]["execution"] == "not_started"
+    assert payload["cancelled"] == []
+    flat = _flat(_run("diagnose", FLOW).stdout)
+    assert "the run never reached it" in flat

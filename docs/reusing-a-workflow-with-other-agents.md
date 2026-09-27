@@ -134,11 +134,15 @@ assignment and leaves the rest of the run alone: `step_1` is not asked again,
 and the replacement is handed the brief and the result `step_1` already
 produced.
 
-Only a step that is `pending` or `failed` can be re-pointed. Asking to change
-the agent of a step that already completed is refused before anything on disk
-moves, because its output is already in the prompts downstream of it — use
-`--again` for that, below. And switching tools does not undo a file an agent
-already edited: recovery is about the work still to do.
+Only a step that is `pending` or `failed` can be re-pointed. A step that
+completed, is running, was skipped, or was cancelled by the failure keeps the
+agent the run recorded for it: its disposition is part of that run's history,
+and the completed ones are already quoted in the prompts downstream. All four
+are refused before anything on disk moves — use `--again`, below, to decide
+those afresh.
+
+Switching tools also does not undo a file an agent already edited. Recovery is
+about the work still to do, not about the work already done.
 
 ## 7. Do it again, the other way round
 
@@ -178,7 +182,12 @@ agent assignments, one unchanged file.
 * The readiness gate probes what you chose, not what the recipe says. Replacing
   an agent you cannot run is enough to start the run; naming a replacement you
   cannot run stops it before the first prompt.
-* A recipe written before this existed still records a static agent name in the
-  markers `atelier compose` used to generate. Those are the recipe's defaults.
-  What actually ran is in `atelier status --json` under `task_agents`, and in
-  `atelier plan --agent`, for every run.
+* A recipe composed before this existed carries a **static** agent name in its
+  `RESULT FROM step_1 (harness:...)` markers. Read those as the recipe's
+  default: a run that replaced that step still quotes the name the file was
+  written with. Nothing rewrites the prompt text you own, so what actually ran
+  is read from `atelier status --json` (`task_agents`), `atelier plan --agent`
+  and the run page, which report the effective agent for every run. To make an
+  old recipe self-describing, replace the literal in the marker with
+  `{{step_1.tool}}` — that is what `atelier compose` writes now, and it
+  resolves to the agent that produced the result it labels.

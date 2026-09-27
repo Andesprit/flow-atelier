@@ -1041,6 +1041,10 @@ map, and a `tasks` list. Each task has a `name`, a `task` body, a
 - `{{inputs.<name>}}` — a conduit input or HITL answer.
 - `{{<task_name>.output}}` — the printed output of an earlier task.
 The earlier task must appear in `depends_on`.
+- `{{<task_name>.tool}}` — the tool that task actually ran on, so a prompt
+quoting an upstream result can name the agent that produced it. It follows a
+`--agent` selection, so the label stays true when a run replaces that agent.
+The named task must appear in `depends_on`.
 - `{{loop.previous}}` — this task's output from its previous loop
 iteration (empty before the first iteration completes). Only valid on
 a looping task (`repeat > 1`).

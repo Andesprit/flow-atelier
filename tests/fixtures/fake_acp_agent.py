@@ -24,6 +24,7 @@ Script schema::
                 "chunks": ["text ", "more text"],
                 "delay_before": 0.0,
                 "barrier": null | {"dir": "...", "size": 2, "timeout": 10},
+                "write": null | {"path": "NOTES.md", "text": "..."},
                 "stop": "end_turn",
                 "ask_permission": null | {
                     "summary": "...",
@@ -33,6 +34,11 @@ Script schema::
             ...
         ]
     }
+
+``write`` writes ``text`` to ``path`` **relative to the agent process's own
+working directory**, the way a real coding agent edits the checkout it was
+started in. It is how a test proves where an agent actually worked: the bytes
+land in one directory and nowhere else.
 
 Each call to ``prompt`` pops the next turn. If turns run out, the agent
 returns ``stop_reason="end_turn"`` with no chunks.
@@ -281,6 +287,14 @@ class FakeAgent:
         delay = float(turn.get("delay_before", 0) or 0)
         if delay > 0:
             await asyncio.sleep(delay)
+
+        write = turn.get("write")
+        if write:
+            # Relative on purpose: resolved against this process's cwd, which
+            # is the working directory the client asked for.
+            target = Path(write["path"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(write["text"], encoding="utf-8")
 
         barrier = turn.get("barrier")
         if barrier:

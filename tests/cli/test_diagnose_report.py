@@ -257,10 +257,20 @@ def test_json_is_one_clean_object(failed_run):
 def test_resume_advice_names_its_side_effects(failed_run):
     """The one suggestion that spends money says so before you run it."""
     payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
-    resume = [s for s in payload["next_steps"] if s["command"].endswith(FLOW)]
+    resume = [s for s in payload["next_steps"] if (s["command"] or "").endswith(FLOW)]
     resume = [s for s in resume if "--resume" in s["command"]]
     assert len(resume) == 1
     assert "spend tokens" in resume[0]["side_effects"]
+
+
+def test_resume_advice_says_how_to_swap_an_agent_the_run_chose(failed_run):
+    """A plain resume keeps the chosen agent, so it can fail the same way."""
+    payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    swap = [s for s in payload["next_steps"] if "--agent worker_b=<agent>" in s["what"]]
+    assert len(swap) == 1
+    assert "harness:codex" in swap[0]["what"]
+    # Only the failed task, not the completed one that was also chosen.
+    assert not any("worker_a=<agent>" in s["what"] for s in payload["next_steps"])
 
 
 def test_task_names_are_shell_quoted(workdir):
@@ -995,12 +1005,20 @@ def test_a_malformed_legacy_log_file_does_not_cost_the_report(failed_run, workdi
 
 
 def test_an_unplaceable_agent_failure_says_so(workdir):
-    """No output, no step, no words of its own: the stage is unsettled, not named."""
+    """Prompted, then no output, no step, no words: the stage is unsettled."""
     atelier = Atelier()
     _seed(
         atelier,
         tasks={"worker_b": TaskProgress(status=TaskStatus.failed, reason="exit=1")},
-        entries=[_entry("worker_b", "harness:codex", exit_code=1, stderr="died")],
+        entries=[
+            _entry(
+                "worker_b",
+                "harness:codex",
+                exit_code=1,
+                stderr="died",
+                session=[{"source": "user", "text": "fix it"}],
+            )
+        ],
     )
     payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
     assert payload["failures"][0]["kind"] == "unclear_stage"
@@ -1078,3 +1096,25 @@ def test_a_skipped_task_is_the_one_that_truly_never_ran(workdir):
     assert payload["cancelled"] == []
     flat = _flat(_run("diagnose", FLOW).stdout)
     assert "the run never reached it" in flat
+
+
+def test_a_failure_before_any_prompt_says_no_work_was_asked(workdir):
+    """The saved session proves no prompt went out, whatever the error was."""
+    atelier = Atelier()
+    _seed(
+        atelier,
+        tasks={"worker_b": TaskProgress(status=TaskStatus.failed, reason="exit=1")},
+        entries=[
+            _entry(
+                "worker_b",
+                "harness:codex:nope",
+                exit_code=1,
+                stderr="RuntimeError: model 'nope' is not offered by this harness",
+            )
+        ],
+    )
+    payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    assert payload["failures"][0]["kind"] == "before_prompt"
+    flat = _flat(_run("diagnose", FLOW).stdout)
+    assert "failed before it was sent its prompt" in flat
+    assert "no work was asked of it" in flat

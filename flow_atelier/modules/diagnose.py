@@ -14,6 +14,7 @@ report is being built is reported as a mixed read instead of a settled one.
 from __future__ import annotations
 
 import shlex
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -119,7 +120,9 @@ class TaskReport(BaseModel):
     #: failures only — ``agent_session`` the agent's own words refuse a session
     #: and its log proves no prompt was sent, ``agent_auth`` the same words
     #: where a prompt was sent or nothing saved says whether one was,
-    #: ``timeout`` the executor recorded its own time limit, ``unclear_stage``
+    #: ``before_prompt`` any other agent failure its log proves came before a
+    #: prompt was sent, ``timeout`` the executor recorded its own time limit,
+    #: ``unclear_stage``
     #: a harness task that saved nothing to place its failure by, ``task`` the
     #: work ran and returned nonzero.
     kind: str | None = None
@@ -425,8 +428,8 @@ def _failure_kind(report: TaskReport, last: LogEntry | None) -> str:
 
     :param report: the task report so far, for its attribution and exit code.
     :param last: the task's last log entry, when it has one.
-    :returns: ``timeout``, ``agent_session``, ``agent_auth``, ``unclear_stage``
-        or ``task``.
+    :returns: ``timeout``, ``agent_session``, ``agent_auth``, ``before_prompt``,
+        ``unclear_stage`` or ``task``.
     """
     # stderr and the saved reason only: those are where an executor and a
     # harness explain themselves. A task's own output can discuss a login
@@ -439,16 +442,16 @@ def _failure_kind(report: TaskReport, last: LogEntry | None) -> str:
     on_harness = (report.ran_on.value or "").startswith("harness:")
     began = bool(report.step_records) or (last is not None and bool(last.output))
     if on_harness and not began:
+        # `session` absent from the saved entry (an older log) settles
+        # nothing, so only a present, prompt-free session counts.
+        unprompted = (
+            last is not None
+            and "session" in last.model_fields_set
+            and not any(turn.get("source") == "user" for turn in last.session)
+        )
         if any(marker in said for marker in SESSION_REFUSALS):
-            # `session` absent from the saved entry (an older log) settles
-            # nothing, so only a present, prompt-free session counts.
-            unprompted = (
-                last is not None
-                and "session" in last.model_fields_set
-                and not any(turn.get("source") == "user" for turn in last.session)
-            )
             return "agent_session" if unprompted else "agent_auth"
-        return "unclear_stage"
+        return "before_prompt" if unprompted else "unclear_stage"
     return "task"
 
 
@@ -573,6 +576,7 @@ def _next_steps(
     kept: list[TaskReport],
     unfinished: int,
     recipe: RecipeNote,
+    chosen: Mapping[str, str],
 ) -> list[NextStep]:
     """Build the suggested commands, keyed off what was actually observed.
 
@@ -585,6 +589,8 @@ def _next_steps(
     :param kept: the completed tasks.
     :param unfinished: how many recorded tasks did not complete.
     :param recipe: the current-definition note.
+    :param chosen: the agents this run was told to use per task, which a
+        resume keeps.
     :returns: the ordered suggestions.
     """
     quoted = shlex.quote(flow_id)
@@ -638,6 +644,19 @@ def _next_steps(
                     ),
                 )
             )
+            # A resume keeps the agent this run chose, so if that agent is the
+            # problem the plain resume above fails the same way again.
+            for failure in failures:
+                if tool := chosen.get(failure.task):
+                    steps.append(
+                        NextStep(
+                            what=(
+                                f"a resume keeps {tool} for {failure.task!r}, the "
+                                "agent this run chose; to swap it, add --agent "
+                                f"{failure.task}=<agent> to the resume above"
+                            ),
+                        )
+                    )
         else:
             steps.append(
                 NextStep(
@@ -868,6 +887,7 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
             kept,
             _unfinished_count(progress, conduit, reports),
             recipe,
+            progress.task_agents,
         ),
     )
 

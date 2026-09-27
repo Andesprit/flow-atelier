@@ -53,6 +53,11 @@ _KIND_TEXT = {
         "What was saved does not show it failed before starting work, so treat "
         "any change it could have made as unknown"
     ),
+    "before_prompt": (
+        "the agent failed before it was sent its prompt — the reason is in the "
+        "tail below — so no work was asked of it. Fix that cause (install, "
+        "login, model or effort), then resume"
+    ),
     "timeout": (
         "this task ran out of its own time limit and was cut off part-way, so "
         "anything it had already changed on disk stays changed"

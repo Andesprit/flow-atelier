@@ -39,6 +39,9 @@ class PlannedTask:
     name: str
     tool: str
     level: int
+    # The tool the installed recipe names, when this plan's ``tool`` came from
+    # a per-task agent selection instead. ``None`` means the two agree.
+    recipe_tool: str | None = None
     plain_edges: list[PlannedEdge] = field(default_factory=list)
     conditional_edges: list[PlannedEdge] = field(default_factory=list)
     is_loop: bool = False
@@ -77,7 +80,11 @@ def _loop_text(task) -> str | None:
     return " ".join(parts)
 
 
-def build_plan(conduit: Conduit, parsed: dict[str, list]) -> ExecutionPlan:
+def build_plan(
+    conduit: Conduit,
+    parsed: dict[str, list],
+    recipe: Conduit | None = None,
+) -> ExecutionPlan:
     """Build a static :class:`ExecutionPlan` from a validated conduit.
 
     ``parsed`` is the map returned by
@@ -85,10 +92,15 @@ def build_plan(conduit: Conduit, parsed: dict[str, list]) -> ExecutionPlan:
     assumed already validated (acyclic, deps resolvable), so no cycle guard
     is needed here.
 
-    :param conduit: the parsed conduit.
+    :param conduit: the parsed conduit, with any per-task agent selections
+        already applied — so every ``tool`` here is the effective one.
     :param parsed: ``{task_name: [parsed deps]}`` from ``validate_conduit``.
+    :param recipe: the same conduit as installed, when ``conduit`` carries
+        selections; each differing tool is reported as the recipe's default so
+        the plan cannot be mistaken for the file on disk.
     :returns: the ordered, annotated execution plan.
     """
+    installed = {t.name: t.tool for t in recipe.tasks} if recipe is not None else {}
     # Longest-path layering: level = 0 for roots, else 1 + max(dep levels).
     # Iterative post-order (parsed is already validated acyclic) so a deep
     # single-chain conduit cannot blow the recursion limit.
@@ -158,6 +170,11 @@ def build_plan(conduit: Conduit, parsed: dict[str, list]) -> ExecutionPlan:
             name=t.name,
             tool=t.tool,
             level=level[t.name],
+            recipe_tool=(
+                installed[t.name]
+                if installed.get(t.name, t.tool) != t.tool
+                else None
+            ),
             plain_edges=plain_edges,
             conditional_edges=conditional_edges,
             is_loop=t.repeat > 1,

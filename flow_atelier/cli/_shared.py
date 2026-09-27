@@ -15,6 +15,7 @@ from rich.markup import escape
 
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
+from flow_atelier.modules.binding import BindingError, parse_agent_bindings
 from flow_atelier.schemas.log import LogEntry, TurnUsage
 from flow_atelier.schemas.progress import Progress
 from flow_atelier.services.scheduler import ScheduleStore
@@ -62,6 +63,22 @@ def _parse_inputs(pairs: list[str]) -> dict[str, str]:
             raise typer.BadParameter(f"--input has a duplicate key: {key!r}")
         out[key] = value
     return out
+
+
+def parse_agents_option(raw: list[str]) -> dict[str, str]:
+    """Parse ``--agent TASK=HARNESS`` values, exiting with the diagnostic.
+
+    Shared by ``run`` and ``plan`` so the two can never disagree about what a
+    selection means.
+
+    :param raw: the option values as typed.
+    :returns: mapping of top-level task name to harness tool.
+    """
+    try:
+        return parse_agent_bindings(raw)
+    except BindingError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=exc.code) from exc
 
 
 def _read_input_file(key: str, raw_path: str) -> str:

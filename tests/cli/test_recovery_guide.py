@@ -103,7 +103,10 @@ class Guide:
         :returns: one entry per prompt.
         """
         found: list[str] = []
-        for path in sorted(self.record.glob("*.jsonl")):
+        # One log per agent process, named by pid. Windows pids do not grow,
+        # so order the files by when they were last written.
+        logs = sorted(self.record.glob("*.jsonl"), key=lambda p: p.stat().st_mtime_ns)
+        for path in logs:
             found.extend(
                 line for line in path.read_text(encoding="utf-8").splitlines() if line
             )

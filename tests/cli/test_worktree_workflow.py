@@ -423,6 +423,28 @@ def test_the_checkouts_are_not_inside_the_flow_record(project):
     assert not path.is_relative_to(project.work / ".atelier" / "flows")
 
 
+
+def test_the_status_table_shows_whole_checkout_paths(project):
+    """The path is there to be copied, so a narrow table wraps it, never cuts it."""
+    done = project.cli(
+        "run", "pair", "--worktree", "writer_a",
+        "--input", f"brief={BRIEF}", "--hide-steps",
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    flow_id = project.flow_id(done)
+    path = project.status(flow_id)["workspaces"]["paths"]["writer_a"]
+    shown = project.cli("status", flow_id)
+    assert shown.returncode == 0, shown.stdout + shown.stderr
+    assert "…" not in shown.stdout
+    # Wrapped across lines inside its cell, the path is still all there
+    # (compared without spaces: a wrap can fall on the one in "my repo").
+    cells = "".join(
+        line.split("│")[3].strip()
+        for line in shown.stdout.splitlines()
+        if line.count("│") >= 5
+    )
+    assert path.replace(" ", "") in cells.replace(" ", "")
+
 def test_removing_the_run_record_leaves_the_edits_alone(project):
     done = project.cli(
         "run", "pair", "--worktree", "writer_a",

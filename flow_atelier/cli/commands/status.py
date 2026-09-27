@@ -89,6 +89,9 @@ def status_cmd(
         columns.append("iteration")
     columns.append("reason")
     table = Table(*columns)
+    if spaces is not None:
+        # A path is copied, not skimmed: wrap it rather than cut it with "…".
+        table.columns[columns.index("checkout")].overflow = "fold"
     for name, tp in progress.tasks.items():
         row = [escape(name), tp.status.value]
         if show_agent:

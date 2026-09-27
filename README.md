@@ -396,6 +396,30 @@ overlap. To change the prompt, the harness, or the diff range, edit
 `.atelier/conduits/my-review/conduit.yaml` — it is a normal conduit, and
 `atelier show my-review` prints the exact prompt it will send.
 
+### Your first multi-agent workflow: chain or panel
+
+`atelier compose` turns a brief and a list of agents into one conduit, with
+no YAML to write. Each `--step` is one agent; by default each hands its
+result to the next.
+
+```bash
+atelier compose triage \
+  -s "claude-code=Propose one concrete fix. Say what you would change and why." \
+  -s "codex=Review the proposal above. Name what breaks, or say it is sound."
+atelier check triage
+atelier run triage --input brief="The nightly billing job is late."
+atelier outputs latest --task step_2
+```
+
+`--parallel` runs the agents at the same time from the same brief instead,
+and `--synthesize <harness>=<prompt>` adds one final step that reads every
+result. Composition writes the file and stops: no agent starts until you
+run it, and the conduit it writes is an ordinary one to read and edit.
+
+[Orchestrating several agents in one workflow](docs/multi-agent-workflow.md)
+walks the whole path — compose, inspect, run, read back, recover — for both
+shapes.
+
 ### Reading a conduit before you run it
 
 Conduits arrive from `atelier init`, `atelier create`, a teammate's
@@ -1185,6 +1209,11 @@ flow folder under `.atelier/flows/` in the current working directory.
 atelier init
 atelier create <name> [--description <text>] [--template hello|code-review]
                                                        # scaffold a starter conduit
+atelier compose <name> --step <harness>=<prompt> --step ... [--parallel]
+                       [--synthesize <harness>=<prompt>] [--description <text>]
+                                                       # write a multi-agent conduit: a handoff chain,
+                                                       # or parallel workers plus one synthesis step
+                                                       # see docs/multi-agent-workflow.md
 atelier check [<conduit>] [--json] [--recursive]        # validate conduit(s) without running
                                                        # --recursive also checks the conduits they call
 atelier plan <conduit> [--json]                        # print the DAG as ordered waves, run nothing

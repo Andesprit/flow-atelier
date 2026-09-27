@@ -61,7 +61,9 @@ class ComposeError(Exception):
 def _parse_step(raw: str, label: str) -> tuple[str, str]:
     """Split one ``HARNESS=PROMPT`` argument into a tool and a prompt.
 
-    Only the first ``=`` separates, so a prompt keeps every later one.
+    Only the first ``=`` separates, so a prompt keeps every later one. The
+    prompt's own leading and trailing whitespace is trimmed; everything
+    inside it is kept as typed.
 
     :param raw: the option value as typed.
     :param label: the option name, for the diagnostic.
@@ -340,6 +342,7 @@ def compose_cmd(
     Only the first `=` separates, so prompts keep their own equals signs.
     A prompt may not contain `{{...}}`: composed prompts reach the agent as
     written, so a template reference is refused rather than reinterpreted.
+    Only the whitespace around a prompt is trimmed.
 
     This writes an ordinary conduit.yaml and nothing else. Read it, edit it,
     `atelier check` it, then `atelier run <name> --input brief=...`. No agent
@@ -385,7 +388,17 @@ def compose_cmd(
         conduit_file = atelier.settings.atelier_dir / "conduits" / name / "conduit.yaml"
         try:
             conduit_file.parent.mkdir(parents=True, exist_ok=True)
-            conduit_file.write_text(text, encoding="utf-8")
+            # "x" is the no-overwrite promise: the lookup above can go stale
+            # between check and write, and truncating a conduit another
+            # writer just finished would destroy work this command never saw.
+            with conduit_file.open("x", encoding="utf-8") as handle:
+                handle.write(text)
+        except FileExistsError as exc:
+            raise ComposeError(
+                f"conduit already exists: {name} ({conduit_file}) — pick "
+                "another name; compose never overwrites one",
+                code=1,
+            ) from exc
         except OSError as exc:
             raise ComposeError(f"cannot write {conduit_file}: {exc}", code=1) from exc
     except ComposeError as exc:

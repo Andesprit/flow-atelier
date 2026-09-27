@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 from flow_atelier.cli import app
 from flow_atelier.modules.engine import validate_conduit
 from flow_atelier.schemas.conduit import Conduit
+from flow_atelier.services.store.filesystem import FilesystemStore
 
 MISSING = "definitely-not-on-path-atelier"
 
@@ -164,6 +165,16 @@ def test_prompts_round_trip_text_yaml_could_mangle(workdir):
     validate_conduit(conduit)
 
 
+def test_the_prompt_is_trimmed_only_at_its_edges(workdir):
+    """The documented normalization: outer whitespace goes, inner stays."""
+    assert _compose(
+        "trim", "-s", "alpha=  \n first\n\n  second  \n ", "-s", "beta=x"
+    ).exit_code == 0
+    assert _conduit(workdir, "trim").tasks[0].task.startswith(
+        "first\n\n  second\n"
+    )
+
+
 def test_only_the_first_equals_separates(workdir):
     """A prompt keeps every equals sign after the first."""
     assert _compose(
@@ -235,6 +246,29 @@ def test_compose_refuses_to_clobber_a_project_conduit(workdir):
     assert result.exit_code == 1
     assert "already exists" in result.output
     assert path.read_text(encoding="utf-8") == before
+
+
+def test_compose_never_truncates_a_conduit_that_lands_after_the_lookup(
+    workdir, monkeypatch
+):
+    """A competitor that wins the race keeps its bytes; the loser fails."""
+    path = workdir / ".atelier" / "conduits" / "race" / "conduit.yaml"
+    rival = "name: race\n# finished by the other composer\n"
+    original = FilesystemStore.conduit_source
+
+    def lookup_then_lose_the_race(self, name: str):
+        """Answer as usual, then let a competing writer finish the file."""
+        try:
+            return original(self, name)
+        finally:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(rival, encoding="utf-8")
+
+    monkeypatch.setattr(FilesystemStore, "conduit_source", lookup_then_lose_the_race)
+    result = _compose("race", "-s", "alpha=x", "-s", "beta=y")
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+    assert path.read_text(encoding="utf-8") == rival
 
 
 def test_compose_refuses_to_shadow_a_global_conduit(workdir):

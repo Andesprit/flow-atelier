@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from flow_atelier.modules.binding import provenance_note
 from flow_atelier.modules.conditions import (
     Dependency,
     DependencyParseError,
@@ -517,13 +518,14 @@ class Engine:
                     statuses[tname] = TaskStatus.completed
                     outputs[tname] = prior_outputs.get(tname, "")
                     progress.tasks[tname] = tp
-            self.store.write_progress(flow_id, progress)
             # Rebuild loop history for tasks that will re-run, so they
             # continue at the next iteration with {{loop.*}} context intact.
             # Append order is chronological even across repeated resumes.
+            executed: dict[str, str] = {}
             for entry in self.store.read_logs(flow_id):
                 if entry.exit_code != 0:
                     continue
+                executed[entry.task] = entry.tool
                 if statuses.get(entry.task) == TaskStatus.completed:
                     continue
                 prior_iterations.setdefault(entry.task, []).append(
@@ -531,6 +533,25 @@ class Engine:
                     if entry.last_turn_output is not None
                     else entry.output
                 )
+            # Work this resume keeps rather than redoes was produced by the tool
+            # the log recorded, which is not necessarily the one the recipe
+            # names now. Pin that history so the label a downstream prompt
+            # carries — and the agent this run reports for the task — is the
+            # one that actually did it.
+            for tname, tool in executed.items():
+                current = effective_tools.get(tname)
+                if statuses.get(tname) != TaskStatus.completed:
+                    continue
+                if current is None or current == tool:
+                    continue
+                # Agents only, on both sides: a task the recipe has since
+                # turned into a `tool:` step, or that was one, has no agent to
+                # attribute and must not have one recorded for it.
+                if not (tool.startswith("harness:") and current.startswith("harness:")):
+                    continue
+                effective_tools[tname] = tool
+                progress.task_agents[tname] = tool
+            self.store.write_progress(flow_id, progress)
 
         runtime_inputs = dict(inputs)  # mutable copy (HITL may append)
 
@@ -717,7 +738,7 @@ class Engine:
                     task_conduit_dir = to_bash_path(conduit_dir)
 
                 def _resolve_task() -> str:
-                    return resolve(
+                    text = resolve(
                         t.task, runtime_inputs, outputs,
                         unavailable_tasks=unavailable, loop_history=loop_history,
                         loop_history_limit=self.loop_history_limit,
@@ -725,6 +746,14 @@ class Engine:
                         conduit_dir=task_conduit_dir,
                         task_tools=effective_tools,
                     )
+                    # An agent reading a result must be told who produced it. A
+                    # label written before this run chose its agents can say
+                    # the wrong name; the correction is appended rather than
+                    # substituted into text the user owns. Agent tasks only: a
+                    # shell body is not prose and must not gain lines.
+                    if t.tool.startswith("harness:"):
+                        text += provenance_note(text, effective_tools)
+                    return text
 
                 try:
                     resolved = _resolve_task()

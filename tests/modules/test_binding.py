@@ -7,8 +7,9 @@ from flow_atelier.modules.binding import (
     BindingError,
     bind_conduit,
     check_replaceable,
+    normalize_bindings,
     parse_agent_bindings,
-    recipe_tools,
+    provenance_note,
 )
 from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.progress import Progress, TaskProgress, TaskStatus
@@ -148,15 +149,6 @@ def test_a_wildcard_selector_is_just_an_unknown_task():
     assert "has no task '*'" in str(err.value)
 
 
-def test_recipe_tools_reports_only_the_tools_that_actually_change():
-    """Re-selecting the agent a task already names is not an override."""
-    recipe = _conduit(step_1="harness:alpha", step_2="harness:beta")
-    assert recipe_tools(recipe, {"step_1": "harness:alpha"}) == {}
-    assert recipe_tools(recipe, {"step_2": "harness:gamma"}) == {
-        "step_2": "harness:beta"
-    }
-
-
 # --------------------------------------------------------- replacement guards
 
 
@@ -210,3 +202,85 @@ def test_a_partly_completed_loop_is_refused_even_while_failed():
 def test_a_task_absent_from_the_prior_run_is_left_to_the_recipe_check():
     """A task the old flow never recorded is `bind_conduit`'s business."""
     check_replaceable(_progress(step_1=TaskStatus.completed), {"step_9": "harness:x"})
+
+
+# ------------------------------------------------------------ mapping values
+
+
+@pytest.mark.parametrize(
+    "bindings",
+    [
+        {"step_1": "tool:bash"},
+        {"step_1": "tool:hitl"},
+        {"step_1": "Alpha"},
+        {"step_1": "harness:"},
+        {"step_1": ""},
+        {"step_1": None},
+        {"step_1": 7},
+        {"": "harness:alpha"},
+        {None: "harness:alpha"},
+    ],
+)
+def test_a_mapping_value_that_is_not_an_agent_is_refused(bindings):
+    """Every source of a mapping goes through this, not only the CLI parser."""
+    with pytest.raises(BindingError):
+        normalize_bindings(bindings, where="saved choices")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("alpha", "harness:alpha"),
+        ("harness:alpha", "harness:alpha"),
+        (" alpha ", "harness:alpha"),
+        ("alpha:sonnet-5", "harness:alpha:sonnet-5"),
+        ("harness:alpha:sonnet-5:high", "harness:alpha:sonnet-5:high"),
+    ],
+)
+def test_the_accepted_grammar_survives_normalizing_twice(raw, expected):
+    """Normalizing an already-normalized value gives the same value again."""
+    once = normalize_bindings({"step_1": raw})
+    assert once == {"step_1": expected}
+    assert normalize_bindings(once) == once
+
+
+def test_a_non_agent_value_cannot_reach_the_conduit():
+    """bind_conduit is the chokepoint, so it applies the value check itself."""
+    recipe = _conduit(step_1="harness:alpha")
+    with pytest.raises(BindingError, match="not an agent"):
+        bind_conduit(recipe, {"step_1": "tool:bash"})
+    assert [t.tool for t in recipe.tasks] == ["harness:alpha"]
+
+
+def test_a_bare_name_binds_as_the_harness_tool_it_means():
+    """A caller that is not the CLI may write the name the way YAML does."""
+    bound = bind_conduit(_conduit(step_1="harness:alpha"), {"step_1": "beta"})
+    assert [t.tool for t in bound.tasks] == ["harness:beta"]
+
+
+# --------------------------------------------------------------- provenance
+
+
+_OLD_MARKER = (
+    "Review it.\n\n--- BEGIN RESULT FROM step_1 (harness:claude-code) ---\n"
+    "DRAFT\n--- END RESULT FROM step_1 (harness:claude-code) ---\n"
+)
+
+
+def test_a_label_that_disagrees_with_what_ran_is_corrected_by_appending():
+    """The user's own text is untouched; the truth is added beneath it."""
+    note = provenance_note(_OLD_MARKER, {"step_1": "harness:gemini"})
+    assert "step_1 ran on harness:gemini" in note
+    assert "harness:claude-code" in note
+    assert note.startswith("\n--- BEGIN AGENT PROVENANCE (authoritative) ---")
+
+
+def test_a_label_naming_what_ran_needs_no_note():
+    """The current composer writes `{{step_1.tool}}`, which cannot disagree."""
+    assert provenance_note(_OLD_MARKER, {"step_1": "harness:claude-code"}) == ""
+    assert provenance_note("no markers here", {"step_1": "harness:gemini"}) == ""
+
+
+def test_a_label_naming_a_task_this_conduit_does_not_have_is_left_alone():
+    """Only a task whose real tool is known can be contradicted."""
+    assert provenance_note(_OLD_MARKER, {"other": "harness:gemini"}) == ""

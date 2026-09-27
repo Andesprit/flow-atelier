@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Container, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ from flow_atelier.modules.binding import (
     BindingError,
     bind_conduit,
     check_replaceable,
+    normalize_bindings,
 )
 from flow_atelier.modules.engine import (
     Engine,
@@ -40,7 +41,7 @@ from flow_atelier.schemas.api import (
 from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.log import LogEntry
-from flow_atelier.schemas.progress import FlowStatus, Progress
+from flow_atelier.schemas.progress import FlowStatus, Progress, TaskStatus
 from flow_atelier.services.executor.acp_registry import (
     LEGACY_HARNESS_ALIASES,
     SNAPSHOT_FILENAME,
@@ -188,7 +189,25 @@ class Atelier:
         :returns: the conduit to hand the engine.
         :raises BindingError: a selector or an agent name is unusable.
         """
+        agents = normalize_bindings(agents, where=origin)
         bound = bind_conduit(conduit, agents, origin=origin)
+        self._require_registered(agents, origin=origin)
+        return bound
+
+    def _require_registered(self, agents: Mapping[str, str], *, origin: str) -> None:
+        """Raise unless an executor is registered for every named agent.
+
+        Separate from the structural checks because the two answer different
+        questions at different times: whether a selector still fits the recipe
+        is about the recipe, while whether an agent exists is about this
+        machine's configuration right now. A choice a later invocation replaces
+        must not be held to the second one — that is what recovering from a
+        removed agent means.
+
+        :param agents: mapping of task name to harness tool.
+        :param origin: what asked for these agents, for the diagnostics.
+        :raises BindingError: nothing is registered for one of the agents.
+        """
         for task, tool in agents.items():
             if resolve_executor(self.executors, tool) is None:
                 raise BindingError(
@@ -197,7 +216,6 @@ class Atelier:
                     "register your own with ATELIER_HARNESSES",
                     code=1,
                 )
-        return bound
 
     def _inherit_agents(
         self, conduit: Conduit, flow_id: str, prior: Progress, agents: Mapping[str, str]
@@ -205,22 +223,34 @@ class Atelier:
         """Apply a prior run's saved agent choices, then this call's overrides.
 
         Saved choices are validated against the recipe *as it is now*: a
-        selector the recipe no longer has, or one that now names a
-        ``tool:`` task, fails here rather than silently reverting that task to
-        the recipe's agent.
+        selector the recipe no longer has, one that now names a ``tool:`` task,
+        or a saved value that is not an agent name at all fails here rather
+        than silently reverting that task to the recipe's agent.
+
+        Whether an agent is still configured on this machine is asked of the
+        merged result only. A saved choice this call replaces is on its way out,
+        so an agent uninstalled since that run must not block the replacement
+        that recovers from exactly that.
 
         :param conduit: the recipe as installed right now.
         :param flow_id: the flow whose choices are being inherited.
         :param prior: that flow's saved progress.
-        :param agents: this call's explicit overrides, applied on top.
+        :param agents: this call's explicit overrides, already normalized,
+            applied on top.
         :returns: ``(conduit to run, effective assignment map)``.
         :raises BindingError: a saved or requested selection is unusable.
         """
-        saved = dict(prior.task_agents)
+        origin = f"flow {flow_id} saved agent choices"
         try:
-            bound = self.bind_agents(
-                conduit, saved, origin=f"flow {flow_id} saved agent choices"
-            )
+            saved = normalize_bindings(dict(prior.task_agents), where=origin)
+        except BindingError as exc:
+            raise BindingError(
+                f"{exc} — so they cannot be replayed; start a fresh run with "
+                f"`atelier run {conduit.name} --agent ...`",
+                code=1,
+            ) from exc
+        try:
+            bound = bind_conduit(conduit, saved, origin=origin)
         except BindingError as exc:
             raise BindingError(
                 f"{exc} — the recipe changed since that run, so its saved "
@@ -228,10 +258,21 @@ class Atelier:
                 f"`atelier run {conduit.name} --agent ...`",
                 code=1,
             ) from exc
-        bound = self.bind_agents(bound, agents)
-        return bound, {**saved, **agents}
+        bound = bind_conduit(bound, agents, origin="--agent")
+        effective = {**saved, **agents}
+        # Availability is asked of what will actually run: an agent this call
+        # replaces may have been uninstalled since, and that is precisely the
+        # failure a replacement recovers from.
+        self._require_registered(agents, origin="--agent")
+        self._require_registered(
+            {t: v for t, v in saved.items() if t not in agents},
+            origin=f"{origin} (replace it with `--agent <task>=<agent>`)",
+        )
+        return bound, effective
 
-    def tool_readiness(self, conduit: Conduit) -> list[str]:
+    def tool_readiness(
+        self, conduit: Conduit, only: Container[str] | None = None
+    ) -> list[str]:
         """Report why a conduit can't run, before any task executes.
 
         Walks ``conduit.tasks`` and, for each, confirms its tool is registered
@@ -243,10 +284,17 @@ class Atelier:
         it is the only one holding both the conduit and the executor registry.
 
         :param conduit: the loaded conduit to probe.
+        :param only: when given, the task names to probe — a resume asks about
+            the work still to do, because a task whose output is already saved
+            is never handed to an executor again.
         :returns: ordered, de-duplicated problem messages; ``[]`` when ready.
         """
         problems: list[str] = []
-        tools = [(f"task {task.name!r}", task.tool) for task in conduit.tasks]
+        tools = [
+            (f"task {task.name!r}", task.tool)
+            for task in conduit.tasks
+            if only is None or task.name in only
+        ]
         if (
             conduit.interaction and conduit.interaction.supervisor is not None
             and {conduit.interaction.questions, conduit.interaction.permissions}
@@ -265,6 +313,25 @@ class Atelier:
             if msg not in problems:
                 problems.append(msg)
         return problems
+
+    def _require_ready(
+        self, conduit: Conduit, only: Container[str] | None = None
+    ) -> None:
+        """Raise unless every tool this run will reach can actually be run.
+
+        The gate ``atelier run`` applies to a fresh run, applied to the agents
+        a resume or a re-run will actually use — including the ones inherited
+        from the source flow. It runs before ``engine.run``, so a replacement
+        that cannot start costs no earlier prompt, creates no new flow and
+        leaves the source run's saved bytes alone.
+
+        :param conduit: the conduit with this run's selections applied.
+        :param only: the task names to probe; ``None`` probes them all.
+        :raises BindingError: a tool this run would reach is unrunnable.
+        """
+        problems = self.tool_readiness(conduit, only=only)
+        if problems:
+            raise BindingError("cannot run: " + "; ".join(problems), code=1)
 
     async def run_conduit(
         self,
@@ -309,7 +376,7 @@ class Atelier:
         """
         wd = Path(working_dir) if working_dir is not None else None
         conduit = self.store.read_conduit(name)
-        agents = dict(agents or {})
+        agents = normalize_bindings(dict(agents or {}))
         conduit = self.bind_agents(conduit, agents)
         return await self.engine.run(
             conduit,
@@ -363,8 +430,9 @@ class Atelier:
             ``atelier stop`` path); only the foreground CLI sets this.
         :param agents: replacement agents for tasks this resume has still to
             run. Omit it and the flow's saved choices are reused as they are.
-            Only a pending or failed task may be re-pointed, and every check
-            happens before any saved byte is touched.
+            Only a pending or failed task may be re-pointed, and every check —
+            including whether the agents this resume would use can actually be
+            started — happens before any saved byte is touched.
         :returns: the flow id (same as input)
         :raises ValueError: if the flow is not in failed or running status
         :raises BindingError: a saved or requested selection is unusable, or a
@@ -382,14 +450,34 @@ class Atelier:
             )
         conduit_name, _, _ = parse_flow_id(flow_id)
         conduit = self.store.read_conduit(conduit_name)
-        requested = dict(agents or {})
+        requested = normalize_bindings(dict(agents or {}))
+        partial = self._partly_looped(flow_id, conduit)
         if requested:
-            check_replaceable(
-                prior, requested, partial=self._partly_looped(flow_id, conduit)
-            )
+            check_replaceable(prior, requested, partial=partial)
         conduit, effective = self._inherit_agents(
             conduit, flow_id, prior, requested
         )
+        by_name = {t.name: t.tool for t in conduit.tasks}
+        for tname, ran_on in partial.items():
+            if by_name.get(tname, ran_on) == ran_on:
+                continue
+            raise BindingError(
+                f"task {tname!r} recorded iterations on {ran_on} and this run "
+                f"would continue it on {by_name[tname]}; its "
+                "'{{loop.history}}' would then mix two agents and be "
+                "attributed to one — start a fresh run with `atelier run "
+                f"--again {flow_id}`",
+                code=1,
+            )
+        if effective:
+            self._require_ready(
+                conduit,
+                only={
+                    t.name for t in conduit.tasks
+                    if prior.tasks.get(t.name) is None
+                    or prior.tasks[t.name].status != TaskStatus.completed
+                },
+            )
         inputs = self.store.read_input(flow_id)
         if working_dir is None and prior.run_path:
             working_dir = prior.run_path
@@ -407,22 +495,24 @@ class Atelier:
             task_agents=effective,
         )
 
-    def _partly_looped(self, flow_id: str, conduit: Conduit) -> set[str]:
+    def _partly_looped(self, flow_id: str, conduit: Conduit) -> dict[str, str]:
         """Return the looping tasks of ``flow_id`` that already succeeded once.
 
-        Their ``{{loop.history}}`` was produced by the agent they started
-        with, so a later resume may not hand the rest of the loop to another
-        one. Read from the log the engine itself replays on resume.
+        Their ``{{loop.history}}`` was produced by the tool they started with,
+        so a later resume may neither hand the rest of the loop to another one
+        nor let the recipe's own edit do it silently. Read from the log the
+        engine itself replays on resume.
 
         :param flow_id: the flow whose log to read.
         :param conduit: the recipe, for each task's ``repeat``.
-        :returns: names of looping tasks with a successful iteration on record.
+        :returns: mapping of looping task name to the tool its recorded
+            iterations ran on, for those with a successful iteration.
         """
         looping = {t.name for t in conduit.tasks if t.repeat > 1}
         if not looping:
-            return set()
+            return {}
         return {
-            entry.task
+            entry.task: entry.tool
             for entry in self.store.read_logs(flow_id)
             if entry.task in looping and entry.exit_code == 0
         }
@@ -463,7 +553,9 @@ class Atelier:
             ``atelier stop`` path); only the foreground CLI sets this.
         :param agents: per-task agent selections applied on top of the source
             run's saved choices. The new flow records its own assignment map;
-            the source run is not modified.
+            the source run is not modified. An agent that cannot be started is
+            refused before the new flow exists, so no earlier task is prompted
+            for a run that was going to fail anyway.
         :returns: the newly created flow id (distinct from ``flow_id``)
         :raises FileNotFoundError: if the source flow or its conduit is gone
         :raises BindingError: a saved or requested selection is unusable
@@ -473,8 +565,10 @@ class Atelier:
         inputs = {**self.store.read_input(flow_id), **(overrides or {})}
         prior = self.store.read_progress(flow_id)
         conduit, effective = self._inherit_agents(
-            conduit, flow_id, prior, dict(agents or {})
+            conduit, flow_id, prior, normalize_bindings(dict(agents or {}))
         )
+        if effective:
+            self._require_ready(conduit)
         if working_dir is None and prior.run_path:
             working_dir = prior.run_path
         wd = Path(working_dir) if working_dir is not None else None

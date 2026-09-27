@@ -482,3 +482,342 @@ async def test_a_selection_does_not_reach_a_same_named_nested_task(workspace):
     assert child_progress.task_agents == {}
     assert atelier.get_outputs(child)["step_1"] == "ALPHA_SAID"
     assert atelier.get_outputs(flow_id)["step_1"] == "GAMMA_SAID"
+
+
+# ---------------------------------------------- values that are not agents at all
+
+
+@pytest.mark.parametrize("tool", ["tool:bash", "tool:hitl", "tool:conduit"])
+async def test_a_direct_call_cannot_substitute_a_builtin_tool(workspace, tool):
+    """The CLI is not the only caller, so the refusal cannot live in the CLI."""
+    atelier, seen, _ = workspace
+    with pytest.raises(BindingError, match="not an agent"):
+        await atelier.run_conduit("chain", {"brief": "B"}, agents={"step_2": tool})
+    assert atelier.list_flows() == [] and seen == []
+
+
+@pytest.mark.parametrize(
+    "value", ["", "   ", "Alpha", "harness:", "gamma:", "harness:gamma:", None, 7, []]
+)
+async def test_a_direct_call_cannot_pass_a_malformed_agent(workspace, value):
+    """Neither an empty value, a bad name, nor a value that is not a string."""
+    atelier, seen, _ = workspace
+    with pytest.raises(BindingError):
+        await atelier.run_conduit("chain", {"brief": "B"}, agents={"step_2": value})
+    assert atelier.list_flows() == [] and seen == []
+
+
+async def test_a_direct_call_cannot_pass_an_empty_task_name(workspace):
+    """A key that names no task is refused as the malformed mapping it is."""
+    atelier, seen, _ = workspace
+    with pytest.raises(BindingError, match="is not a task name"):
+        await atelier.run_conduit("chain", {"brief": "B"}, agents={"": "harness:gamma"})
+    assert atelier.list_flows() == [] and seen == []
+
+
+async def test_a_direct_call_with_a_selection_that_is_not_a_mapping_runs_nothing(
+    workspace,
+):
+    """A list where a map belongs fails loudly instead of running the recipe."""
+    atelier, seen, _ = workspace
+    with pytest.raises((TypeError, ValueError)):
+        await atelier.run_conduit(
+            "chain", {"brief": "B"}, agents=["step_2=harness:gamma"]
+        )
+    assert atelier.list_flows() == [] and seen == []
+
+
+async def test_the_model_and_effort_syntax_still_passes_the_value_check(workspace):
+    """Tightening the values must not narrow the grammar a task may name."""
+    atelier, _, _ = workspace
+    flow_id = await atelier.run_conduit(
+        "chain", {"brief": "B"}, agents={"step_2": "gamma:g-3-pro:high"}
+    )
+    assert atelier.get_status(flow_id).task_agents == {
+        "step_2": "harness:gamma:g-3-pro:high"
+    }
+    assert atelier.get_outputs(flow_id)["step_2"] == "GAMMA:G-3-PRO:HIGH_SAID"
+
+
+def _saved_files(atelier, flow_id) -> dict[str, bytes]:
+    """Return the bytes of every file a run saved.
+
+    :param atelier: the configured Atelier.
+    :param flow_id: the flow to read.
+    :returns: mapping of file name to contents.
+    """
+    flow_dir = atelier.store._flow_dir(flow_id)
+    return {p.name: p.read_bytes() for p in sorted(flow_dir.glob("*")) if p.is_file()}
+
+
+@pytest.mark.parametrize(
+    "saved",
+    [
+        {"step_2": "tool:bash"},
+        {"step_2": "tool:hitl"},
+        {"step_2": "Gamma"},
+        {"step_2": ""},
+        {"": "harness:gamma"},
+    ],
+)
+async def test_a_saved_value_that_is_not_an_agent_never_executes(workspace, saved):
+    """Metadata a hand or a bug corrupted must not become what runs."""
+    atelier, seen, agents = workspace
+    flow_id = await _failed_run(atelier, agents)
+    path = atelier.store._flow_dir(flow_id) / "progress.json"
+    broken = json.loads(path.read_text())
+    broken["task_agents"] = saved
+    path.write_text(json.dumps(broken))
+    before = _saved_files(atelier, flow_id)
+
+    agents["beta"].fail = False
+    seen.clear()
+    with pytest.raises(BindingError):
+        await atelier.resume_flow(flow_id)
+
+    # No executor was reached and not one saved byte moved.
+    assert seen == []
+    assert _saved_files(atelier, flow_id) == before
+
+
+async def test_again_refuses_a_corrupt_saved_value_before_creating_a_flow(workspace):
+    """A rejected re-run leaves no half-born flow behind."""
+    atelier, seen, agents = workspace
+    source = await _failed_run(atelier, agents)
+    path = atelier.store._flow_dir(source) / "progress.json"
+    broken = json.loads(path.read_text())
+    broken["task_agents"] = {"step_2": "tool:bash"}
+    path.write_text(json.dumps(broken))
+    seen.clear()
+
+    with pytest.raises(BindingError, match="not an agent"):
+        await atelier.rerun_flow(source)
+    assert atelier.list_flows() == [source] and seen == []
+
+
+# ------------------------------------------------- readiness on resume and again
+
+
+async def test_resume_refuses_a_replacement_that_cannot_be_started(workspace):
+    """The gate a fresh run applies, applied to the agent a resume would use."""
+    atelier, seen, agents = workspace
+    flow_id = await _failed_run(atelier, agents)
+    agents["gamma"].ready = False
+    before = _saved_files(atelier, flow_id)
+    seen.clear()
+
+    with pytest.raises(BindingError, match="cannot run:"):
+        await atelier.resume_flow(flow_id, agents={"step_2": "harness:gamma"})
+
+    assert seen == []
+    assert _saved_files(atelier, flow_id) == before
+    # The refused choice was not saved over the one the flow still has.
+    assert atelier.get_status(flow_id).task_agents == {}
+
+
+async def test_resume_does_not_need_the_agent_of_work_it_keeps(workspace):
+    """A completed task's output is read from disk, not asked for again."""
+    atelier, seen, agents = workspace
+    flow_id = await _failed_run(atelier, agents)
+    # The agent that produced step_1 is uninstalled; its result is already saved.
+    agents["alpha"].ready = False
+    seen.clear()
+
+    await atelier.resume_flow(flow_id, agents={"step_2": "harness:gamma"})
+
+    assert [name for name, _ in seen] == ["step_2"]
+    assert atelier.get_outputs(flow_id) == {
+        "step_1": "ALPHA_SAID", "step_2": "GAMMA_SAID"
+    }
+
+
+async def test_again_refuses_an_unstartable_inherited_agent_before_any_prompt(
+    workspace,
+):
+    """No new flow, and no prompt for the step before the one that would fail."""
+    atelier, seen, agents = workspace
+    source = await atelier.run_conduit(
+        "chain", {"brief": "B"}, agents={"step_2": "harness:gamma"}
+    )
+    agents["gamma"].ready = False
+    seen.clear()
+
+    with pytest.raises(BindingError, match="cannot run:"):
+        await atelier.rerun_flow(source)
+
+    assert atelier.list_flows() == [source] and seen == []
+
+
+async def test_an_unbound_resume_is_not_held_to_the_readiness_gate(workspace):
+    """A run that never chose an agent keeps the behavior it always had."""
+    atelier, seen, agents = workspace
+    flow_id = await _failed_run(atelier, agents)
+    agents["beta"].fail = False
+    agents["alpha"].ready = False
+    seen.clear()
+
+    await atelier.resume_flow(flow_id)
+
+    assert [name for name, _ in seen] == ["step_2"]
+    assert atelier.get_status(flow_id).status is FlowStatus.completed
+
+
+# --------------------------------------------- replacing an agent that is gone
+
+
+async def test_resume_replaces_an_agent_that_is_no_longer_registered(workspace):
+    """Recovering from an uninstalled custom agent is the point of --agent."""
+    atelier, seen, agents = workspace
+    agents["gamma"].fail = True
+    with pytest.raises(RuntimeError):
+        await atelier.run_conduit(
+            "chain", {"brief": "B"}, agents={"step_2": "harness:gamma"}
+        )
+    flow_id = atelier.list_flows()[-1]
+    # The custom agent is dropped from the configuration entirely.
+    del atelier.executors["harness:gamma"]
+    seen.clear()
+
+    await atelier.resume_flow(flow_id, agents={"step_2": "harness:beta"})
+
+    assert [name for name, _ in seen] == ["step_2"]
+    assert "ALPHA_SAID" in seen[0][1]
+    assert atelier.get_status(flow_id).task_agents == {"step_2": "harness:beta"}
+    assert atelier.get_outputs(flow_id) == {
+        "step_1": "ALPHA_SAID", "step_2": "BETA_SAID"
+    }
+
+
+async def test_again_replaces_an_agent_that_is_no_longer_registered(workspace):
+    """The same recovery from scratch, without touching the source run."""
+    atelier, seen, agents = workspace
+    agents["gamma"].fail = True
+    with pytest.raises(RuntimeError):
+        await atelier.run_conduit(
+            "chain", {"brief": "B"}, agents={"step_2": "harness:gamma"}
+        )
+    source = atelier.list_flows()[-1]
+    before = _saved_files(atelier, source)
+    del atelier.executors["harness:gamma"]
+
+    again = await atelier.rerun_flow(source, agents={"step_2": "harness:beta"})
+
+    assert again != source
+    assert atelier.get_status(again).task_agents == {"step_2": "harness:beta"}
+    assert atelier.get_outputs(again)["step_2"] == "BETA_SAID"
+    assert _saved_files(atelier, source) == before
+
+
+async def test_a_saved_agent_no_replacement_covers_is_still_refused(workspace):
+    """Nothing is silently reverted to the recipe: the message names the agent."""
+    atelier, seen, agents = workspace
+    agents["gamma"].fail = True
+    with pytest.raises(RuntimeError):
+        await atelier.run_conduit(
+            "chain", {"brief": "B"}, agents={"step_2": "harness:gamma"}
+        )
+    flow_id = atelier.list_flows()[-1]
+    del atelier.executors["harness:gamma"]
+    seen.clear()
+
+    with pytest.raises(BindingError) as err:
+        await atelier.resume_flow(flow_id)
+    assert "unknown agent 'harness:gamma'" in str(err.value)
+    assert "recipe changed" not in str(err.value)
+    assert seen == []
+
+
+# ------------------------------------------- provenance of work already done
+
+
+def _with_step_1_on(atelier, tool: str) -> None:
+    """Rewrite the installed recipe so ``step_1`` names ``tool``.
+
+    :param atelier: the configured Atelier.
+    :param tool: the tool to write into the recipe.
+    """
+    edited = dict(CHAIN)
+    edited["tasks"] = [{**CHAIN["tasks"][0], "tool": tool}, CHAIN["tasks"][1]]
+    atelier.store.write_conduit(Conduit.model_validate(edited))
+
+
+async def test_a_completed_task_keeps_the_agent_that_actually_produced_it(workspace):
+    """A recipe edited after the run cannot re-attribute work it did not do."""
+    atelier, seen, agents = workspace
+    flow_id = await _failed_run(atelier, agents)
+    # The recipe's own choice for the completed step changes under the flow.
+    _with_step_1_on(atelier, "harness:gamma")
+    agents["beta"].fail = False
+    seen.clear()
+
+    await atelier.resume_flow(flow_id)
+
+    # step_1 is not redone, and what it ran on is what the handoff says.
+    assert [name for name, _ in seen] == ["step_2"]
+    assert "[harness:alpha]" in seen[0][1]
+    assert "harness:gamma" not in seen[0][1]
+    # Inspection reports the same thing the prompt does.
+    assert atelier.get_status(flow_id).task_agents == {"step_1": "harness:alpha"}
+    assert atelier.get_outputs(flow_id)["step_1"] == "ALPHA_SAID"
+
+
+LOOPING = {
+    "name": "loop",
+    "description": "one agent, twice",
+    "inputs": {"brief": {"description": "the shared task"}},
+    "tasks": [
+        {
+            "name": "step_1",
+            "description": "iterate",
+            "task": "Draft: {{inputs.brief}}",
+            "tool": "harness:alpha",
+            "repeat": 2,
+            "depends_on": [],
+        }
+    ],
+}
+
+
+class SecondIterationFails(StubAgent):
+    """An agent whose first iteration succeeds and whose next one is logged out."""
+
+    async def execute(self, task, resolved_command, context):
+        """Answer once, then behave like a session that cannot open.
+
+        :param task: the task being run.
+        :param resolved_command: the resolved prompt.
+        :param context: the flow context (unused).
+        :returns: the execution result.
+        """
+        result = await super().execute(task, resolved_command, context)
+        self.fail = True
+        return result
+
+
+async def test_a_partly_looped_task_refuses_a_recipe_that_changed_its_agent(workspace):
+    """Half a loop on one agent and half on another attributes history wrongly."""
+    atelier, seen, _ = workspace
+    flaky = SecondIterationFails("alpha", seen)
+    atelier.executors["harness:alpha"] = flaky
+    atelier.store.write_conduit(Conduit.model_validate(LOOPING))
+    with pytest.raises(RuntimeError):
+        await atelier.run_conduit("loop", {"brief": "B"})
+    flow_id = atelier.list_flows()[-1]
+
+    edited = dict(LOOPING)
+    edited["tasks"] = [{**LOOPING["tasks"][0], "tool": "harness:gamma"}]
+    atelier.store.write_conduit(Conduit.model_validate(edited))
+    before = _saved_files(atelier, flow_id)
+    seen.clear()
+
+    with pytest.raises(BindingError) as err:
+        await atelier.resume_flow(flow_id)
+    assert "recorded iterations on harness:alpha" in str(err.value)
+    assert seen == []
+    assert _saved_files(atelier, flow_id) == before
+
+    # Put the recipe back and the same resume finishes the loop as always.
+    atelier.store.write_conduit(Conduit.model_validate(LOOPING))
+    flaky.fail = False
+    await atelier.resume_flow(flow_id)
+    assert atelier.get_status(flow_id).status is FlowStatus.completed

@@ -183,6 +183,44 @@ class Project:
         self.broken.discard(name)
         self.apply_agents()
 
+    def add_unavailable_agent(self, name: str) -> None:
+        """Register ``name`` pointing at a binary that does not exist.
+
+        The not-installed case, as opposed to :meth:`break_agent`'s logged-out
+        one: readiness can see this before a session is ever opened.
+
+        :param name: the agent name to register.
+        """
+        harnesses = json.loads(self.env["ATELIER_HARNESSES"])
+        harnesses[name] = [str(self.root / "no-such-agent-binary")]
+        self.env["ATELIER_HARNESSES"] = json.dumps(harnesses)
+
+    def remove_agent(self, name: str) -> None:
+        """Drop ``name`` from the configuration, as uninstalling it would.
+
+        :param name: the custom agent to forget.
+        """
+        harnesses = json.loads(self.env["ATELIER_HARNESSES"])
+        harnesses.pop(name, None)
+        self.env["ATELIER_HARNESSES"] = json.dumps(harnesses)
+
+    def progress_bytes(self, flow_id: str) -> bytes:
+        """Return a flow's saved progress file, byte for byte.
+
+        :param flow_id: the exact flow id.
+        :returns: the ``progress.json`` contents.
+        """
+        return (self.work / ".atelier" / "flows" / flow_id / "progress.json").read_bytes()
+
+    def saved_bytes(self, flow_id: str) -> dict[str, bytes]:
+        """Return every file a flow saved, byte for byte.
+
+        :param flow_id: the exact flow id.
+        :returns: mapping of file name to contents.
+        """
+        flow_dir = self.work / ".atelier" / "flows" / flow_id
+        return {f.name: f.read_bytes() for f in sorted(flow_dir.glob("*")) if f.is_file()}
+
     def install(self, name: str, text: str) -> None:
         """Write a recipe into the project store.
 
@@ -263,6 +301,18 @@ class Project:
         return sorted(
             p.name for p in (self.work / ".atelier" / "flows").glob("*") if p.is_dir()
         )
+
+
+def _flat(text: str) -> str:
+    """Return ``text`` with its line wrapping collapsed.
+
+    The console wraps a long diagnostic to the terminal width, which can land a
+    newline inside the phrase a test is looking for.
+
+    :param text: captured output.
+    :returns: the same words, single-spaced.
+    """
+    return " ".join(text.split())
 
 
 @pytest.fixture
@@ -573,3 +623,238 @@ def test_an_invalid_selection_creates_no_flow_at_all(project):
     assert "has no task 'step_9'" in refused.stdout
     assert project.flows() == before
     assert all(project.prompts(name) == [] for name in AGENTS)
+
+
+# ------------------------------------------------- readiness on resume and again
+
+
+def test_an_unstartable_replacement_stops_an_again_before_the_first_prompt(project):
+    """A run that cannot finish must not spend the step before the one that fails."""
+    first = project.cli("run", "chain", "--input", f"brief={BRIEF}")
+    assert first.returncode == 0, first.stdout + first.stderr
+    source = project.flow_id(first)
+    project.add_unavailable_agent("ghost")
+    before = len(project.prompts("claude-code"))
+
+    again = project.cli("run", "--again", source, "--agent", "step_2=ghost")
+
+    assert again.returncode == 1, again.stdout + again.stderr
+    assert "cannot run:" in _flat(again.stdout)
+    # No upstream prompt was paid for, and no half-born flow was left behind.
+    assert len(project.prompts("claude-code")) == before
+    assert project.flows() == [source]
+
+
+def test_an_unstartable_replacement_leaves_a_resume_exactly_as_it_was(project):
+    """Validation finishes before the resume writes its first byte."""
+    project.break_agent("codex")
+    failed = project.cli("run", "chain", "--input", f"brief={BRIEF}")
+    assert failed.returncode == 1, failed.stdout
+    flow_id = project.flow_id(failed)
+    project.add_unavailable_agent("ghost")
+    before = project.saved_bytes(flow_id)
+
+    resumed = project.cli("run", "--resume", flow_id, "--agent", "step_2=ghost")
+
+    assert resumed.returncode == 1, resumed.stdout + resumed.stderr
+    assert "cannot run:" in _flat(resumed.stdout)
+    assert project.saved_bytes(flow_id) == before
+    assert project.status(flow_id)["task_agents"] == {}
+
+
+def test_a_resume_reuses_saved_output_from_an_agent_that_is_gone(project):
+    """A completed step is read back from disk, so its agent need not be there."""
+    project.break_agent("codex")
+    failed = project.cli("run", "chain", "--input", f"brief={BRIEF}")
+    flow_id = project.flow_id(failed)
+    # The agent that produced step_1 is no longer installed.
+    project.env["ATELIER_CLAUDE_LAUNCH_CMD"] = json.dumps(
+        [str(project.root / "no-such-agent-binary")]
+    )
+
+    resumed = project.cli("run", "--resume", flow_id, "--agent", "step_2=gemini")
+
+    assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+    handoff = project.prompts("gemini")[0]
+    assert SAID["claude-code"] in handoff
+    assert "--- BEGIN RESULT FROM step_1 (harness:claude-code) ---" in handoff
+    assert len(project.prompts("claude-code")) == 1
+
+
+# ------------------------------------------- replacing an agent that was removed
+
+
+def test_a_removed_custom_agent_is_replaced_without_redoing_the_work(project):
+    """The recovery the milestone is for: uninstalled agent, explicit successor."""
+    project.break_agent("housebot")
+    failed = project.cli(
+        "run", "chain", "--agent", "step_2=housebot", "--input", f"brief={BRIEF}"
+    )
+    assert failed.returncode == 1, failed.stdout
+    flow_id = project.flow_id(failed)
+    project.remove_agent("housebot")
+
+    resumed = project.cli("run", "--resume", flow_id, "--agent", "step_2=codex")
+
+    assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+    # The upstream step was asked exactly once, in the first run.
+    assert len(project.prompts("claude-code")) == 1
+    assert len(project.prompts("codex")) == 1
+    assert SAID["claude-code"] in project.prompts("codex")[0]
+    assert project.status(flow_id)["task_agents"] == {"step_2": "harness:codex"}
+    saved = project.cli("outputs", flow_id, "--task", "step_2")
+    assert SAID["codex"] in saved.stdout
+
+    # And the same recovery from scratch gets its own record, source untouched.
+    recovered = project.saved_bytes(flow_id)
+    again = project.cli("run", "--again", flow_id, "--agent", "step_2=codex")
+    assert again.returncode == 0, again.stdout + again.stderr
+    new_id = project.flow_id(again)
+    assert new_id != flow_id
+    assert project.status(new_id)["task_agents"] == {"step_2": "harness:codex"}
+    assert project.saved_bytes(flow_id) == recovered
+
+
+def test_a_saved_agent_that_is_gone_and_unreplaced_says_so(project):
+    """The diagnostic names the missing agent instead of blaming the recipe."""
+    project.break_agent("housebot")
+    failed = project.cli(
+        "run", "chain", "--agent", "step_2=housebot", "--input", f"brief={BRIEF}"
+    )
+    flow_id = project.flow_id(failed)
+    project.remove_agent("housebot")
+
+    resumed = project.cli("run", "--resume", flow_id)
+
+    assert resumed.returncode == 1, resumed.stdout
+    assert "unknown agent 'harness:housebot'" in _flat(resumed.stdout)
+    assert "recipe changed" not in _flat(resumed.stdout)
+
+
+# -------------------------------------------------------- corrupt saved metadata
+
+
+def test_a_saved_choice_that_is_not_an_agent_never_becomes_a_shell(project):
+    """A hand-edited record must not turn an agent prompt into a command."""
+    project.install("chain", CHAIN.replace("Review the proposal.", "echo PROBE"))
+    project.break_agent("codex")
+    failed = project.cli("run", "chain", "--input", f"brief={BRIEF}")
+    flow_id = project.flow_id(failed)
+    path = project.work / ".atelier" / "flows" / flow_id / "progress.json"
+    record = json.loads(path.read_text())
+    record["task_agents"] = {"step_2": "tool:bash"}
+    path.write_text(json.dumps(record))
+    before = project.saved_bytes(flow_id)
+
+    resumed = project.cli("run", "--resume", flow_id)
+
+    assert resumed.returncode == 1, resumed.stdout
+    assert "'tool:bash' is not an agent" in _flat(resumed.stdout)
+    assert "PROBE" not in resumed.stdout
+    logs = (project.work / ".atelier" / "flows" / flow_id / "logs.jsonl").read_text()
+    assert "tool:bash" not in logs
+    assert project.saved_bytes(flow_id) == before
+
+
+# ------------------------------------------------- provenance of completed work
+
+
+def test_a_completed_step_keeps_its_own_agent_when_the_recipe_moves_on(project):
+    """What the next agent reads is what ran, not what the file now says."""
+    project.break_agent("codex")
+    failed = project.cli("run", "chain", "--input", f"brief={BRIEF}")
+    flow_id = project.flow_id(failed)
+    # The recipe's default for the completed step changes under the flow.
+    project.install("chain", CHAIN.replace("tool: harness:claude-code", "tool: harness:gemini"))
+    project.fix_agent("codex")
+
+    resumed = project.cli("run", "--resume", flow_id)
+
+    assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+    # Gemini never ran, so nothing may be attributed to it.
+    assert project.prompts("gemini") == []
+    assert len(project.prompts("claude-code")) == 1
+    handoff = project.prompts("codex")[0]
+    assert "--- BEGIN RESULT FROM step_1 (harness:claude-code) ---" in handoff
+    assert "harness:gemini" not in handoff
+    # Inspection agrees with the prompt.
+    assert project.status(flow_id)["task_agents"]["step_1"] == "harness:claude-code"
+    human = project.cli("status", flow_id)
+    assert "harness:claude-code" in human.stdout
+
+
+# ---------------------------------------- recipes composed before the template
+
+
+# What `atelier compose` wrote before it used `{{step_1.tool}}`: the agent's
+# name as a literal, fixed when the file was generated.
+OLD_COMPOSED = """\
+name: chain
+description: a handoff composed before the label was a template
+inputs:
+  brief:
+    description: the shared task
+tasks:
+  - name: step_1
+    description: draft
+    task: |
+      Propose one fix.
+
+      --- BEGIN BRIEF ---
+      {{inputs.brief}}
+      --- END BRIEF ---
+    tool: harness:claude-code
+    depends_on: []
+  - name: step_2
+    description: review
+    task: |
+      Review the proposal.
+
+      --- BEGIN RESULT FROM step_1 (harness:claude-code) ---
+      {{step_1.output}}
+      --- END RESULT FROM step_1 (harness:claude-code) ---
+    tool: harness:codex
+    depends_on: [step_1]
+"""
+
+
+def test_an_old_static_label_is_corrected_for_the_agent_reading_it(project):
+    """The literal stays; an authoritative block beneath it names what ran."""
+    project.install("chain", OLD_COMPOSED)
+    before = project.recipe("chain")
+
+    run = project.cli(
+        "run", "chain", "--agent", "step_1=gemini", "--input", f"brief={BRIEF}"
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    handoff = project.prompts("codex")[0]
+    # The user's own text is untouched.
+    assert "--- BEGIN RESULT FROM step_1 (harness:claude-code) ---" in handoff
+    # And the receiving agent is told who actually produced it.
+    assert "--- BEGIN AGENT PROVENANCE (authoritative) ---" in handoff
+    assert "step_1 ran on harness:gemini" in handoff
+    assert SAID["gemini"] in handoff
+    assert project.recipe("chain") == before
+
+
+def test_an_unreplaced_old_recipe_gains_no_provenance_block(project):
+    """A label that is already right must not grow a correction beneath it."""
+    project.install("chain", OLD_COMPOSED)
+
+    run = project.cli("run", "chain", "--input", f"brief={BRIEF}")
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "AGENT PROVENANCE" not in project.prompts("codex")[0]
+
+
+def test_a_recipe_using_the_template_label_gains_no_provenance_block(project):
+    """`{{step_1.tool}}` cannot disagree with itself, so nothing is appended."""
+    run = project.cli(
+        "run", "chain", "--agent", "step_1=gemini", "--input", f"brief={BRIEF}"
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    handoff = project.prompts("codex")[0]
+    assert "--- BEGIN RESULT FROM step_1 (harness:gemini) ---" in handoff
+    assert "AGENT PROVENANCE" not in handoff

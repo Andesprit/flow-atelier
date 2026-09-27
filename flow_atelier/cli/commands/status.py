@@ -72,7 +72,8 @@ def status_cmd(
         console.print(f"[dim]→ atelier run --resume {flow_id}[/dim]")
 
     show_iteration = any(tp.of > 1 for tp in progress.tasks.values())
-    # Only a run launched with --agent has anything to say here; every other
+    # Only a run that chose an agent — at launch, or by keeping the one a
+    # resumed step actually ran on — has anything to say here; every other
     # run's agents are the recipe's, and a column of blanks says nothing.
     show_agent = bool(progress.task_agents)
     columns = ["task", "status"]
@@ -92,8 +93,9 @@ def status_cmd(
         table.add_row(*row)
     if show_agent:
         console.print(
-            "[dim]agent: chosen with --agent for this run; the conduit file is "
-            "unchanged[/dim]"
+            "[dim]agent: what this run uses for that task, whether chosen with "
+            "--agent or recorded from the run that produced its result; the "
+            "conduit file is unchanged[/dim]"
         )
     console.print(table)
     console.print(_task_status_summary(progress))

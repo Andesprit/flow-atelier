@@ -101,8 +101,8 @@ atelier outputs "$flow_id" --task step_2 || exit 1
 `status` grows an `agent` column listing the choices this run was launched
 with, and says in one line that the conduit file is unchanged. `status --json`
 carries the same thing as `task_agents`, so a script can read which agent
-produced which output. A run started without `--agent` has no such column and
-no such key.
+produced which output. A run started without `--agent` shows no such column and
+its `task_agents` is the empty object `{}`.
 
 ## 6. When the choice was wrong
 
@@ -142,7 +142,10 @@ are refused before anything on disk moves — use `--again`, below, to decide
 those afresh.
 
 Switching tools also does not undo a file an agent already edited. Recovery is
-about the work still to do, not about the work already done.
+about the work still to do, not about the work already done. What was already
+done keeps the agent that did it: edit the recipe's `tool:` between the failure
+and the resume and the completed step is still reported — and still quoted
+downstream — as the agent that really produced its result.
 
 ## 7. Do it again, the other way round
 
@@ -179,15 +182,30 @@ agent assignments, one unchanged file.
   `--agent step_2=codex`, `--agent step_2=codex:gpt-5.1`,
   `--agent step_2=codex:gpt-5.1:high`. `atelier harness check codex` lists the
   models that agent offers.
-* The readiness gate probes what you chose, not what the recipe says. Replacing
-  an agent you cannot run is enough to start the run; naming a replacement you
-  cannot run stops it before the first prompt.
+* The readiness gate probes what you chose, not what the recipe says, on a
+  fresh run, a `--resume` and an `--again` alike. Replacing an agent you cannot
+  run is enough to start the run; naming a replacement you cannot run stops it
+  before the first prompt, before a new flow exists and before a resume rewrites
+  anything it saved. A step whose result is already saved does not need its
+  agent installed for a resume to reuse it.
 * A recipe composed before this existed carries a **static** agent name in its
-  `RESULT FROM step_1 (harness:...)` markers. Read those as the recipe's
-  default: a run that replaced that step still quotes the name the file was
-  written with. Nothing rewrites the prompt text you own, so what actually ran
-  is read from `atelier status --json` (`task_agents`), `atelier plan --agent`
-  and the run page, which report the effective agent for every run. To make an
-  old recipe self-describing, replace the literal in the marker with
-  `{{step_1.tool}}` — that is what `atelier compose` writes now, and it
-  resolves to the agent that produced the result it labels.
+  `RESULT FROM step_1 (harness:...)` markers, and a run that replaces that step
+  would leave the next agent reading the wrong name. Your prompt text is never
+  rewritten; instead the receiving agent's prompt gains one authoritative block
+  beneath it:
+
+  ```text
+  --- BEGIN AGENT PROVENANCE (authoritative) ---
+  step_1 ran on harness:gemini, not the harness:claude-code its marker above names.
+  --- END AGENT PROVENANCE (authoritative) ---
+  ```
+
+  It appears only when a label and the agent that ran disagree. To make an old
+  recipe self-describing instead, replace the literal in the marker with
+  `{{step_1.tool}}` — that is what `atelier compose` writes now, it resolves to
+  the agent that produced the result it labels, and then there is nothing to
+  correct.
+* A selection is checked before it is used, wherever it comes from. A saved
+  record naming something that is not an agent — a `tool:` step, an empty value,
+  a name outside the harness grammar — refuses the run instead of falling back
+  to the recipe, and refuses it before any prompt, flow or saved byte.

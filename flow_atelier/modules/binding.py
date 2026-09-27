@@ -99,6 +99,36 @@ def parse_agent_bindings(
     return out
 
 
+def normalize_bindings(
+    bindings: Mapping[str, str], *, where: str = "--agent"
+) -> dict[str, str]:
+    """Return ``bindings`` with every value checked as a harness tool.
+
+    The one gate all three sources go through — the CLI option, a direct call
+    on the facade, and a prior run's saved choices read back from disk — so
+    nothing but an agent can ever be substituted for an agent. Values reaching
+    here are usually already normalized tools, and normalizing one twice gives
+    the same answer as once.
+
+    :param bindings: mapping of task name to agent name or harness tool.
+    :param where: what the mapping came from, for the diagnostics.
+    :returns: the same mapping with every value a ``harness:`` tool.
+    :raises BindingError: a key or a value is not a usable name.
+    """
+    out: dict[str, str] = {}
+    for task, harness in bindings.items():
+        if not isinstance(task, str) or not task.strip():
+            raise BindingError(
+                f"{where}: {task!r} is not a task name", code=1
+            )
+        if not isinstance(harness, str) or not harness.strip():
+            raise BindingError(
+                f"{where}: task {task!r} names no agent ({harness!r})", code=1
+            )
+        out[task] = normalize_harness(harness.strip(), f"{where} {task}")
+    return out
+
+
 def bind_conduit(
     conduit: Conduit, bindings: Mapping[str, str], *, origin: str = "--agent"
 ) -> Conduit:
@@ -113,11 +143,12 @@ def bind_conduit(
     :param bindings: mapping of task name to harness tool.
     :param origin: what asked for the change, for the diagnostics.
     :returns: the conduit to run, or ``conduit`` itself when nothing is bound.
-    :raises BindingError: a selector names no top-level task, or names one
-        that is not a harness task.
+    :raises BindingError: a selector names no top-level task, names one that
+        is not a harness task, or the agent it asks for is not a harness name.
     """
     if not bindings:
         return conduit
+    bindings = normalize_bindings(bindings, where=origin)
     by_name = {t.name: t for t in conduit.tasks}
     for task, tool in bindings.items():
         target = by_name.get(task)
@@ -143,22 +174,43 @@ def bind_conduit(
     return conduit.model_copy(update={"tasks": tasks})
 
 
-def recipe_tools(conduit: Conduit, bindings: Mapping[str, str]) -> dict[str, str]:
-    """Return the recipe's own tool for every task ``bindings`` changes.
+# A composed recipe quotes an upstream result under a marker naming who
+# produced it. `atelier compose` writes that name as a `{{<task>.tool}}`
+# reference now, but a recipe composed before it did carries the tool as a
+# literal, and the same is true of any hand-written label.
+_LABELLED_RESULT = re.compile(r"RESULT FROM (\S+) \((harness:[^)\s]+)\)")
 
-    What inspection needs to stay honest: the effective tool alone cannot say
-    whether it came from the recipe or from this run's selection.
 
-    :param conduit: the recipe as installed.
-    :param bindings: mapping of task name to harness tool.
-    :returns: mapping of task name to the tool written in the recipe, for the
-        bound tasks whose tool actually differs.
+def provenance_note(prompt: str, tools: Mapping[str, str]) -> str:
+    """Return the correction to append when a prompt mislabels its material.
+
+    A static label that disagrees with the tool a task actually runs on would
+    tell the receiving agent the wrong provenance, and rewriting the user's own
+    prompt text is not this code's business. So the literals are left alone and
+    one authoritative block is appended naming what really ran. A label already
+    written as ``{{<task>.tool}}`` resolves to that same tool, so nothing is
+    appended for a recipe composed by the current ``atelier compose``.
+
+    :param prompt: the task prompt, with its templates already resolved.
+    :param tools: the tool every task of this flow runs on.
+    :returns: the block to append, or ``""`` when every label is right.
     """
-    return {
-        t.name: t.tool
-        for t in conduit.tasks
-        if t.name in bindings and bindings[t.name] != t.tool
+    wrong = {
+        task: (labelled, tools[task])
+        for task, labelled in _LABELLED_RESULT.findall(prompt)
+        if task in tools and tools[task] != labelled
     }
+    if not wrong:
+        return ""
+    lines = "\n".join(
+        f"{task} ran on {actual}, not the {labelled} its marker above names."
+        for task, (labelled, actual) in sorted(wrong.items())
+    )
+    return (
+        "\n--- BEGIN AGENT PROVENANCE (authoritative) ---\n"
+        f"{lines}\n"
+        "--- END AGENT PROVENANCE (authoritative) ---\n"
+    )
 
 
 def check_replaceable(

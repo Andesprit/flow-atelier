@@ -165,7 +165,8 @@ A step names any harness `atelier list harnesses` shows, with or without the
 `atelier harness check codex` lists the models the agent offers, and
 `atelier harness check codex:<model>` the efforts that model offers.
 
-A prompt may not contain `{{...}}`. Composed prompts reach the agent exactly
-as you typed them, so a template reference is refused when you compose rather
-than quietly reinterpreted at run time. If you want one, write it into the
-conduit.yaml afterwards — it is a normal file.
+A prompt may not contain `{{...}}`. Composed prompts reach the agent as you
+typed them — only the whitespace around the prompt is trimmed — so a template
+reference is refused when you compose rather than quietly reinterpreted at run
+time. If you want one, write it into the conduit.yaml afterwards — it is a
+normal file.

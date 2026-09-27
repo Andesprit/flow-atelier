@@ -402,14 +402,25 @@ overlap. To change the prompt, the harness, or the diff range, edit
 no YAML to write. Each `--step` is one agent; by default each hands its
 result to the next.
 
+Every line below gates the next with `|| exit 1`, so a logged-out agent or a
+name already taken stops here instead of running something else:
+
 ```bash
+atelier harness check claude-code || exit 1
+atelier harness check codex || exit 1
 atelier compose triage \
   -s "claude-code=Propose one concrete fix. Say what you would change and why." \
-  -s "codex=Review the proposal above. Name what breaks, or say it is sound."
-atelier check triage
-atelier run triage --input brief="The nightly billing job is late."
-atelier outputs latest --task step_2
+  -s "codex=Review the proposal above. Name what breaks, or say it is sound." \
+  || exit 1
+atelier check triage || exit 1
+atelier run triage --input brief="The nightly billing job is late." || exit 1
+atelier outputs latest --task step_2 || exit 1
 ```
+
+`harness check` opens a session and closes it without sending a prompt, so it
+costs no tokens. `triage` has to be a name no conduit of yours uses yet:
+compose never overwrites one, and without the gate the rest of the block
+would run whatever workflow already had that name.
 
 `--parallel` runs the agents at the same time from the same brief instead,
 and `--synthesize <harness>=<prompt>` adds one final step that reads every

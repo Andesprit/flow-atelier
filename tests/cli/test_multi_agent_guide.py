@@ -183,3 +183,110 @@ def test_a_failed_prerequisite_stops_before_anything_runs(guide_env, tmp_path):
         assert forbidden not in run.stdout, run.stdout
     assert not marker.exists(), "the workspace block ran after a failed check"
     assert _prompts(records["claude"]) == [] and _prompts(records["codex"]) == []
+
+
+# ------------------------------------- the README quickstart, as a real shell
+
+_README = _REPO_ROOT / "README.md"
+_README_SECTION = "### Your first multi-agent workflow: chain or panel"
+GLOBAL_RAN = "GLOBAL_RECIPE_RAN"
+
+
+def _readme_script() -> str:
+    """Return the README quickstart's bash block, exactly as published.
+
+    :returns: one shell script, with no error handling the README omits.
+    """
+    body = _README.read_text(encoding="utf-8").split(_README_SECTION, 1)[1]
+    body = body.split("\n### ", 1)[0]
+    blocks = [m.group(1) for m in _BASH_BLOCK.finditer(body)]
+    assert len(blocks) == 1, f"expected 1 bash block in the section, got {len(blocks)}"
+    assert "atelier compose triage" in blocks[0]
+    # Deliberately no `set -e`: the published block gates itself, and its own
+    # final status is the status this test reads.
+    return blocks[0]
+
+
+def _global_triage(env: dict, marker: Path) -> None:
+    """Install a usable global `triage` conduit under the quickstart's name.
+
+    Its one task is called `step_2` and it declares a `brief` input, so every
+    command after `compose` in the README block would succeed against it.
+    Without the gating, that fallback is what masks the failure.
+
+    :param env: the child environment, whose global dir receives the conduit.
+    :param marker: file the recipe writes when it runs.
+    """
+    path = Path(env["ATELIER_GLOBAL_ATELIER_DIR"]) / "conduits" / "triage"
+    path.mkdir(parents=True)
+    (path / "conduit.yaml").write_text(
+        "name: triage\n"
+        "description: An unrelated recipe that already owns this name\n"
+        "inputs:\n"
+        "  brief:\n"
+        "    description: whatever the caller passes\n"
+        "tasks:\n"
+        "  - name: step_2\n"
+        "    description: prove the wrong workflow ran\n"
+        f'    task: "echo {GLOBAL_RAN} | tee \'{to_bash_path(marker)}\'"\n'
+        "    tool: tool:bash\n"
+        "    depends_on: []\n",
+        encoding="utf-8",
+    )
+
+
+def _run_readme(env: dict, tmp_path: Path):
+    """Execute the quickstart block in a workspace whose path has a space.
+
+    :param env: child environment from the fixture.
+    :param tmp_path: pytest temp directory fixture.
+    :returns: ``(completed process, workspace path)``.
+    """
+    workspace = tmp_path / "quickstart demo"
+    workspace.mkdir()
+    return (
+        run_script(_readme_script(), tmp_path / "readme.sh", workspace, env, timeout=180),
+        workspace,
+    )
+
+
+def test_the_readme_quickstart_runs_and_claims_only_what_happens(guide_env, tmp_path):
+    """The published block composes, checks, runs and reads the result back."""
+    env, _, records = guide_env
+    run, workspace = _run_readme(env, tmp_path)
+    assert run.returncode == 0, f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
+    assert CODEX_SAID in run.stdout
+
+    store = FilesystemStore(workspace / ".atelier")
+    flows = store.list_flows("triage")
+    assert len(flows) == 1
+    assert store.read_progress(flows[0]).status.value == "completed"
+    assert store.read_outputs(flows[0]) == {"step_1": CLAUDE_SAID, "step_2": CODEX_SAID}
+    assert len(_prompts(records["claude"])) == 1 and len(_prompts(records["codex"])) == 1
+
+
+@pytest.mark.parametrize("guide_env", [True], indirect=True)
+def test_the_readme_quickstart_stops_on_a_failed_prerequisite(guide_env, tmp_path):
+    """A broken `harness check` ends the block before anything is composed."""
+    env, _, records = guide_env
+    run, workspace = _run_readme(env, tmp_path)
+    assert run.returncode == 1, f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
+    assert "INJECTED agent unreachable" in run.stderr
+    for forbidden in ("composed", CLAUDE_SAID, CODEX_SAID):
+        assert forbidden not in run.stdout, run.stdout
+    assert not (workspace / ".atelier" / "conduits" / "triage").exists()
+    assert list((workspace / ".atelier").glob("flows/*")) == []
+
+
+def test_the_readme_quickstart_stops_when_the_name_is_taken(guide_env, tmp_path):
+    """A same-named global recipe cannot be run in place of the composition."""
+    env, _, records = guide_env
+    marker = tmp_path / "global-ran"
+    _global_triage(env, marker)
+    run, workspace = _run_readme(env, tmp_path)
+    assert run.returncode == 1, f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
+    assert "already exists" in run.stdout
+    # The unrelated recipe was never checked, run or read back.
+    assert not marker.exists() and GLOBAL_RAN not in run.stdout
+    assert list((workspace / ".atelier").glob("flows/*")) == []
+    assert _prompts(records["claude"]) == [] and _prompts(records["codex"]) == []

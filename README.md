@@ -472,6 +472,27 @@ quality — and nothing is remembered: `--agent` applies to that one command.
 [Checking the whole agent team before a
 run](docs/checking-the-team-before-a-run.md) walks it end to end.
 
+### Two coding agents changing the same code at once
+
+Tasks of a run share one working directory, which is fine while the agents are
+only reading. When they edit, `--worktree <task>` gives each selected task its
+own detached Git worktree, cut from your checkout's current commit before
+anything starts — so two agents can rewrite the same file and both results
+survive for you to compare:
+
+```bash
+atelier plan candidates --worktree step_1 --worktree step_2   # preview; cuts nothing
+atelier run candidates --worktree step_1 --worktree step_2 --input brief="..."
+atelier status <flow_id>                       # the path each task worked in
+atelier run --resume <flow_id>                 # continues in those same checkouts
+```
+
+The checkouts are kept after the run and `atelier rm` never deletes one.
+Nothing is merged, reset or pushed for you, untracked and ignored files are not
+copied, and a worktree is filesystem separation, not a sandbox. [Two agents
+changing the same code at
+once](docs/parallel-agents-in-separate-checkouts.md) walks it end to end.
+
 ### Reading a conduit before you run it
 
 Conduits arrive from `atelier init`, `atelier create`, a teammate's

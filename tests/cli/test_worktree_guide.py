@@ -164,7 +164,9 @@ def test_the_published_guide_runs_and_separates_the_two_agents(tmp_path, guide_e
     )
     assert done.returncode == 0, done.stdout + done.stderr
 
-    work = Path(marker.read_text().strip())
+    # Resolved: on macOS `mktemp -d` hands back /var/..., while the run
+    # records the real /private/var/... path.
+    work = Path(marker.read_text().strip()).resolve()
     flow_id, broken_id, new_id = ids.read_text().split()
     assert flow_id and broken_id and new_id
     assert len({flow_id, broken_id, new_id}) == 3

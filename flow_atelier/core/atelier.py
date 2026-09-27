@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
-from collections.abc import Container, Mapping
+from collections.abc import Container, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,12 @@ from flow_atelier.modules.engine import (
 )
 from flow_atelier.modules.flow_view import build_flow_view, build_task_log
 from flow_atelier.modules.liveness import is_runner_alive
+from flow_atelier.modules.workspace import (
+    check_selectors,
+    create_worktrees,
+    resolve_source_repo,
+    verify_worktrees,
+)
 from flow_atelier.schemas.api import (
     CreateConduitInput,
     CreateScheduleInput,
@@ -39,9 +45,14 @@ from flow_atelier.schemas.api import (
     UpdateConduitInput,
 )
 from flow_atelier.schemas.conduit import Conduit
-from flow_atelier.schemas.flow import parse_flow_id
+from flow_atelier.schemas.flow import new_flow_id, parse_flow_id
 from flow_atelier.schemas.log import LogEntry
-from flow_atelier.schemas.progress import FlowStatus, Progress, TaskStatus
+from flow_atelier.schemas.progress import (
+    FlowStatus,
+    Progress,
+    TaskStatus,
+    Workspaces,
+)
 from flow_atelier.services.executor.acp_registry import (
     LEGACY_HARNESS_ALIASES,
     SNAPSHOT_FILENAME,
@@ -284,6 +295,38 @@ class Atelier:
         )
         return bound, effective
 
+
+    def _new_workspaces(
+        self,
+        conduit: Conduit,
+        tasks: Sequence[str],
+        flow_id: str,
+        working_dir: Path | None,
+        *,
+        origin: str = "--worktree",
+    ) -> Workspaces:
+        """Create this run's separate checkouts, before any task starts.
+
+        Everything that can refuse does so first — the selectors against the
+        recipe, then the source repository — so a run that cannot be isolated
+        costs no prompt and creates nothing. Once Git is asked to build them,
+        whatever it built is kept even if a later one fails: a partly set up
+        run is recoverable, deleted work is not.
+
+        :param conduit: the recipe as this run will execute it.
+        :param tasks: the top-level task names to isolate.
+        :param flow_id: the id this run will use, naming the destination.
+        :param working_dir: the run's working directory, or ``None`` for the
+            process's; the source checkout is resolved from it.
+        :param origin: what asked for the isolation, for the diagnostics.
+        :returns: the :class:`Workspaces` to record on the run.
+        :raises WorkspaceError: a selector, the source or a destination is
+            unusable.
+        """
+        check_selectors(conduit, tasks, origin=origin)
+        source = resolve_source_repo(working_dir)
+        return create_worktrees(source, self.store.workspace_dir(flow_id), tasks)
+
     def tool_readiness(
         self, conduit: Conduit, only: Container[str] | None = None
     ) -> list[str]:
@@ -358,6 +401,7 @@ class Atelier:
         working_dir: Path | str | None = None,
         stoppable: bool = False,
         agents: Mapping[str, str] | None = None,
+        worktrees: Sequence[str] | None = None,
     ) -> str:
         """Start a new flow for the named conduit.
 
@@ -384,14 +428,29 @@ class Atelier:
             ``{task_name: "harness:<name>[:<model>[:<effort>]]"}``. Applied to
             the loaded conduit in memory and recorded on the flow's progress;
             the installed recipe is never rewritten.
+        :param worktrees: top-level task names to run in their own detached
+            Git worktree, cut from the working directory's checkout at its
+            current HEAD before any task starts. The mapping is recorded on the
+            flow so a later resume continues in the same directories. Omit it
+            and every task shares one working directory, as before.
         :returns: the newly created flow id
         :raises BindingError: a selection names no top-level harness task of
             the conduit, or an agent nothing is registered for
+        :raises WorkspaceError: a worktree selection, the source checkout or a
+            destination directory is unusable
         """
         wd = Path(working_dir) if working_dir is not None else None
         conduit = self.store.read_conduit(name)
         agents = normalize_bindings(dict(agents or {}))
         conduit = self.bind_agents(conduit, agents)
+        # The destination is named after the flow, so the id has to exist
+        # before the checkouts do. The engine takes it as given.
+        flow_id = new_flow_id(name) if worktrees else None
+        spaces = (
+            self._new_workspaces(conduit, list(worktrees), flow_id, wd)
+            if worktrees
+            else None
+        )
         return await self.engine.run(
             conduit,
             inputs,
@@ -400,8 +459,10 @@ class Atelier:
             on_task_starting=on_task_starting,
             show_steps=show_steps,
             working_dir=wd,
+            flow_id=flow_id,
             stoppable=stoppable,
             task_agents=agents,
+            workspaces=spaces,
         )
 
     async def resume_flow(
@@ -448,6 +509,8 @@ class Atelier:
             including whether the agents this resume would use can actually be
             started — happens before any saved byte is touched.
         :returns: the flow id (same as input)
+        :raises WorkspaceError: a checkout this resume has to continue in is
+            missing, is no longer a worktree, or belongs to another repository
         :raises ValueError: if the flow is not in failed or running status
         :raises BindingError: a saved or requested selection is unusable, or a
             task whose assignment is already fixed was named
@@ -494,6 +557,17 @@ class Atelier:
             )
         if effective:
             self._require_ready(conduit, only=unfinished)
+        # The checkouts are the run's, not this invocation's: a resume
+        # continues in the exact directories the first attempt recorded, with
+        # whatever a failed worker left in them. Drift in the recipe is caught
+        # against the recipe as it is now, before a single agent starts.
+        if prior.workspaces is not None:
+            check_selectors(
+                conduit,
+                prior.workspaces.paths,
+                origin=f"flow {flow_id} saved worktrees",
+            )
+            verify_worktrees(prior.workspaces, unfinished)
         inputs = self.store.read_input(flow_id)
         if working_dir is None and prior.run_path:
             working_dir = prior.run_path
@@ -509,6 +583,7 @@ class Atelier:
             resume_from=flow_id,
             stoppable=stoppable,
             task_agents=effective,
+            workspaces=prior.workspaces,
         )
 
     def _partly_looped(
@@ -555,6 +630,7 @@ class Atelier:
         working_dir: Path | str | None = None,
         stoppable: bool = False,
         agents: Mapping[str, str] | None = None,
+        worktrees: Sequence[str] | None = None,
     ) -> str:
         """Start a brand-new flow of a past run's conduit, reusing its inputs.
 
@@ -583,9 +659,16 @@ class Atelier:
             the source run is not modified. An agent that cannot be started is
             refused before the new flow exists, so no earlier task is prompted
             for a run that was going to fail anyway.
+        :param worktrees: extra top-level task names to isolate, on top of the
+            ones the source run isolated. The policy is inherited; the
+            directories are not — this is a new run, so it gets new checkouts
+            at the source repository's *current* HEAD, and the old run's
+            directories are left exactly as its agents left them.
         :returns: the newly created flow id (distinct from ``flow_id``)
         :raises FileNotFoundError: if the source flow or its conduit is gone
         :raises BindingError: a saved or requested selection is unusable
+        :raises WorkspaceError: an inherited or requested worktree selection,
+            the source checkout or a destination directory is unusable
         """
         conduit_name, _, _ = parse_flow_id(flow_id)
         conduit = self.store.read_conduit(conduit_name)
@@ -599,6 +682,23 @@ class Atelier:
         if working_dir is None and prior.run_path:
             working_dir = prior.run_path
         wd = Path(working_dir) if working_dir is not None else None
+        inherited = list(prior.workspaces.paths) if prior.workspaces else []
+        wanted = inherited + [t for t in (worktrees or []) if t not in inherited]
+        new_id = new_flow_id(conduit_name) if wanted else None
+        spaces = (
+            self._new_workspaces(
+                conduit,
+                wanted,
+                new_id,
+                wd,
+                origin=(
+                    "--worktree" if not inherited
+                    else f"flow {flow_id} saved worktrees"
+                ),
+            )
+            if wanted
+            else None
+        )
         return await self.engine.run(
             conduit,
             inputs,
@@ -607,8 +707,10 @@ class Atelier:
             on_task_starting=on_task_starting,
             show_steps=show_steps,
             working_dir=wd,
+            flow_id=new_id,
             stoppable=stoppable,
             task_agents=effective,
+            workspaces=spaces,
         )
 
     def get_status(self, flow_id: str) -> Progress:

@@ -21,6 +21,7 @@ from flow_atelier.cli._shared import (
     console,
     mark_activity,
     parse_agents_option,
+    parse_worktrees_option,
     seconds_since_activity,
 )
 from flow_atelier.cli.main import app
@@ -36,6 +37,7 @@ from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.binding import BindingError
 from flow_atelier.modules.engine import accepted_input_keys
+from flow_atelier.modules.workspace import WorkspaceError, check_selectors
 from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.log import TaskEvent
@@ -192,10 +194,12 @@ def drive_flow(
     )
     try:
         result = asyncio.run(_with_heartbeat(coro, running))
-    except BindingError as exc:
-        # Raised while validating agent selections, before any task runs and
-        # before a byte of the flow's saved state is touched. It is a usage
-        # error, not a failed run, so it gets neither footer nor resume hint.
+    except (BindingError, WorkspaceError) as exc:
+        # Raised while validating agent or worktree selections, before any task
+        # runs and before a byte of the flow's saved state is touched. It is a
+        # usage error, not a failed run, so it gets neither footer nor resume
+        # hint. A partly created set of checkouts is named in the message and
+        # left on disk; nothing here deletes an agent's directory.
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=exc.code)
     except asyncio.CancelledError:
@@ -300,6 +304,7 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
         "Use --input key=value to pass inputs, or --input-file key=path to "
         "pass a text file's contents as one input. "
         "Use --agent task=harness to run one agent task on another agent. "
+        "Use --worktree task to give that task its own Git checkout. "
         "Use --resume <flow_id> to pick up a failed or crashed run. "
         "Use --again <flow_id> to start a fresh run reusing a past flow's inputs."
     ),
@@ -332,6 +337,17 @@ def run_cmd(
             "reused and these override them."
         ),
     ),
+    worktrees_raw: list[str] = typer.Option(
+        [],
+        "--worktree",
+        help=(
+            "task: run that top-level agent or bash task in its own detached "
+            "Git worktree, cut from this checkout's HEAD (repeatable). Two "
+            "workers can then edit the same file without colliding. The "
+            "checkouts are kept after the run and nothing is merged back; "
+            "--resume continues in them, --again makes fresh ones."
+        ),
+    ),
     show_steps: bool = typer.Option(
         True,
         "--show-steps/--hide-steps",
@@ -359,6 +375,8 @@ def run_cmd(
         ``--input-file``; each file's text becomes that key's value.
     :param agents_raw: list of ``task=harness`` strings collected from
         ``--agent``; each re-points one top-level agent task for this run.
+    :param worktrees_raw: list of task names collected from ``--worktree``;
+        each gets its own Git checkout for this run.
     :param show_steps: when true, stream intermediate thinking and tool activity live.
     :param resume_from: flow id (or unique prefix) of a failed run to resume.
     :param again_from: flow id (or unique prefix) of a past run to re-run from
@@ -366,6 +384,7 @@ def run_cmd(
     """
     atelier = Atelier()
     agents = parse_agents_option(agents_raw)
+    worktrees = parse_worktrees_option(worktrees_raw)
 
     if resume_from is not None and again_from is not None:
         console.print("[red]error:[/red] --resume and --again are mutually exclusive")
@@ -382,6 +401,20 @@ def run_cmd(
             " use --again <flow_id> to change one[/dim]"
         )
         raise typer.Exit(code=1)
+
+    # A resume continues in the directories the first attempt recorded — that
+    # is what makes a failed worker's partial edits recoverable. Silently
+    # ignoring a new selection, or honouring it and abandoning those edits,
+    # would both be worse than saying no.
+    if resume_from is not None and worktrees:
+        console.print(
+            "[red]error:[/red] --resume and --worktree are mutually exclusive"
+        )
+        console.print(
+            "[dim]→ --resume continues in the checkouts the run already has;"
+            " use --again <flow_id> to start fresh ones[/dim]"
+        )
+        raise typer.Exit(code=2)
 
     # --resume path: resolve the old flow, skip input prompts
     if resume_from is not None:
@@ -424,6 +457,7 @@ def run_cmd(
                 show_steps=show_steps,
                 stoppable=True,
                 agents=agents,
+                worktrees=worktrees,
                 **callbacks,
             ),
             total_tasks=len(conduit.tasks) if conduit is not None else 0,
@@ -450,7 +484,10 @@ def run_cmd(
     # replacement is the thing that stops the run.
     try:
         effective = atelier.bind_agents(conduit, agents)
-    except BindingError as exc:
+        # Before the readiness probe and before any input prompt: a selector
+        # the recipe cannot honour should cost nothing at all.
+        check_selectors(effective, worktrees)
+    except (BindingError, WorkspaceError) as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=exc.code) from exc
 
@@ -473,6 +510,7 @@ def run_cmd(
             show_steps=show_steps,
             stoppable=True,
             agents=agents,
+            worktrees=worktrees,
             **callbacks,
         ),
         total_tasks=len(conduit.tasks),

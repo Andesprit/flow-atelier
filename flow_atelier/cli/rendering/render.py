@@ -683,6 +683,8 @@ def _render_planned_task(task: PlannedTask, console: Console) -> None:
     head.append(f"  [{task.tool}]", style="dim")
     if task.recipe_tool:
         head.append(f"  ⇄ --agent (recipe: {task.recipe_tool})", style="cyan")
+    if task.isolated:
+        head.append("  ⌂ --worktree (own checkout)", style="green")
     if task.is_loop and task.loop_text:
         head.append(f"  ↻ {task.loop_text}", style="magenta")
     if task.is_sink:
@@ -727,10 +729,34 @@ def render_plan(plan: ExecutionPlan, console: Console) -> None:
         "layering, not a runtime trace; real parallelism is also bounded by "
         "max_concurrency and conditional skips.[/dim italic]"
     )
+    if plan.isolation is not None:
+        _render_isolation(plan.isolation, console)
     for i, wave in enumerate(plan.waves):
         console.print(f"\n[bold]Wave {i}[/bold]")
         for task in wave:
             _render_planned_task(task, console)
+
+
+def _render_isolation(isolation, console: Console) -> None:
+    """Say which tasks would get their own checkout, and from what.
+
+    :param isolation: the :class:`PlanIsolation` preview.
+    :param console: Rich console to write to.
+    """
+    names = ", ".join(isolation.tasks)
+    console.print(
+        f"[green]⌂ own checkout:[/green] {escape(names)}"
+    )
+    if isolation.problem:
+        console.print(f"[yellow]  run would refuse:[/yellow] {escape(isolation.problem)}")
+        return
+    console.print(
+        f"[dim]  cut from {escape(isolation.source or '')} at "
+        f"{escape((isolation.base or '')[:12])}; each task starts at its own "
+        "checkout root. Untracked and ignored files (dependencies, .env) are "
+        "not copied, nothing is merged back, and the checkouts outlive the "
+        "run.[/dim]"
+    )
 
 
 def _format_last_run(record) -> str:

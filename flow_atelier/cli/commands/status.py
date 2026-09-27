@@ -76,9 +76,12 @@ def status_cmd(
     # resumed step actually ran on — has anything to say here; every other
     # run's agents are the recipe's, and a column of blanks says nothing.
     show_agent = bool(progress.task_agents)
+    spaces = progress.workspaces
     columns = ["task", "status"]
     if show_agent:
         columns.append("agent")
+    if spaces is not None:
+        columns.append("checkout")
     if show_iteration:
         columns.append("iteration")
     columns.append("reason")
@@ -87,6 +90,8 @@ def status_cmd(
         row = [escape(name), tp.status.value]
         if show_agent:
             row.append(escape(progress.task_agents.get(name, "")))
+        if spaces is not None:
+            row.append(escape(spaces.paths.get(name, "")))
         if show_iteration:
             row.append(f"{tp.iteration}/{tp.of}" if tp.of > 1 else "")
         row.append(escape(tp.reason or ""))
@@ -96,6 +101,14 @@ def status_cmd(
             "[dim]agent: what this run uses for that task, whether chosen with "
             "--agent or recorded from the run that produced its result; the "
             "conduit file is unchanged[/dim]"
+        )
+    if spaces is not None:
+        console.print(
+            f"[dim]checkout: this task's own Git worktree, cut from "
+            f"{escape(spaces.source)} at {escape(spaces.base[:12])}; kept after "
+            f"the run, never merged back, and not removed by `atelier rm`. A "
+            f"blank cell means the task ran in the shared working "
+            f"directory.[/dim]"
         )
     console.print(table)
     console.print(_task_status_summary(progress))

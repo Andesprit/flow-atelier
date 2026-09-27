@@ -16,6 +16,7 @@ from rich.markup import escape
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.binding import BindingError, parse_agent_bindings
+from flow_atelier.modules.workspace import WorkspaceError, parse_worktree_selectors
 from flow_atelier.schemas.log import LogEntry, TurnUsage
 from flow_atelier.schemas.progress import Progress
 from flow_atelier.services.scheduler import ScheduleStore
@@ -81,6 +82,22 @@ def parse_agents_option(raw: list[str], out: Console | None = None) -> dict[str,
         return parse_agent_bindings(raw)
     except BindingError as exc:
         (out or console).print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=exc.code) from exc
+
+
+def parse_worktrees_option(raw: list[str]) -> list[str]:
+    """Parse ``--worktree TASK`` values, exiting with the diagnostic.
+
+    Shared by ``run`` and ``plan`` so a preview and the run it previews can
+    never disagree about what was selected.
+
+    :param raw: the option values as typed.
+    :returns: the selected top-level task names, in order.
+    """
+    try:
+        return parse_worktree_selectors(raw)
+    except WorkspaceError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=exc.code) from exc
 
 

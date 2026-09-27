@@ -59,7 +59,13 @@ from flow_atelier.schemas.log import (
     StepRecord,
     TaskEvent,
 )
-from flow_atelier.schemas.progress import FlowStatus, Progress, TaskProgress, TaskStatus
+from flow_atelier.schemas.progress import (
+    FlowStatus,
+    Progress,
+    TaskProgress,
+    TaskStatus,
+    Workspaces,
+)
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext
 from flow_atelier.services.executor.bash import to_bash_path
 from flow_atelier.services.store.base import StoreBase
@@ -281,10 +287,11 @@ def validate_conduit(conduit: Conduit) -> dict[str, list[Dependency]]:
             targets += [v for v in t.inputs.values() if isinstance(v, str)]
         for template in targets:
             for ref in extract_template_refs(template):
-                # `.tool` carries no output, so it cannot race — but holding it
-                # to the same dependency rule keeps a label and the result it
-                # attributes pinned to the same edge.
-                if ref.kind in ("task", "task_tool"):
+                # `.tool` and `.workspace` carry no output, so they cannot
+                # race — but holding them to the same dependency rule keeps a
+                # label, or the directory a result came out of, pinned to the
+                # same edge as the result it describes.
+                if ref.kind in ("task", "task_tool", "task_workspace"):
                     if ref.value not in task_names:
                         raise ConduitValidationError(
                             f"task {t.name!r} references unknown task "
@@ -359,6 +366,7 @@ class Engine:
         stoppable: bool = False,
         invoking_task: str | None = None,
         task_agents: Mapping[str, str] | None = None,
+        workspaces: Workspaces | None = None,
     ) -> str:
         """Execute a conduit to completion, returning the flow id.
 
@@ -398,6 +406,11 @@ class Engine:
             executes so a later resume or re-run can reuse them. Not forwarded
             to nested ``tool:conduit`` runs: a selection names a task of the
             recipe it was given for, never a same-named task in a child.
+        :param workspaces: the separate checkouts already created for some of
+            this run's tasks, recorded on progress before anything executes and
+            used as those tasks' working directory. Every other task keeps
+            ``working_dir``. Not forwarded to nested ``tool:conduit`` runs, for
+            the same reason ``task_agents`` is not.
         :returns: the new flow id on success
         :raises ConduitValidationError: DAG is invalid (cycle, unknown dep, bad regex)
         :raises ConduitCycleError: nested conduits form a cycle or exceed depth
@@ -495,6 +508,7 @@ class Engine:
             invoking_task=invoking_task,
             stoppable=install_stop_handler,
             task_agents=dict(task_agents or {}),
+            workspaces=workspaces,
         )
         self.store.write_progress(flow_id, progress)
 
@@ -509,6 +523,12 @@ class Engine:
         # *this* flow. Selections are already applied to ``conduit``, so this
         # is the effective choice, not the recipe's default.
         effective_tools = {name: t.tool for name, t in task_map.items()}
+        # Where each task works, backing ``{{<task>.workspace}}`` and the cwd
+        # handed to its executor: its own checkout when one was created for it,
+        # otherwise the run's shared directory (the process's, when unset).
+        shared_dir = str(Path(working_dir).resolve()) if working_dir else str(Path.cwd())
+        given = dict(workspaces.paths) if workspaces is not None else {}
+        task_dirs = {name: given.get(name, shared_dir) for name in task_map}
 
         # Seed state from prior run when resuming
         prior_iterations: dict[str, list[str]] = {}
@@ -745,6 +765,7 @@ class Engine:
                         loop_history_entry_chars=self.loop_history_entry_chars,
                         conduit_dir=task_conduit_dir,
                         task_tools=effective_tools,
+                        task_workspaces=task_dirs,
                     )
                     # An agent reading a result must be told who produced it. A
                     # label written before this run chose its agents can say
@@ -796,8 +817,9 @@ class Engine:
                     ),
                     task_outputs=outputs,
                     task_tools=effective_tools,
+                    task_workspaces=task_dirs,
                     timeout=effective_timeout,
-                    working_dir=working_dir,
+                    working_dir=Path(task_dirs[t.name]),
                     show_steps=show_steps,
                     run_nested_conduit=self._make_nested_runner(
                         on_task_event,

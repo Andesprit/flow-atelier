@@ -29,6 +29,22 @@ class TaskProgress(BaseModel):
     reason: str | None = None
 
 
+class Workspaces(BaseModel):
+    """The separate Git checkouts a run gave some of its tasks.
+
+    Written before any task starts, so a crash still leaves a record of where
+    the work went. ``paths`` is absolute: an agent's edits have to be findable
+    from anywhere, not only from the directory the run was started in.
+    """
+
+    source: str
+    """Absolute path of the checkout the worktrees were cut from."""
+    base: str
+    """The exact commit every worktree of this run was created at."""
+    paths: dict[str, str] = Field(default_factory=dict)
+    """Task name to the absolute path of its own checkout."""
+
+
 class Progress(BaseModel):
     status: FlowStatus = FlowStatus.running
     current_tasks: list[str] = Field(default_factory=list)
@@ -48,3 +64,8 @@ class Progress(BaseModel):
     # on flows recorded before agent selection existed — both mean "the recipe
     # decides".
     task_agents: dict[str, str] = Field(default_factory=dict)
+    # The separate checkouts this run created for the tasks `--worktree` named,
+    # recorded before any of them started. ``None`` on a run that took the
+    # ordinary shared working directory — and on every flow recorded before
+    # per-task checkouts existed, which keeps reading exactly as it did.
+    workspaces: Workspaces | None = None

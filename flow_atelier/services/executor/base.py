@@ -29,10 +29,16 @@ class FlowContext:
     ``{{<task>.tool}}`` when an executor resolves its own templates. Already
     reflects this run's per-task agent selections, so it is what ran, not
     what the recipe named."""
+    task_workspaces: dict[str, str] = field(default_factory=dict)
+    """The directory every task of this flow works in, backing
+    ``{{<task>.workspace}}`` when an executor resolves its own templates. A
+    task given its own Git checkout by ``--worktree`` names that checkout;
+    every other task names the run's shared working directory."""
     timeout: int = 3600
     working_dir: Path | None = None
-    """Working directory for subprocess / agent execution. When ``None``,
-    executors use the process cwd."""
+    """Working directory for subprocess / agent execution — this task's own
+    checkout when one was created for it, otherwise the run's shared
+    directory. When ``None``, executors use the process cwd."""
     show_steps: bool = True
     """Stream intermediate steps (thinking, tool calls, tool results) to the
     executor's :class:`PromptSink` as they happen. Independent of

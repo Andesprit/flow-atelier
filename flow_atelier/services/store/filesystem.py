@@ -176,6 +176,21 @@ class FilesystemStore(StoreBase):
                 return candidate
         raise FileNotFoundError(f"flow not found: {flow_id}")
 
+    def workspace_dir(self, flow_id: str) -> Path:
+        """Return where ``flow_id``'s per-task checkouts belong.
+
+        Deliberately a sibling of ``flows/`` rather than a child of the flow
+        directory: :meth:`delete_flow` removes that subtree, and an agent's
+        edits must not disappear because someone pruned a run record.
+
+        :param flow_id: flow identifier.
+        :returns: the directory, which may not exist yet.
+        :raises ValueError: the id is not a single safe path component.
+        """
+        if not self._safe_flow_id(flow_id):
+            raise ValueError(f"unsafe flow id: {flow_id!r}")
+        return self.base_dir / "workspaces" / flow_id
+
     # ------------------------------------------------------------------ conduits
 
     def read_conduit(self, name: str) -> Conduit:

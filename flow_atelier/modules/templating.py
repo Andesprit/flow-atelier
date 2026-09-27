@@ -4,6 +4,7 @@ Supports five forms:
     {{inputs.<name>}}           — replaced with conduit/hitl input value
     {{<task_name>.output}}      — replaced with upstream task's output
     {{<task_name>.tool}}        — replaced with the tool that task actually ran
+    {{<task_name>.workspace}}   — replaced with the directory that task works in
     {{loop.previous}}           — this task's previous-iteration output
     {{loop.history}}            — all prior iterations of this task, numbered
 
@@ -15,6 +16,10 @@ Rules:
       upstream result names the agent that produced it even when this run
       re-pointed that task at another one. It never skips: a tool is known for
       every task in the conduit whether or not that task has run.
+    - `.workspace` is the directory that task runs in — its own Git worktree
+      when `--worktree` selected it, otherwise the run's shared working
+      directory. Like `.tool` it never skips, and it names where the work is,
+      not that any work happened there.
 """
 from __future__ import annotations
 
@@ -88,7 +93,8 @@ def extract_task_refs(template: str) -> set[str]:
 class TemplateRef(NamedTuple):
     """One ``{{...}}`` expression classified against the resolve grammar."""
 
-    kind: str   # "input" | "loop" | "task" | "task_tool" | "conduit_dir" | "unknown"
+    kind: str   # "input" | "loop" | "task" | "task_tool" | "task_workspace"
+                # | "conduit_dir" | "unknown"
     value: str  # input name / loop expr / task name / raw expr
     raw: str    # original expression, for error messages
 
@@ -115,6 +121,10 @@ def extract_template_refs(template: str) -> list[TemplateRef]:
             refs.append(TemplateRef("task", expr[: -len(".output")], expr))
         elif expr.endswith(".tool"):
             refs.append(TemplateRef("task_tool", expr[: -len(".tool")], expr))
+        elif expr.endswith(".workspace"):
+            refs.append(
+                TemplateRef("task_workspace", expr[: -len(".workspace")], expr)
+            )
         else:
             refs.append(TemplateRef("unknown", expr, expr))
     return refs
@@ -149,6 +159,7 @@ def resolve(
     loop_history_entry_chars: int = 0,
     conduit_dir: Path | str | None = None,
     task_tools: Mapping[str, str] | None = None,
+    task_workspaces: Mapping[str, str] | None = None,
 ) -> str:
     """Resolve `{{...}}` expressions in ``template``.
 
@@ -167,12 +178,15 @@ def resolve(
         ``{{conduit_dir}}``; when ``None`` the token is treated as unknown
     :param task_tools: mapping of task name -> the tool that task runs on in
         this flow, backing ``{{<task>.tool}}``
+    :param task_workspaces: mapping of task name -> the directory that task
+        runs in for this flow, backing ``{{<task>.workspace}}``
     :raises TemplateError: missing input or unknown identifier
     :raises SkipSignal: reference to a skipped/failed task output
     """
     unavailable = unavailable_tasks or set()
     history = loop_history or []
     tools = task_tools or {}
+    workspaces = task_workspaces or {}
 
     def _sub(match: re.Match[str]) -> str:
         """Replace a single ``{{...}}`` occurrence with its resolved value.
@@ -210,6 +224,11 @@ def resolve(
             if task not in tools:
                 raise TemplateError(f"unknown task in {expr!r}: {task!r}")
             return tools[task]
+        if expr.endswith(".workspace"):
+            task = expr[: -len(".workspace")]
+            if task not in workspaces:
+                raise TemplateError(f"unknown task in {expr!r}: {task!r}")
+            return workspaces[task]
         raise TemplateError(f"unknown template expression: {expr!r}")
 
     return _TEMPLATE_RE.sub(_sub, template)

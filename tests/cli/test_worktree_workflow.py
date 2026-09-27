@@ -845,11 +845,24 @@ def test_stopping_a_run_leaves_every_checkout_in_place(project):
         cwd=project.work, env=project.env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
+    def prompted(name: str) -> bool:
+        try:
+            return bool(project.prompts(name))
+        except ValueError:  # a prompt line still being written
+            return False
+
     try:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             dirs = sorted(project.workspaces_root().rglob("writer_*"))
-            if len(dirs) == 2 and all((d / "NOTES.md").exists() for d in dirs):
+            # Both agents prompted means the engine is running and handles
+            # SIGTERM; the checkouts alone exist before the flow does.
+            if (
+                len(dirs) == 2
+                and all((d / "NOTES.md").exists() for d in dirs)
+                and prompted("claude-code")
+                and prompted("codex")
+            ):
                 break
             time.sleep(0.1)
         else:  # pragma: no cover - only on a hung fixture

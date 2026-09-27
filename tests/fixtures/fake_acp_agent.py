@@ -23,6 +23,7 @@ Script schema::
             {
                 "chunks": ["text ", "more text"],
                 "delay_before": 0.0,
+                "barrier": null | {"dir": "...", "size": 2, "timeout": 10},
                 "stop": "end_turn",
                 "ask_permission": null | {
                     "summary": "...",
@@ -54,6 +55,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -258,6 +260,10 @@ class FakeAgent:
         if delay > 0:
             await asyncio.sleep(delay)
 
+        barrier = turn.get("barrier")
+        if barrier:
+            await self._rendezvous(barrier)
+
         assert self._conn is not None
 
         ask = turn.get("ask_permission")
@@ -317,6 +323,28 @@ class FakeAgent:
         usage_spec = turn.get("usage")
         usage = Usage(**usage_spec) if usage_spec is not None else None
         return PromptResponse(stop_reason=turn.get("stop", "end_turn"), usage=usage)
+
+    async def _rendezvous(self, spec: dict[str, Any]) -> None:
+        """Block until ``size`` agent processes have reached this turn.
+
+        A file-based barrier, so concurrency is proven by the flow completing
+        rather than by a timing threshold: had the engine run these tasks one
+        after another, the first arrival would wait alone and time out.
+
+        :param spec: ``{"dir": <path>, "size": <n>, "timeout": <seconds>}``.
+        :raises RequestError: the other participants never arrived.
+        """
+        gate = Path(spec["dir"])
+        gate.mkdir(parents=True, exist_ok=True)
+        (gate / str(os.getpid())).write_text("here", encoding="utf-8")
+        size = int(spec["size"])
+        deadline = time.monotonic() + float(spec.get("timeout", 10))
+        while len(list(gate.iterdir())) < size:
+            if time.monotonic() > deadline:
+                raise RequestError.internal_error(
+                    {"details": f"barrier {gate} timed out below {size} arrivals"}
+                )
+            await asyncio.sleep(0.02)
 
     # ---- unused Agent methods: stub to satisfy protocol ----
     async def authenticate(self, method_id: str, **kwargs):

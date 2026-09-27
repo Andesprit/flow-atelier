@@ -130,6 +130,25 @@ class FakeAgent:
         self._record_path = record_path
         self._conn: acp.Client | None = None
 
+    def _log(self, event: str, **fields: Any) -> None:
+        """Append one protocol event to this process's ``.events`` log.
+
+        Only written when ``record_path`` is a directory, and deliberately
+        not a ``.jsonl`` file: the prompt log readers glob for those, and a
+        handshake event is not a prompt. Nothing here is asserted on by the
+        tests that only care about prompts.
+
+        :param event: the ACP method being served.
+        :param fields: whatever that method should be remembered by.
+        """
+        if not self._record_path:
+            return
+        record = Path(self._record_path)
+        if not record.is_dir():
+            return
+        with (record / f"{os.getpid()}.events").open("a", encoding="utf-8") as file:
+            file.write(json.dumps({"event": event, **fields}) + "\n")
+
     def on_connect(self, conn: acp.Client) -> None:
         """Store the ACP client connection used for session updates.
 
@@ -147,6 +166,7 @@ class FakeAgent:
         :param client_info: client identity info (ignored).
         :param kwargs: additional keyword arguments accepted by the protocol.
         """
+        self._log("initialize", protocol_version=protocol_version)
         return InitializeResponse(
             protocol_version=acp.PROTOCOL_VERSION,
             agent_capabilities=AgentCapabilities(
@@ -169,6 +189,7 @@ class FakeAgent:
         :param mcp_servers: MCP server specs (ignored).
         :param kwargs: additional keyword arguments accepted by the protocol.
         """
+        self._log("new_session", cwd=cwd)
         if not Path(cwd).is_absolute():
             # Mirrors the real agents: claude-agent-acp rejects a relative cwd
             # with "`cwd` must be an absolute path".
@@ -246,6 +267,7 @@ class FakeAgent:
         :param session_id: session identifier the client is interacting with.
         :param kwargs: additional keyword arguments accepted by the protocol.
         """
+        self._log("prompt")
         if self._record_path:
             record = Path(self._record_path)
             if record.is_dir():
@@ -416,6 +438,7 @@ class FakeAgent:
         :param kwargs: additional keyword arguments accepted by the protocol.
         """
         del kwargs
+        self._log("set_session_model", model=model_id)
         await self._echo(session_id, f"[model_set:{model_id}]")
         return SetSessionModelResponse()
 
@@ -432,6 +455,7 @@ class FakeAgent:
         :param kwargs: additional keyword arguments accepted by the protocol.
         """
         del kwargs
+        self._log("set_config_option", option=config_id, value=value)
         await self._echo(session_id, f"[config_set:{config_id}={value}]")
         changed = next(
             (o for o in self._config_options if o.id == config_id), None

@@ -915,7 +915,10 @@ def test_the_facade_refuses_the_same_record_without_the_cli(project):
     project.source_untouched()
 
 
-def test_again_keeps_the_recorded_repository_when_started_elsewhere(project, tmp_path):
+@pytest.mark.parametrize("stand_in", ["another repository", "no repository"])
+def test_again_keeps_the_recorded_repository_when_started_elsewhere(
+    project, tmp_path, stand_in
+):
     """`--again` repeats the brief on the same code, wherever it is invoked."""
     first = project.cli(
         "run", "pair", "--worktree", "writer_a", "--worktree", "writer_b",
@@ -924,27 +927,49 @@ def test_again_keeps_the_recorded_repository_when_started_elsewhere(project, tmp
     assert first.returncode == 0, first.stdout + first.stderr
     old_id = project.flow_id(first)
     old = project.status(old_id)["workspaces"]
-    git("checkout", "-q", "--", "NOTES.md", cwd=project.work)
+    progress = project.work / ".atelier" / "flows" / old_id / "progress.json"
+    outputs = project.work / ".atelier" / "flows" / old_id / "outputs.yaml"
+    before = (progress.read_bytes(), outputs.read_bytes())
 
-    # Same store, different repository to stand in — an unrelated checkout that
-    # the rerun must not touch or base itself on.
-    elsewhere = Project(tmp_path / "another")
-    project.env["ATELIER_ATELIER_DIR"] = str(project.work / ".atelier")
+    # A commit in the source after the first run: the fresh checkouts are cut
+    # from its HEAD as it is now, and that HEAD is read in the source, not here.
+    git("checkout", "-q", "--", "NOTES.md", cwd=project.work)
+    (project.work / "LATER.md").write_text("later\n", encoding="utf-8")
+    git("add", "-A", cwd=project.work)
+    git("commit", "-qm", "later", cwd=project.work)
+    moved_on = git("rev-parse", "HEAD", cwd=project.work)
+
+    # Same store, somewhere else to stand: an unrelated repository, or a plain
+    # directory that is no repository at all.
     source = project.work
-    project.work = elsewhere.work
+    project.env["ATELIER_ATELIER_DIR"] = str(source / ".atelier")
+    if stand_in == "another repository":
+        elsewhere = Project(tmp_path / "another")
+        project.work = elsewhere.work
+    else:
+        elsewhere = None
+        project.work = tmp_path / "just a folder"
+        project.work.mkdir()
 
     second = project.cli("run", "--again", old_id, "--hide-steps")
     assert second.returncode == 0, second.stdout + second.stderr
     new = project.status(project.flow_id(second))["workspaces"]
     assert Path(new["source"]).samefile(source)
-    assert new["base"] == git("rev-parse", "HEAD", cwd=source)
+    assert new["base"] == moved_on != old["base"]
     assert sorted(new["paths"]) == ["writer_a", "writer_b"]
     assert new["paths"] != old["paths"]
     for path in new["paths"].values():
-        assert (Path(path) / "NOTES.md").exists()
-    # The repository the command was typed in was left completely alone.
-    elsewhere.source_untouched()
-    assert elsewhere.flows() == []
+        assert (Path(path) / "LATER.md").exists()
+
+    # The first run's record and results are byte-identical, and the directory
+    # the command was typed in was left completely alone.
+    assert (progress.read_bytes(), outputs.read_bytes()) == before
+    assert project.status(old_id)["workspaces"]["paths"] == old["paths"]
+    if elsewhere is not None:
+        elsewhere.source_untouched()
+        assert elsewhere.flows() == []
+    else:
+        assert list(project.work.iterdir()) == []
 
 
 def test_again_refuses_when_the_recorded_repository_is_gone(project, tmp_path):

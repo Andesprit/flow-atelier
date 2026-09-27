@@ -1019,6 +1019,106 @@ def test_the_facade_refuses_the_same_record_without_the_cli(project):
     project.source_untouched()
 
 
+def _lose_record(project, flow_id, how):
+    """Drop a run's whole workspace record, as a hand edit or bad write would.
+
+    :param project: the :class:`Project` holding the flow.
+    :param flow_id: the flow whose record to drop.
+    :param how: ``removed`` deletes the key, ``null`` empties it.
+    :returns: the progress file's path.
+    """
+    progress = project.work / ".atelier" / "flows" / flow_id / "progress.json"
+    payload = json.loads(progress.read_text(encoding="utf-8"))
+    if how == "removed":
+        del payload["workspaces"]
+    else:
+        payload["workspaces"] = None
+    progress.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return progress
+
+
+@pytest.mark.parametrize("how", ["removed", "null"])
+@pytest.mark.parametrize("command", ["--resume", "--again"])
+def test_a_lost_record_is_not_read_as_a_shared_directory_run(project, how, command):
+    """No record looks like an older shared run; the checkouts on disk say not.
+
+    Read as legacy, the resume or rerun would send both writers into the
+    user's checkout. The run's own checkout directories still exist, and that
+    is enough to refuse before anyone is prompted or anything is written.
+    """
+    flow_id, a, b = _fail_writer_b(project)
+    progress = _lose_record(project, flow_id, how)
+    before = progress.read_bytes()
+    prompts = {name: len(project.prompts(name)) for name in AGENTS}
+    flows = project.flows()
+
+    done = project.cli("run", command, flow_id, "--hide-steps")
+    assert done.returncode == 1, done.stdout + done.stderr
+    flat = _flat(done.stdout + done.stderr)
+    assert "the record is gone but their checkouts are still in" in flat
+    assert "--worktree" in flat
+
+    assert project.flows() == flows
+    assert all(len(project.prompts(name)) == n for name, n in prompts.items())
+    assert progress.read_bytes() == before
+    assert (a / "NOTES.md").read_text(encoding="utf-8") == EDIT["claude-code"]
+    assert (b / "NOTES.md").read_text(encoding="utf-8") == EDIT["codex"]
+    project.source_untouched()
+
+
+@pytest.mark.parametrize("target", ["source", "sibling"])
+def test_a_checkout_replaced_by_a_link_is_not_followed(project, target):
+    """The record is untouched; the directory it names now points elsewhere."""
+    flow_id, a, b = _fail_writer_b(project)
+    moved = b.with_name("writer_b.moved")
+    b.rename(moved)
+    b.symlink_to(project.work if target == "source" else a, target_is_directory=True)
+    prompts = {name: len(project.prompts(name)) for name in AGENTS}
+    project.set_agent("codex", writes="RESUMED IN THE WRONG PLACE\n")
+
+    done = project.cli("run", "--resume", flow_id, "--hide-steps")
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "replaced by a symbolic link" in _flat(done.stdout + done.stderr)
+
+    assert all(len(project.prompts(name)) == n for name, n in prompts.items())
+    assert (a / "NOTES.md").read_text(encoding="utf-8") == EDIT["claude-code"]
+    assert (moved / "NOTES.md").read_text(encoding="utf-8") == EDIT["codex"]
+    project.source_untouched()
+
+
+def test_the_facade_refuses_a_lost_record_without_the_cli(project):
+    """Resume and rerun through the API hit the same guard as the CLI."""
+    flow_id, _a, b = _fail_writer_b(project)
+    _lose_record(project, flow_id, "removed")
+
+    script = (
+        "import asyncio, os\n"
+        "from flow_atelier.core.atelier import Atelier\n"
+        "from flow_atelier.modules.workspace import WorkspaceError\n"
+        f"os.chdir({str(project.work)!r})\n"
+        "for call in ('resume_flow', 'rerun_flow'):\n"
+        "    try:\n"
+        f"        asyncio.run(getattr(Atelier(), call)({flow_id!r}, show_steps=False))\n"
+        "    except WorkspaceError as exc:\n"
+        "        print(call, 'refused:', exc)\n"
+        "    else:\n"
+        "        raise SystemExit(call + ' ran a run whose record was lost')\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(project.work),
+        env=project.env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "resume_flow refused:" in done.stdout
+    assert "rerun_flow refused:" in done.stdout
+    assert (b / "NOTES.md").read_text(encoding="utf-8") == EDIT["codex"]
+    project.source_untouched()
+
+
 @pytest.mark.parametrize("stand_in", ["another repository", "no repository"])
 def test_again_keeps_the_recorded_repository_when_started_elsewhere(
     project, tmp_path, stand_in

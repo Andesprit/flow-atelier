@@ -30,6 +30,7 @@ from flow_atelier.modules.liveness import is_runner_alive
 from flow_atelier.modules.workspace import (
     check_record,
     check_selectors,
+    check_unrecorded,
     create_worktrees,
     resolve_source_repo,
     verify_worktrees,
@@ -570,17 +571,16 @@ class Atelier:
         # continues in the exact directories the first attempt recorded, with
         # whatever a failed worker left in them. Drift in the recipe is caught
         # against the recipe as it is now, before a single agent starts.
-        if prior.workspaces is not None:
+        owned_root = self.store.workspace_dir(flow_id)
+        if prior.workspaces is None:
+            check_unrecorded(owned_root)
+        else:
             check_selectors(
                 conduit,
                 prior.workspaces.paths,
                 origin=f"flow {flow_id} saved worktrees",
             )
-            verify_worktrees(
-                prior.workspaces,
-                unfinished,
-                owned_root=self.store.workspace_dir(flow_id),
-            )
+            verify_worktrees(prior.workspaces, unfinished, owned_root=owned_root)
         inputs = self.store.read_input(flow_id)
         if working_dir is None and prior.run_path:
             working_dir = prior.run_path
@@ -701,7 +701,9 @@ class Atelier:
             working_dir = prior.run_path
         wd = Path(working_dir) if working_dir is not None else None
         inherited: list[str] = []
-        if prior.workspaces is not None:
+        if prior.workspaces is None:
+            check_unrecorded(self.store.workspace_dir(flow_id))
+        else:
             # A damaged record is not a policy to inherit: read as-is it would
             # silently drop the isolation and put every writer back in one
             # directory.

@@ -389,6 +389,18 @@ def check_record(saved: Workspaces, owned_root: Path) -> None:
         )
     for name, path in saved.paths.items():
         owned = owned_root / name
+        # The run only ever creates real directories here. A link in their
+        # place resolves to wherever it points, so the comparison below would
+        # pass for a link into the source checkout or a sibling's.
+        if owned.is_symlink() or Path(path).is_symlink():
+            raise WorkspaceError(
+                f"task {name!r}'s checkout {str(owned)!r} has been replaced by "
+                "a symbolic link, and this run only creates real directories; "
+                "following it could put an agent in the source checkout or "
+                "another task's. Put the original checkout back, or "
+                f"{DAMAGED_RECORD_ADVICE}",
+                code=1,
+            )
         if Path(path).resolve() != owned.resolve():
             raise WorkspaceError(
                 f"task {name!r} is recorded in {str(path)!r}, which is not the "
@@ -410,6 +422,27 @@ def check_record(saved: Workspaces, owned_root: Path) -> None:
     if unnamed := found - set(saved.paths):
         raise _missing(
             unnamed, f"their checkouts are still in {str(owned_root)!r}"
+        )
+
+
+def check_unrecorded(owned_root: Path) -> None:
+    """Refuse a run that saved no worktree record but still owns checkouts.
+
+    A missing record reads exactly like an older run that shared one
+    directory, so every writer would go back into the source checkout. The
+    checkouts this run created under ``owned_root`` are evidence the record
+    cannot erase; a run that never isolated anything has none.
+
+    :param owned_root: the directory that flow's checkouts belong under.
+    :raises WorkspaceError: checkouts exist that no record accounts for.
+    """
+    try:
+        found = sorted(item.name for item in owned_root.iterdir())
+    except OSError:
+        return
+    if found:
+        raise _missing(
+            found, f"the record is gone but their checkouts are still in {str(owned_root)!r}"
         )
 
 

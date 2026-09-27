@@ -493,6 +493,36 @@ copied, and a worktree is filesystem separation, not a sandbox. [Two agents
 changing the same code at
 once](docs/parallel-agents-in-separate-checkouts.md) walks it end to end.
 
+### Recovering a failed workflow
+
+`atelier diagnose <flow_id>` reads a finished or broken run back from what it
+saved, and keeps evidence apart from advice:
+
+```bash
+atelier diagnose latest            # what failed, what is kept, what to do next
+atelier diagnose <flow_id> --json  # the same report as one object, for a script
+```
+
+It names the task that actually failed, with a bounded tail of its own output,
+and lists a cancelled downstream task under *did not run* rather than as a
+second failure. It shows the work that completed, the agent that produced it —
+attributed from the log entry that proves what ran, from the run's saved choice,
+or called `unknown`, never guessed from the current recipe — and whether its
+result is still saved. Every suggested command carries the run's full id and is
+printed for you to run: diagnose starts no agent and writes nothing.
+
+What it refuses to claim matters as much. A saved `running` status is only
+called *crashed* when the runner is provably gone on this machine; on another
+host, with no pid, or with a pid it cannot probe, the state stays uncertain and
+no resume is recommended. A stopped or completed run is pointed at
+`atelier run --again` instead. Resume re-reads the conduit file as it stands
+now, so the report names any task that file has gained or lost since the run
+rather than promising the old shape will run again.
+
+[Recovering a failed workflow](docs/recovering-a-failed-workflow.md) walks the
+whole path: break a run, read it back, repair it, and finish it without paying
+for the completed agent work twice.
+
 ### Reading a conduit before you run it
 
 Conduits arrive from `atelier init`, `atelier create`, a teammate's
@@ -1309,6 +1339,7 @@ atelier stop <flow_id>                                 # gracefully halt a runni
 
 # inspecting
 atelier status <flow_id>
+atelier diagnose <flow_id> [--json]                    # post-mortem: what failed, what is kept, what to do next
 atelier wait <flow_id> [--timeout 60]                  # block until it finishes; exit 0 only if it did
 atelier logs <flow_id> [--task <name>] [--follow] [--json]
 atelier outputs <flow_id> [--task <name>] [--json]    # read back a finished flow's results

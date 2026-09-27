@@ -20,6 +20,7 @@ from flow_atelier.cli._shared import (
     _resolve_flow_id,
     console,
     mark_activity,
+    parse_agents_option,
     seconds_since_activity,
 )
 from flow_atelier.cli.main import app
@@ -33,6 +34,7 @@ from flow_atelier.cli.rendering.render import (
 )
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
+from flow_atelier.modules.binding import BindingError
 from flow_atelier.modules.engine import accepted_input_keys
 from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.flow import parse_flow_id
@@ -190,6 +192,12 @@ def drive_flow(
     )
     try:
         result = asyncio.run(_with_heartbeat(coro, running))
+    except BindingError as exc:
+        # Raised while validating agent selections, before any task runs and
+        # before a byte of the flow's saved state is touched. It is a usage
+        # error, not a failed run, so it gets neither footer nor resume hint.
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=exc.code)
     except asyncio.CancelledError:
         # SIGTERM via `atelier stop`: the engine has marked the flow stopped.
         render_run_footer(collected, console)
@@ -291,6 +299,7 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
         "Start a new flow for the named conduit. "
         "Use --input key=value to pass inputs, or --input-file key=path to "
         "pass a text file's contents as one input. "
+        "Use --agent task=harness to run one agent task on another agent. "
         "Use --resume <flow_id> to pick up a failed or crashed run. "
         "Use --again <flow_id> to start a fresh run reusing a past flow's inputs."
     ),
@@ -311,6 +320,16 @@ def run_cmd(
         help=(
             "key=path input read from a UTF-8 text file (repeatable). "
             "The loaded text is saved with the run, so --again replays it."
+        ),
+    ),
+    agents_raw: list[str] = typer.Option(
+        [],
+        "--agent",
+        help=(
+            "task=harness input: run that top-level agent task on that agent "
+            "for this run only (repeatable). The conduit file is never "
+            "changed; with --resume or --again the run's saved choices are "
+            "reused and these override them."
         ),
     ),
     show_steps: bool = typer.Option(
@@ -338,12 +357,15 @@ def run_cmd(
     :param inputs_raw: list of ``key=value`` input strings collected from ``--input``.
     :param input_files_raw: list of ``key=path`` strings collected from
         ``--input-file``; each file's text becomes that key's value.
+    :param agents_raw: list of ``task=harness`` strings collected from
+        ``--agent``; each re-points one top-level agent task for this run.
     :param show_steps: when true, stream intermediate thinking and tool activity live.
     :param resume_from: flow id (or unique prefix) of a failed run to resume.
     :param again_from: flow id (or unique prefix) of a past run to re-run from
         scratch, reusing its saved inputs (overridable via ``--input``).
     """
     atelier = Atelier()
+    agents = parse_agents_option(agents_raw)
 
     if resume_from is not None and again_from is not None:
         console.print("[red]error:[/red] --resume and --again are mutually exclusive")
@@ -374,7 +396,11 @@ def run_cmd(
         # "[1/5], just started" for a run finishing its last two tasks.
         drive_flow(
             lambda **callbacks: atelier.resume_flow(
-                flow_id, show_steps=show_steps, stoppable=True, **callbacks
+                flow_id,
+                show_steps=show_steps,
+                stoppable=True,
+                agents=agents,
+                **callbacks,
             ),
             total_tasks=0,
             verb="resuming",
@@ -397,6 +423,7 @@ def run_cmd(
                 overrides=overrides,
                 show_steps=show_steps,
                 stoppable=True,
+                agents=agents,
                 **callbacks,
             ),
             total_tasks=len(conduit.tasks) if conduit is not None else 0,
@@ -418,10 +445,19 @@ def run_cmd(
 
     _reject_unknown_inputs(conduit, inputs)
 
+    # Apply the agent selections before the readiness gate, so replacing an
+    # agent you are not logged into is enough to run — and so an unavailable
+    # replacement is the thing that stops the run.
+    try:
+        effective = atelier.bind_agents(conduit, agents)
+    except BindingError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=exc.code) from exc
+
     # Readiness gate: refuse to start an unrunnable conduit (unregistered tool
     # or a harness CLI missing from PATH) before prompting for inputs or
     # spending any wall-clock/tokens.
-    problems = atelier.tool_readiness(conduit)
+    problems = atelier.tool_readiness(effective)
     if problems:
         for problem in problems:
             console.print(f"[red]cannot run:[/red] {escape(problem)}")
@@ -432,7 +468,12 @@ def run_cmd(
     console.print(_render_orchestration_msg(f'loading conduit "{conduit_name}"'))
     drive_flow(
         lambda **callbacks: atelier.run_conduit(
-            conduit_name, inputs, show_steps=show_steps, stoppable=True, **callbacks
+            conduit_name,
+            inputs,
+            show_steps=show_steps,
+            stoppable=True,
+            agents=agents,
+            **callbacks,
         ),
         total_tasks=len(conduit.tasks),
     )

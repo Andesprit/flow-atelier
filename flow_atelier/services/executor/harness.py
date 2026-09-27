@@ -158,6 +158,40 @@ class ProbeResult:
     current_effort: str = ""
     stderr: str = ""
 
+    def guidance(self) -> list[str]:
+        """Return what the user has to do about a failed check, in order.
+
+        Derived from ``stage`` alone, never guessed: a stage with no setup
+        step anyone can name (a refused model, a spawn error) yields nothing
+        rather than a plausible-sounding instruction. Installing an agent and
+        logging into one stay with the user; this only says which is missing.
+
+        :returns: zero or more instruction lines; empty when the probe passed
+            or nothing actionable is known.
+        """
+        if self.ok:
+            return []
+        if self.stage == "path":
+            return [
+                "install this agent yourself and make sure its command is on "
+                "PATH, then re-run this check"
+            ]
+        if self.stage == "session":
+            lines = []
+            if self.auth_methods:
+                lines.append(
+                    "this agent likely needs a login — it accepts: "
+                    + ", ".join(self.auth_methods)
+                )
+            lines.append("log in with the agent's own CLI, then re-run this check")
+            return lines
+        if self.stage in ("initialize", "handshake"):
+            return [
+                "the command started but did not speak ACP — check it is the "
+                "agent's ACP entry point (some CLIs need an --acp flag)"
+            ]
+        return []
+
 
 @dataclass
 class _SelectChoice:

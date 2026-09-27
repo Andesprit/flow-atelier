@@ -40,3 +40,11 @@ class Progress(BaseModel):
     run_path: str | None = None
     invoking_task: str | None = None
     stoppable: bool = False
+    # Per-task agent selections in force for this run: the effective
+    # ``harness:<name>[:<model>[:<effort>]]`` for every task whose agent was
+    # chosen at launch rather than read from the recipe, plus any task a resume
+    # kept the completed result of, recorded as the agent that actually
+    # produced it. Empty for a run that took the recipe as written, and absent
+    # on flows recorded before agent selection existed — both mean "the recipe
+    # decides".
+    task_agents: dict[str, str] = Field(default_factory=dict)

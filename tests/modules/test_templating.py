@@ -226,3 +226,45 @@ def test_extract_template_refs_preserves_source_order():
     """Verify refs are returned in source-appearance order."""
     refs = extract_template_refs("{{b.output}} {{inputs.a}}")
     assert [r.value for r in refs] == ["b", "a"]
+
+
+# ------------------------------------------------------- {{<task>.tool}}
+
+
+def test_task_tool_resolves_to_the_tool_that_task_runs_on():
+    """A prompt can name the agent behind a result it quotes."""
+    out = resolve(
+        "from {{build.tool}}: {{build.output}}",
+        {},
+        {"build": "done"},
+        task_tools={"build": "harness:codex"},
+    )
+    assert out == "from harness:codex: done"
+
+
+def test_task_tool_reports_the_effective_tool_not_the_recipe_default():
+    """The caller passes what ran, so a re-pointed task attributes correctly."""
+    out = resolve(
+        "{{build.tool}}", {}, {}, task_tools={"build": "harness:gemini:pro"}
+    )
+    assert out == "harness:gemini:pro"
+
+
+def test_task_tool_does_not_skip_for_a_task_with_no_output_yet():
+    """A tool is known whether or not the task has produced anything."""
+    assert resolve("{{build.tool}}", {}, {}, task_tools={"build": "harness:x"}) == (
+        "harness:x"
+    )
+
+
+def test_task_tool_of_an_unknown_task_is_a_hard_error():
+    """Nothing can be attributed to a task the conduit does not define."""
+    with pytest.raises(TemplateError, match="unknown task"):
+        resolve("{{ghost.tool}}", {}, {}, task_tools={"build": "harness:x"})
+
+
+def test_extract_template_refs_classifies_task_tool():
+    """Validation sees `.tool` as a task reference of its own kind."""
+    assert extract_template_refs("{{build.tool}}") == [
+        TemplateRef("task_tool", "build", "build.tool")
+    ]

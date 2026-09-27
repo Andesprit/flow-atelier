@@ -396,6 +396,82 @@ overlap. To change the prompt, the harness, or the diff range, edit
 `.atelier/conduits/my-review/conduit.yaml` — it is a normal conduit, and
 `atelier show my-review` prints the exact prompt it will send.
 
+### Your first multi-agent workflow: chain or panel
+
+`atelier compose` turns a brief and a list of agents into one conduit, with
+no YAML to write. Each `--step` is one agent; by default each hands its
+result to the next.
+
+Every line below gates the next with `|| exit 1`, so a logged-out agent or a
+name already taken stops here instead of running something else:
+
+```bash
+atelier harness check claude-code || exit 1
+atelier harness check codex || exit 1
+atelier compose triage \
+  -s "claude-code=Propose one concrete fix. Say what you would change and why." \
+  -s "codex=Review the proposal above. Name what breaks, or say it is sound." \
+  || exit 1
+atelier check triage || exit 1
+atelier run triage --input brief="The nightly billing job is late." || exit 1
+atelier outputs latest --task step_2 || exit 1
+```
+
+`harness check` opens a session and closes it without sending a prompt, so it
+costs no tokens. `triage` has to be a name no conduit of yours uses yet:
+compose never overwrites one, and without the gate the rest of the block
+would run whatever workflow already had that name.
+
+`--parallel` runs the agents at the same time from the same brief instead,
+and `--synthesize <harness>=<prompt>` adds one final step that reads every
+result. Composition writes the file and stops: no agent starts until you
+run it, and the conduit it writes is an ordinary one to read and edit.
+
+[Orchestrating several agents in one workflow](docs/multi-agent-workflow.md)
+walks the whole path — compose, inspect, run, read back, recover — for both
+shapes.
+
+### Running one workflow with different agents
+
+The agent a step names is a default. `--agent <task>=<harness>` on `run` and
+`plan` runs one task on another agent for one invocation, leaving the file
+alone, and a resume reuses that choice or replaces it for the step that failed:
+
+```bash
+atelier plan triage --agent step_2=claude-code   # preview; starts nothing
+atelier run triage --agent step_2=claude-code --input brief="..."
+atelier status <flow_id>                         # which agent ran which task
+atelier run --resume <flow_id> --agent step_2=codex
+```
+
+[Running one workflow with different
+agents](docs/reusing-a-workflow-with-other-agents.md) walks it end to end.
+
+### Checking the whole agent team before a run
+
+`atelier check <name>` reads files. `atelier check <name> --probe` asks the
+agents: it starts every distinct agent the workflow would use, opens a
+session with each and stops, so a logged-out or missing agent is found
+before the first task rather than four minutes into a run. No prompt is
+sent. It takes the same `--agent <task>=<harness>` mapping as `run`, so the
+team you check is the team you run:
+
+```bash
+atelier check triage --probe --recursive --timeout 60   # the whole call tree
+atelier check triage --probe --agent step_2=claude-code \
+  && atelier run triage --agent step_2=claude-code --input brief="..."
+```
+
+Each distinct `harness:<name>[:<model>[:<effort>]]` is started once and its
+verdict is attributed to every task it answers for; failures are collected
+across the team instead of stopping at the first. `--probe --json` emits the
+same report as one document for a script or a coding agent. Passing proves
+startup only — not prompt-time authentication, quota, model access or output
+quality — and nothing is remembered: `--agent` applies to that one command.
+
+[Checking the whole agent team before a
+run](docs/checking-the-team-before-a-run.md) walks it end to end.
+
 ### Reading a conduit before you run it
 
 Conduits arrive from `atelier init`, `atelier create`, a teammate's
@@ -990,6 +1066,10 @@ map, and a `tasks` list. Each task has a `name`, a `task` body, a
 - `{{inputs.<name>}}` — a conduit input or HITL answer.
 - `{{<task_name>.output}}` — the printed output of an earlier task.
 The earlier task must appear in `depends_on`.
+- `{{<task_name>.tool}}` — the tool that task actually ran on, so a prompt
+quoting an upstream result can name the agent that produced it. It follows a
+`--agent` selection, so the label stays true when a run replaces that agent.
+The named task must appear in `depends_on`.
 - `{{loop.previous}}` — this task's output from its previous loop
 iteration (empty before the first iteration completes). Only valid on
 a looping task (`repeat > 1`).
@@ -1185,6 +1265,11 @@ flow folder under `.atelier/flows/` in the current working directory.
 atelier init
 atelier create <name> [--description <text>] [--template hello|code-review]
                                                        # scaffold a starter conduit
+atelier compose <name> --step <harness>=<prompt> --step ... [--parallel]
+                       [--synthesize <harness>=<prompt>] [--description <text>]
+                                                       # write a multi-agent conduit: a handoff chain,
+                                                       # or parallel workers plus one synthesis step
+                                                       # see docs/multi-agent-workflow.md
 atelier check [<conduit>] [--json] [--recursive]        # validate conduit(s) without running
                                                        # --recursive also checks the conduits they call
 atelier plan <conduit> [--json]                        # print the DAG as ordered waves, run nothing

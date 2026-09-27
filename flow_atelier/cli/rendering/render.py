@@ -681,6 +681,8 @@ def _render_planned_task(task: PlannedTask, console: Console) -> None:
     head = Text("  ")
     head.append(task.name, style="bold")
     head.append(f"  [{task.tool}]", style="dim")
+    if task.recipe_tool:
+        head.append(f"  ⇄ --agent (recipe: {task.recipe_tool})", style="cyan")
     if task.is_loop and task.loop_text:
         head.append(f"  ↻ {task.loop_text}", style="magenta")
     if task.is_sink:

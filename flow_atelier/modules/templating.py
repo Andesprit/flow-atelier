@@ -1,8 +1,9 @@
 """Template resolution for task prompts and inputs.
 
-Supports four forms:
+Supports five forms:
     {{inputs.<name>}}           — replaced with conduit/hitl input value
     {{<task_name>.output}}      — replaced with upstream task's output
+    {{<task_name>.tool}}        — replaced with the tool that task actually ran
     {{loop.previous}}           — this task's previous-iteration output
     {{loop.history}}            — all prior iterations of this task, numbered
 
@@ -10,10 +11,15 @@ Rules:
     - Missing `inputs.x`              -> TemplateError (immediate failure)
     - Reference to task not in outputs (or marked skipped/failed) -> SkipSignal
     - `loop.*` resolves to "" before the first iteration completes
+    - `.tool` is the run's *effective* tool, so a prompt that attributes an
+      upstream result names the agent that produced it even when this run
+      re-pointed that task at another one. It never skips: a tool is known for
+      every task in the conduit whether or not that task has run.
 """
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -82,7 +88,7 @@ def extract_task_refs(template: str) -> set[str]:
 class TemplateRef(NamedTuple):
     """One ``{{...}}`` expression classified against the resolve grammar."""
 
-    kind: str   # "input" | "loop" | "task" | "conduit_dir" | "unknown"
+    kind: str   # "input" | "loop" | "task" | "task_tool" | "conduit_dir" | "unknown"
     value: str  # input name / loop expr / task name / raw expr
     raw: str    # original expression, for error messages
 
@@ -107,6 +113,8 @@ def extract_template_refs(template: str) -> list[TemplateRef]:
             refs.append(TemplateRef("conduit_dir", expr, expr))
         elif expr.endswith(".output"):
             refs.append(TemplateRef("task", expr[: -len(".output")], expr))
+        elif expr.endswith(".tool"):
+            refs.append(TemplateRef("task_tool", expr[: -len(".tool")], expr))
         else:
             refs.append(TemplateRef("unknown", expr, expr))
     return refs
@@ -140,6 +148,7 @@ def resolve(
     loop_history_limit: int = 0,
     loop_history_entry_chars: int = 0,
     conduit_dir: Path | str | None = None,
+    task_tools: Mapping[str, str] | None = None,
 ) -> str:
     """Resolve `{{...}}` expressions in ``template``.
 
@@ -156,11 +165,14 @@ def resolve(
         entry; <= 0 means unlimited
     :param conduit_dir: absolute dir of the running conduit, backing
         ``{{conduit_dir}}``; when ``None`` the token is treated as unknown
+    :param task_tools: mapping of task name -> the tool that task runs on in
+        this flow, backing ``{{<task>.tool}}``
     :raises TemplateError: missing input or unknown identifier
     :raises SkipSignal: reference to a skipped/failed task output
     """
     unavailable = unavailable_tasks or set()
     history = loop_history or []
+    tools = task_tools or {}
 
     def _sub(match: re.Match[str]) -> str:
         """Replace a single ``{{...}}`` occurrence with its resolved value.
@@ -193,6 +205,11 @@ def resolve(
                     f"references output of task {task!r} which has not completed"
                 )
             return task_outputs[task]
+        if expr.endswith(".tool"):
+            task = expr[: -len(".tool")]
+            if task not in tools:
+                raise TemplateError(f"unknown task in {expr!r}: {task!r}")
+            return tools[task]
         raise TemplateError(f"unknown template expression: {expr!r}")
 
     return _TEMPLATE_RE.sub(_sub, template)

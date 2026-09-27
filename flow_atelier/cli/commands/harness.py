@@ -153,25 +153,8 @@ def _render_probe(tool: str, launch: list[str], result) -> None:
     console.print(f"  [red]not usable[/red] — {escape(result.detail)}")
     # Say what the user has to do, and be explicit that it is theirs to do:
     # flow-atelier never installs an agent and never logs one in.
-    if result.stage == "path":
-        console.print(
-            "  [yellow]install this agent yourself[/yellow] and make sure its "
-            "command is on PATH, then re-run this check"
-        )
-    elif result.stage == "session":
-        if result.auth_methods:
-            console.print(
-                f"  [yellow]this agent likely needs a login[/yellow] — it accepts: "
-                f"{escape(', '.join(result.auth_methods))}"
-            )
-        console.print(
-            "  [yellow]log in with the agent's own CLI[/yellow], then re-run this check"
-        )
-    elif result.stage in ("initialize", "handshake"):
-        console.print(
-            "  [yellow]the command started but did not speak ACP[/yellow] — check "
-            "it is the agent's ACP entry point (some CLIs need an --acp flag)"
-        )
+    for line in result.guidance():
+        console.print(f"  [yellow]{escape(line)}[/yellow]")
     if result.stderr:
         console.print("  [dim]agent stderr:[/dim]")
         for line in result.stderr.splitlines()[-10:]:

@@ -23,6 +23,7 @@ Script schema::
             {
                 "chunks": ["text ", "more text"],
                 "delay_before": 0.0,
+                "barrier": null | {"dir": "...", "size": 2, "timeout": 10},
                 "stop": "end_turn",
                 "ask_permission": null | {
                     "summary": "...",
@@ -54,6 +55,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +130,25 @@ class FakeAgent:
         self._record_path = record_path
         self._conn: acp.Client | None = None
 
+    def _log(self, event: str, **fields: Any) -> None:
+        """Append one protocol event to this process's ``.events`` log.
+
+        Only written when ``record_path`` is a directory, and deliberately
+        not a ``.jsonl`` file: the prompt log readers glob for those, and a
+        handshake event is not a prompt. Nothing here is asserted on by the
+        tests that only care about prompts.
+
+        :param event: the ACP method being served.
+        :param fields: whatever that method should be remembered by.
+        """
+        if not self._record_path:
+            return
+        record = Path(self._record_path)
+        if not record.is_dir():
+            return
+        with (record / f"{os.getpid()}.events").open("a", encoding="utf-8") as file:
+            file.write(json.dumps({"event": event, **fields}) + "\n")
+
     def on_connect(self, conn: acp.Client) -> None:
         """Store the ACP client connection used for session updates.
 
@@ -145,6 +166,7 @@ class FakeAgent:
         :param client_info: client identity info (ignored).
         :param kwargs: additional keyword arguments accepted by the protocol.
         """
+        self._log("initialize", protocol_version=protocol_version)
         return InitializeResponse(
             protocol_version=acp.PROTOCOL_VERSION,
             agent_capabilities=AgentCapabilities(
@@ -167,6 +189,7 @@ class FakeAgent:
         :param mcp_servers: MCP server specs (ignored).
         :param kwargs: additional keyword arguments accepted by the protocol.
         """
+        self._log("new_session", cwd=cwd)
         if not Path(cwd).is_absolute():
             # Mirrors the real agents: claude-agent-acp rejects a relative cwd
             # with "`cwd` must be an absolute path".
@@ -244,6 +267,7 @@ class FakeAgent:
         :param session_id: session identifier the client is interacting with.
         :param kwargs: additional keyword arguments accepted by the protocol.
         """
+        self._log("prompt")
         if self._record_path:
             record = Path(self._record_path)
             if record.is_dir():
@@ -257,6 +281,10 @@ class FakeAgent:
         delay = float(turn.get("delay_before", 0) or 0)
         if delay > 0:
             await asyncio.sleep(delay)
+
+        barrier = turn.get("barrier")
+        if barrier:
+            await self._rendezvous(barrier)
 
         assert self._conn is not None
 
@@ -317,6 +345,28 @@ class FakeAgent:
         usage_spec = turn.get("usage")
         usage = Usage(**usage_spec) if usage_spec is not None else None
         return PromptResponse(stop_reason=turn.get("stop", "end_turn"), usage=usage)
+
+    async def _rendezvous(self, spec: dict[str, Any]) -> None:
+        """Block until ``size`` agent processes have reached this turn.
+
+        A file-based barrier, so concurrency is proven by the flow completing
+        rather than by a timing threshold: had the engine run these tasks one
+        after another, the first arrival would wait alone and time out.
+
+        :param spec: ``{"dir": <path>, "size": <n>, "timeout": <seconds>}``.
+        :raises RequestError: the other participants never arrived.
+        """
+        gate = Path(spec["dir"])
+        gate.mkdir(parents=True, exist_ok=True)
+        (gate / str(os.getpid())).write_text("here", encoding="utf-8")
+        size = int(spec["size"])
+        deadline = time.monotonic() + float(spec.get("timeout", 10))
+        while len(list(gate.iterdir())) < size:
+            if time.monotonic() > deadline:
+                raise RequestError.internal_error(
+                    {"details": f"barrier {gate} timed out below {size} arrivals"}
+                )
+            await asyncio.sleep(0.02)
 
     # ---- unused Agent methods: stub to satisfy protocol ----
     async def authenticate(self, method_id: str, **kwargs):
@@ -388,6 +438,7 @@ class FakeAgent:
         :param kwargs: additional keyword arguments accepted by the protocol.
         """
         del kwargs
+        self._log("set_session_model", model=model_id)
         await self._echo(session_id, f"[model_set:{model_id}]")
         return SetSessionModelResponse()
 
@@ -404,6 +455,7 @@ class FakeAgent:
         :param kwargs: additional keyword arguments accepted by the protocol.
         """
         del kwargs
+        self._log("set_config_option", option=config_id, value=value)
         await self._echo(session_id, f"[config_set:{config_id}={value}]")
         changed = next(
             (o for o in self._config_options if o.id == config_id), None

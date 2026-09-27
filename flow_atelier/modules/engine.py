@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from flow_atelier.modules.binding import provenance_note
 from flow_atelier.modules.conditions import (
     Dependency,
     DependencyParseError,
@@ -280,7 +281,10 @@ def validate_conduit(conduit: Conduit) -> dict[str, list[Dependency]]:
             targets += [v for v in t.inputs.values() if isinstance(v, str)]
         for template in targets:
             for ref in extract_template_refs(template):
-                if ref.kind == "task":
+                # `.tool` carries no output, so it cannot race — but holding it
+                # to the same dependency rule keeps a label and the result it
+                # attributes pinned to the same edge.
+                if ref.kind in ("task", "task_tool"):
                     if ref.value not in task_names:
                         raise ConduitValidationError(
                             f"task {t.name!r} references unknown task "
@@ -354,6 +358,7 @@ class Engine:
         ancestor_conduits: tuple[str, ...] = (),
         stoppable: bool = False,
         invoking_task: str | None = None,
+        task_agents: Mapping[str, str] | None = None,
     ) -> str:
         """Execute a conduit to completion, returning the flow id.
 
@@ -388,6 +393,11 @@ class Engine:
             parent step that spawned this child; recorded on the child's
             progress so resume can match the right child when a parent has two
             steps invoking the same sub-conduit. ``None`` for top-level runs.
+        :param task_agents: the per-task agent selections already applied to
+            ``conduit``, recorded on this run's progress before any task
+            executes so a later resume or re-run can reuse them. Not forwarded
+            to nested ``tool:conduit`` runs: a selection names a task of the
+            recipe it was given for, never a same-named task in a child.
         :returns: the new flow id on success
         :raises ConduitValidationError: DAG is invalid (cycle, unknown dep, bad regex)
         :raises ConduitCycleError: nested conduits form a cycle or exceed depth
@@ -484,6 +494,7 @@ class Engine:
             run_path=run_path,
             invoking_task=invoking_task,
             stoppable=install_stop_handler,
+            task_agents=dict(task_agents or {}),
         )
         self.store.write_progress(flow_id, progress)
 
@@ -494,6 +505,10 @@ class Engine:
         outputs: dict[str, str] = {}
         skip_reasons: dict[str, str] = {}
         task_map = {t.name: t for t in conduit.tasks}
+        # What `{{<task>.tool}}` resolves to: the tool each task runs on in
+        # *this* flow. Selections are already applied to ``conduit``, so this
+        # is the effective choice, not the recipe's default.
+        effective_tools = {name: t.tool for name, t in task_map.items()}
 
         # Seed state from prior run when resuming
         prior_iterations: dict[str, list[str]] = {}
@@ -503,13 +518,14 @@ class Engine:
                     statuses[tname] = TaskStatus.completed
                     outputs[tname] = prior_outputs.get(tname, "")
                     progress.tasks[tname] = tp
-            self.store.write_progress(flow_id, progress)
             # Rebuild loop history for tasks that will re-run, so they
             # continue at the next iteration with {{loop.*}} context intact.
             # Append order is chronological even across repeated resumes.
+            executed: dict[str, str] = {}
             for entry in self.store.read_logs(flow_id):
                 if entry.exit_code != 0:
                     continue
+                executed[entry.task] = entry.tool
                 if statuses.get(entry.task) == TaskStatus.completed:
                     continue
                 prior_iterations.setdefault(entry.task, []).append(
@@ -517,6 +533,25 @@ class Engine:
                     if entry.last_turn_output is not None
                     else entry.output
                 )
+            # Work this resume keeps rather than redoes was produced by the tool
+            # the log recorded, which is not necessarily the one the recipe
+            # names now. Pin that history so the label a downstream prompt
+            # carries — and the agent this run reports for the task — is the
+            # one that actually did it.
+            for tname, tool in executed.items():
+                current = effective_tools.get(tname)
+                if statuses.get(tname) != TaskStatus.completed:
+                    continue
+                if current is None or current == tool:
+                    continue
+                # Agents only, on both sides: a task the recipe has since
+                # turned into a `tool:` step, or that was one, has no agent to
+                # attribute and must not have one recorded for it.
+                if not (tool.startswith("harness:") and current.startswith("harness:")):
+                    continue
+                effective_tools[tname] = tool
+                progress.task_agents[tname] = tool
+            self.store.write_progress(flow_id, progress)
 
         runtime_inputs = dict(inputs)  # mutable copy (HITL may append)
 
@@ -703,13 +738,22 @@ class Engine:
                     task_conduit_dir = to_bash_path(conduit_dir)
 
                 def _resolve_task() -> str:
-                    return resolve(
+                    text = resolve(
                         t.task, runtime_inputs, outputs,
                         unavailable_tasks=unavailable, loop_history=loop_history,
                         loop_history_limit=self.loop_history_limit,
                         loop_history_entry_chars=self.loop_history_entry_chars,
                         conduit_dir=task_conduit_dir,
+                        task_tools=effective_tools,
                     )
+                    # An agent reading a result must be told who produced it. A
+                    # label written before this run chose its agents can say
+                    # the wrong name; the correction is appended rather than
+                    # substituted into text the user owns. Agent tasks only: a
+                    # shell body is not prose and must not gain lines.
+                    if t.tool.startswith("harness:"):
+                        text += provenance_note(text, effective_tools)
+                    return text
 
                 try:
                     resolved = _resolve_task()
@@ -751,6 +795,7 @@ class Engine:
                         if conduit.interaction and conduit.interaction.supervisor else None
                     ),
                     task_outputs=outputs,
+                    task_tools=effective_tools,
                     timeout=effective_timeout,
                     working_dir=working_dir,
                     show_steps=show_steps,

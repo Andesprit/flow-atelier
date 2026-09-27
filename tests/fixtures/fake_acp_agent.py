@@ -24,6 +24,8 @@ Script schema::
                 "chunks": ["text ", "more text"],
                 "delay_before": 0.0,
                 "barrier": null | {"dir": "...", "size": 2, "timeout": 10},
+                "write": null | {"path": "NOTES.md", "text": "..."},
+                "fail_auth": null | "login expired",  // after write, before chunks
                 "stop": "end_turn",
                 "ask_permission": null | {
                     "summary": "...",
@@ -33,6 +35,11 @@ Script schema::
             ...
         ]
     }
+
+``write`` writes ``text`` to ``path`` **relative to the agent process's own
+working directory**, the way a real coding agent edits the checkout it was
+started in. It is how a test proves where an agent actually worked: the bytes
+land in one directory and nowhere else.
 
 Each call to ``prompt`` pops the next turn. If turns run out, the agent
 returns ``stop_reason="end_turn"`` with no chunks.
@@ -282,6 +289,19 @@ class FakeAgent:
         if delay > 0:
             await asyncio.sleep(delay)
 
+        write = turn.get("write")
+        if write:
+            # Relative on purpose: resolved against this process's cwd, which
+            # is the working directory the client asked for.
+            target = Path(write["path"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(write["text"], encoding="utf-8")
+
+        # A login that lapses mid-task: the prompt arrived and may have acted,
+        # then the agent refuses before sending a single chunk.
+        if turn.get("fail_auth"):
+            raise RequestError.auth_required({"details": turn["fail_auth"]})
+
         barrier = turn.get("barrier")
         if barrier:
             await self._rendezvous(barrier)
@@ -520,6 +540,9 @@ async def _main() -> None:
     parser.add_argument("--script", required=True)
     args = parser.parse_args()
     script = json.loads(args.script)
+    # Startup chatter on stderr, the way real adapters log their own timings.
+    if script.get("stderr"):
+        print(script["stderr"], file=sys.stderr, flush=True)
     agent = FakeAgent(
         turns=script.get("turns", []),
         modes=script.get("modes"),

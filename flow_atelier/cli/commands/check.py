@@ -478,8 +478,11 @@ def _render_agent(tool: str, result: ProbeResult, seconds: float, tasks: list[_T
         console.print(f"      [dim]·[/dim] {escape(task.path)}{suffix}")
     for line in _probe_hint(tool, result):
         console.print(f"      [yellow]{escape(line)}[/yellow]")
-    for line in result.stderr.splitlines()[-5:]:
-        console.print(f"      [dim]{escape(line)}[/dim]")
+    # A healthy agent's own startup logging is noise here; it only explains
+    # a failure, as `atelier harness check` shows it.
+    if not result.ok:
+        for line in result.stderr.splitlines()[-5:]:
+            console.print(f"      [dim]{escape(line)}[/dim]")
 
 
 def _probe_row(

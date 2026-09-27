@@ -472,6 +472,58 @@ quality — and nothing is remembered: `--agent` applies to that one command.
 [Checking the whole agent team before a
 run](docs/checking-the-team-before-a-run.md) walks it end to end.
 
+### Two coding agents changing the same code at once
+
+Tasks of a run share one working directory, which is fine while the agents are
+only reading. When they edit, `--worktree <task>` gives each selected task its
+own detached Git worktree, cut from your checkout's current commit before
+anything starts — so two agents can rewrite the same file and both results
+survive for you to compare:
+
+```bash
+atelier plan candidates --worktree step_1 --worktree step_2   # preview; cuts nothing
+atelier run candidates --worktree step_1 --worktree step_2 --input brief="..."
+atelier status <flow_id>                       # the path each task worked in
+atelier run --resume <flow_id>                 # continues in those same checkouts
+```
+
+The checkouts are kept after the run and `atelier rm` never deletes one.
+Nothing is merged, reset or pushed for you, untracked and ignored files are not
+copied, and a worktree is filesystem separation, not a sandbox. [Two agents
+changing the same code at
+once](docs/parallel-agents-in-separate-checkouts.md) walks it end to end.
+
+### Recovering a failed workflow
+
+`atelier diagnose <flow_id>` reads a finished or broken run back from what it
+saved, and keeps evidence apart from advice:
+
+```bash
+atelier diagnose latest            # what failed, what is kept, what to do next
+atelier diagnose <flow_id> --json  # the same report as one object, for a script
+```
+
+It names the task that actually failed, with a bounded tail of its own output,
+and lists a cancelled downstream task apart from it rather than as a second
+failure — while never calling that cancellation work that never ran, because a
+task can be cancelled mid-flight with its changes already on disk. It shows the work that completed, the agent that produced it —
+attributed from the log entry that proves what ran, from the run's saved choice,
+or called `unknown`, never guessed from the current recipe — and whether its
+result is still saved. Every suggested command carries the run's full id and is
+printed for you to run: diagnose starts no agent and writes nothing.
+
+What it refuses to claim matters as much. A saved `running` status is only
+called *crashed* when the runner is provably gone on this machine; on another
+host, with no pid, or with a pid it cannot probe, the state stays uncertain and
+no resume is recommended. A stopped run is pointed at `atelier run --again`
+instead, and a completed one is told there is nothing to recover. Resume re-reads the conduit file as it stands
+now, so the report names any task that file has gained or lost since the run
+rather than promising the old shape will run again.
+
+[Recovering a failed workflow](docs/recovering-a-failed-workflow.md) walks the
+whole path: break a run, read it back, repair it, and finish it without paying
+for the completed agent work twice.
+
 ### Reading a conduit before you run it
 
 Conduits arrive from `atelier init`, `atelier create`, a teammate's
@@ -1288,6 +1340,7 @@ atelier stop <flow_id>                                 # gracefully halt a runni
 
 # inspecting
 atelier status <flow_id>
+atelier diagnose <flow_id> [--json]                    # post-mortem: what failed, what is kept, what to do next
 atelier wait <flow_id> [--timeout 60]                  # block until it finishes; exit 0 only if it did
 atelier logs <flow_id> [--task <name>] [--follow] [--json]
 atelier outputs <flow_id> [--task <name>] [--json]    # read back a finished flow's results

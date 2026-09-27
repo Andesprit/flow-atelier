@@ -174,6 +174,12 @@ file. [Running one workflow with different
 agents](reusing-a-workflow-with-other-agents.md) walks that path — preview,
 run, read back, recover a bad choice, and re-run with the agents swapped.
 
+When a run breaks halfway, `atelier diagnose <flow_id>` says what failed, what
+is already saved and what to do next. [Recovering a failed
+workflow](recovering-a-failed-workflow.md) walks that path — break a run, read
+it back, repair it, and finish it without paying for the completed agent work
+twice.
+
 A prompt may not contain `{{...}}`. Composed prompts reach the agent as you
 typed them — only the whitespace around the prompt is trimmed — so a template
 reference is refused when you compose rather than quietly reinterpreted at run

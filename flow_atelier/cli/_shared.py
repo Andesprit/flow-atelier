@@ -10,12 +10,14 @@ from datetime import datetime
 from pathlib import Path
 
 import typer
+from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
 
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.binding import BindingError, parse_agent_bindings
+from flow_atelier.modules.workspace import WorkspaceError, parse_worktree_selectors
 from flow_atelier.schemas.log import LogEntry, TurnUsage
 from flow_atelier.schemas.progress import Progress
 from flow_atelier.services.scheduler import ScheduleStore
@@ -81,6 +83,22 @@ def parse_agents_option(raw: list[str], out: Console | None = None) -> dict[str,
         return parse_agent_bindings(raw)
     except BindingError as exc:
         (out or console).print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=exc.code) from exc
+
+
+def parse_worktrees_option(raw: list[str]) -> list[str]:
+    """Parse ``--worktree TASK`` values, exiting with the diagnostic.
+
+    Shared by ``run`` and ``plan`` so a preview and the run it previews can
+    never disagree about what was selected.
+
+    :param raw: the option values as typed.
+    :returns: the selected top-level task names, in order.
+    """
+    try:
+        return parse_worktree_selectors(raw)
+    except WorkspaceError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=exc.code) from exc
 
 
@@ -205,7 +223,9 @@ def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
     - Exact top-level id → returned as-is.
     - Exact id of a nested child flow → resolved via the store (``list_flows``
       only enumerates top-level flows, but the store can address children by
-      their exact id). Child-id *prefix* matching stays out of scope.
+      their exact id), including one whose ``progress.json`` is corrupt: the id
+      is real, and the diagnostic is the calling command's to give. Child-id
+      *prefix* matching stays out of scope.
     - Otherwise scans top-level flows. Exactly one prefix match → that id.
     - Zero matches → exits with ``unknown flow`` (code 1).
     - More than one → exits with ``ambiguous flow id`` and lists candidates.
@@ -229,6 +249,12 @@ def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
         return candidate
     except FileNotFoundError:
         pass
+    except (ValidationError, ValueError, OSError):
+        # The flow directory is there; only its progress.json is unreadable.
+        # That is still a real id, and the diagnostic for a corrupt record
+        # belongs to the command doing the reading — falling through to prefix
+        # matching would answer "unknown flow", which is false and unactionable.
+        return candidate
     matches = [fid for fid in all_flows if fid.startswith(candidate)]
     if len(matches) == 1:
         return matches[0]

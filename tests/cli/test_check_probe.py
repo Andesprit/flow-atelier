@@ -704,3 +704,17 @@ def test_a_workflow_with_no_agents_reports_an_empty_team(team):
     probe = team.report(result)
     assert probe["ran"] is True and probe["ok"] is True and probe["agents"] == []
     team.quiet()
+
+
+def test_a_healthy_agent_s_startup_logging_is_not_printed(tmp_path):
+    """Real adapters log timings on stderr; only a failure needs them shown."""
+    team = Team(tmp_path)
+    team.install("team", TEAM)
+    team.script("claude-code", stderr="[session/create] phase=sdk-initialize")
+    team.script("codex", fail_session="not logged in")
+
+    result = team.cli("check", "team", "--probe")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "phase=sdk-initialize" not in result.stdout
+    # The failing agent's own stderr tail (its traceback) is still shown.
+    assert "fake_acp_agent.py" in result.stdout

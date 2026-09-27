@@ -49,6 +49,24 @@ class PlannedTask:
     is_sink: bool = False
     is_gate: bool = False
     prunes: list[str] = field(default_factory=list)
+    # True when ``--worktree`` selected this task, so a run would give it its
+    # own Git checkout instead of the shared working directory.
+    isolated: bool = False
+
+
+@dataclass
+class PlanIsolation:
+    """What ``--worktree`` would do, without doing any of it.
+
+    ``source`` and ``base`` are what a run started here *now* would cut the
+    checkouts from; ``problem`` is set instead when it could not, so the
+    preview names the refusal before a run pays for it.
+    """
+
+    tasks: list[str]
+    source: str | None = None
+    base: str | None = None
+    problem: str | None = None
 
 
 @dataclass
@@ -57,6 +75,7 @@ class ExecutionPlan:
     max_concurrency: int
     waves: list[list[PlannedTask]]
     sinks: list[str]
+    isolation: PlanIsolation | None = None
 
 
 def _loop_text(task) -> str | None:
@@ -84,6 +103,7 @@ def build_plan(
     conduit: Conduit,
     parsed: dict[str, list],
     recipe: Conduit | None = None,
+    isolation: PlanIsolation | None = None,
 ) -> ExecutionPlan:
     """Build a static :class:`ExecutionPlan` from a validated conduit.
 
@@ -98,8 +118,10 @@ def build_plan(
     :param recipe: the same conduit as installed, when ``conduit`` carries
         selections; each differing tool is reported as the recipe's default so
         the plan cannot be mistaken for the file on disk.
+    :param isolation: the ``--worktree`` preview, when any task was selected.
     :returns: the ordered, annotated execution plan.
     """
+    isolated = set(isolation.tasks) if isolation is not None else set()
     installed = {t.name: t.tool for t in recipe.tasks} if recipe is not None else {}
     # Longest-path layering: level = 0 for roots, else 1 + max(dep levels).
     # Iterative post-order (parsed is already validated acyclic) so a deep
@@ -182,6 +204,7 @@ def build_plan(
             is_sink=t.name in sinks,
             is_gate=is_gate,
             prunes=prune_set(t.name) if is_gate else [],
+            isolated=t.name in isolated,
         )
 
     max_level = max(level.values()) if level else 0
@@ -194,4 +217,5 @@ def build_plan(
         max_concurrency=conduit.max_concurrency,
         waves=waves,
         sinks=[t.name for t in conduit.tasks if t.name in sinks],
+        isolation=isolation,
     )

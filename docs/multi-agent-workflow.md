@@ -165,6 +165,12 @@ A step names any harness `atelier list harnesses` shows, with or without the
 `atelier harness check codex` lists the models the agent offers, and
 `atelier harness check codex:<model>` the efforts that model offers.
 
+The name a step carries is its default, not a lock: `atelier run <name>
+--agent <task>=<harness>` runs one task on another agent without touching the
+file. [Running one workflow with different
+agents](reusing-a-workflow-with-other-agents.md) walks that path — preview,
+run, read back, recover a bad choice, and re-run with the agents swapped.
+
 A prompt may not contain `{{...}}`. Composed prompts reach the agent as you
 typed them — only the whitespace around the prompt is trimmed — so a template
 reference is refused when you compose rather than quietly reinterpreted at run

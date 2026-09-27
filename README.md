@@ -431,6 +431,22 @@ run it, and the conduit it writes is an ordinary one to read and edit.
 walks the whole path — compose, inspect, run, read back, recover — for both
 shapes.
 
+### Running one workflow with different agents
+
+The agent a step names is a default. `--agent <task>=<harness>` on `run` and
+`plan` runs one task on another agent for one invocation, leaving the file
+alone, and a resume reuses that choice or replaces it for the step that failed:
+
+```bash
+atelier plan triage --agent step_2=claude-code   # preview; starts nothing
+atelier run triage --agent step_2=claude-code --input brief="..."
+atelier status <flow_id>                         # which agent ran which task
+atelier run --resume <flow_id> --agent step_2=codex
+```
+
+[Running one workflow with different
+agents](docs/reusing-a-workflow-with-other-agents.md) walks it end to end.
+
 ### Reading a conduit before you run it
 
 Conduits arrive from `atelier init`, `atelier create`, a teammate's

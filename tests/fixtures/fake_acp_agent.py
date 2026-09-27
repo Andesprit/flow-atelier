@@ -540,6 +540,9 @@ async def _main() -> None:
     parser.add_argument("--script", required=True)
     args = parser.parse_args()
     script = json.loads(args.script)
+    # Startup chatter on stderr, the way real adapters log their own timings.
+    if script.get("stderr"):
+        print(script["stderr"], file=sys.stderr, flush=True)
     agent = FakeAgent(
         turns=script.get("turns", []),
         modes=script.get("modes"),

@@ -158,6 +158,7 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     check,
     compose,
     create,
+    diagnose,
     harness,
     init,
     logs,

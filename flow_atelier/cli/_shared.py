@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import typer
+from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
 
@@ -222,7 +223,9 @@ def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
     - Exact top-level id → returned as-is.
     - Exact id of a nested child flow → resolved via the store (``list_flows``
       only enumerates top-level flows, but the store can address children by
-      their exact id). Child-id *prefix* matching stays out of scope.
+      their exact id), including one whose ``progress.json`` is corrupt: the id
+      is real, and the diagnostic is the calling command's to give. Child-id
+      *prefix* matching stays out of scope.
     - Otherwise scans top-level flows. Exactly one prefix match → that id.
     - Zero matches → exits with ``unknown flow`` (code 1).
     - More than one → exits with ``ambiguous flow id`` and lists candidates.
@@ -246,6 +249,12 @@ def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
         return candidate
     except FileNotFoundError:
         pass
+    except (ValidationError, ValueError, OSError):
+        # The flow directory is there; only its progress.json is unreadable.
+        # That is still a real id, and the diagnostic for a corrupt record
+        # belongs to the command doing the reading — falling through to prefix
+        # matching would answer "unknown flow", which is false and unactionable.
+        return candidate
     matches = [fid for fid in all_flows if fid.startswith(candidate)]
     if len(matches) == 1:
         return matches[0]

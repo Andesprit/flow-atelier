@@ -47,6 +47,12 @@ _KIND_TEXT = {
         "below. Check it is installed, logged in and allowed the model; no work "
         "was asked of it"
     ),
+    "agent_auth": (
+        "the agent reported an authentication problem — its own words are in "
+        "the tail below. Check it is installed, logged in and allowed the model. "
+        "What was saved does not show it failed before starting work, so treat "
+        "any change it could have made as unknown"
+    ),
     "timeout": (
         "this task ran out of its own time limit and was cut off part-way, so "
         "anything it had already changed on disk stays changed"
@@ -203,7 +209,10 @@ def _render(report: DiagnoseReport) -> None:
         )
 
     if report.cancelled:
-        console.print("\n[bold]cut off when the run failed[/bold]")
+        stopped = report.saved.status == "stopped"
+        console.print(
+            f"\n[bold]cut off when the run {'stopped' if stopped else 'failed'}[/bold]"
+        )
         for task in report.cancelled:
             console.print(f"  {escape(task.task)} [dim](cancelled)[/dim]")
             console.print(f"    {_EXECUTION_TEXT[task.execution or 'unknown']}")
@@ -211,9 +220,10 @@ def _render(report: DiagnoseReport) -> None:
                 console.print(f"    reason: {escape(task.reason)}")
             if task.step_records:
                 console.print(f"    live steps recorded: {task.step_records}")
+        stopped_by = "the run was stopped" if stopped else "another task failed"
         console.print(
             "[dim]a cancelled task is not the failure — it was stopped because "
-            "another task failed[/dim]"
+            f"{stopped_by}[/dim]"
         )
 
     if report.not_run:

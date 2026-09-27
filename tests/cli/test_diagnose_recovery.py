@@ -297,6 +297,46 @@ def test_a_logged_out_agent_is_reported_as_a_session_failure(fixture):
     assert "logged in" in flat
 
 
+
+def test_a_login_refused_after_the_prompt_is_not_called_no_work(fixture):
+    """Authentication can fail at prompt time, after the agent has acted.
+
+    The agent opens its session, receives the prompt, writes a file, and only
+    then answers auth_required with no chunk. Its words match a logout, but the
+    report must not say no work was asked of it: the side effect is on disk.
+    """
+    (fixture.workspace / "fixed.txt").write_text("fine\n", newline="\n")
+    fixture.records["codex"].mkdir(parents=True, exist_ok=True)
+    script = {
+        "turns": [
+            {
+                "write": {"path": "prompt-side-effect.txt", "text": "acted\n"},
+                "fail_auth": "login expired",
+            }
+        ],
+        "record_path": str(fixture.records["codex"]),
+    }
+    fixture.env["ATELIER_CODEX_LAUNCH_CMD"] = json.dumps(
+        [sys.executable, str(_FAKE_AGENT), "--script", json.dumps(script)]
+    )
+    first = fixture.sh("atelier run triage --agent worker_a=claude-code\n", "run.sh")
+    assert first.returncode != 0, first.stdout
+    flow_id = _flow_id(first.stdout)
+    assert (fixture.workspace / "prompt-side-effect.txt").exists()
+
+    failure = fixture.diagnose(flow_id)["failures"][0]
+    assert failure["task"] == "synthesis"
+    assert failure["kind"] == "agent_auth"
+    assert failure["step_records"] == 0
+
+    rendered = fixture.sh(f"atelier diagnose {flow_id}\n", "render.sh")
+    assert rendered.returncode == 0, rendered.stdout + rendered.stderr
+    flat = " ".join(rendered.stdout.split())
+    assert "no work was asked of it" not in flat
+    assert "refused to open a session" not in flat
+    assert "authentication problem" in flat
+    assert "treat any change it could have made as unknown" in flat
+
 PARALLEL_YAML = """
 name: parallel
 description: one worker is cut off while the other fails

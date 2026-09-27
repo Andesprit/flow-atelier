@@ -854,6 +854,67 @@ def test_a_session_refusal_is_read_from_what_the_agent_said(workdir):
     assert "logged in" in _flat(_run("diagnose", FLOW).stdout)
 
 
+
+def test_a_refusal_after_the_prompt_went_out_is_not_called_no_work(workdir):
+    """The log shows the prompt was sent, so the agent may already have acted."""
+    atelier = Atelier()
+    _seed(
+        atelier,
+        tasks={"worker_b": TaskProgress(status=TaskStatus.failed, reason="exit=1")},
+        entries=[
+            _entry(
+                "worker_b",
+                "harness:codex",
+                exit_code=1,
+                stderr="RequestError: Authentication required",
+                session=[{"source": "user", "text": "fix the retry window"}],
+            )
+        ],
+    )
+    payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    assert payload["failures"][0]["kind"] == "agent_auth"
+    flat = _flat(_run("diagnose", FLOW).stdout)
+    assert "no work was asked of it" not in flat
+    assert "treat any change it could have made as unknown" in flat
+
+
+def test_an_older_log_without_a_session_does_not_prove_no_work(workdir):
+    """A log written before prompts were saved cannot say none was sent."""
+    atelier = Atelier()
+    _seed(
+        atelier,
+        tasks={"worker_b": TaskProgress(status=TaskStatus.failed, reason="exit=1")},
+        entries=[
+            _entry(
+                "worker_b",
+                "harness:codex",
+                exit_code=1,
+                stderr="RequestError: Authentication required",
+            )
+        ],
+    )
+    logs = _flow_dir(atelier).joinpath("logs.jsonl")
+    lines = [json.loads(line) for line in logs.read_text().splitlines()]
+    for line in lines:
+        del line["session"]
+    logs.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    payload = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    assert payload["failures"][0]["kind"] == "agent_auth"
+
+
+def test_a_stopped_run_does_not_blame_a_failure_for_its_cancelled_tasks(workdir):
+    """Nothing failed: the user stopped it, and the report should say so."""
+    atelier = Atelier()
+    _seed(
+        atelier,
+        status=FlowStatus.stopped,
+        tasks={"worker_b": TaskProgress(status=TaskStatus.cancelled)},
+    )
+    flat = _flat(_run("diagnose", FLOW).stdout)
+    assert "cut off when the run stopped" in flat
+    assert "because the run was stopped" in flat
+    assert "another task failed" not in flat
+
 def test_a_shell_task_that_printed_a_401_is_not_a_session_failure(workdir):
     """Authentication words are not a session: only an agent has one to open.
 

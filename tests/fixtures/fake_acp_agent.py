@@ -25,6 +25,7 @@ Script schema::
                 "delay_before": 0.0,
                 "barrier": null | {"dir": "...", "size": 2, "timeout": 10},
                 "write": null | {"path": "NOTES.md", "text": "..."},
+                "fail_auth": null | "login expired",  // after write, before chunks
                 "stop": "end_turn",
                 "ask_permission": null | {
                     "summary": "...",
@@ -295,6 +296,11 @@ class FakeAgent:
             target = Path(write["path"])
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(write["text"], encoding="utf-8")
+
+        # A login that lapses mid-task: the prompt arrived and may have acted,
+        # then the agent refuses before sending a single chunk.
+        if turn.get("fail_auth"):
+            raise RequestError.auth_required({"details": turn["fail_auth"]})
 
         barrier = turn.get("barrier")
         if barrier:

@@ -116,7 +116,9 @@ class TaskReport(BaseModel):
     #: ``began`` saved records prove it was executing before it was cut off,
     #: ``unknown`` nothing saved settles whether it started.
     execution: str | None = None
-    #: failures only — ``agent_session`` the agent's own words refuse a session,
+    #: failures only — ``agent_session`` the agent's own words refuse a session
+    #: and its log proves no prompt was sent, ``agent_auth`` the same words
+    #: where a prompt was sent or nothing saved says whether one was,
     #: ``timeout`` the executor recorded its own time limit, ``unclear_stage``
     #: a harness task that saved nothing to place its failure by, ``task`` the
     #: work ran and returned nonzero.
@@ -411,14 +413,20 @@ def _failure_kind(report: TaskReport, last: LogEntry | None) -> str:
     logged-out one does, and advising a login for it sends the user nowhere.
 
     A session refusal needs more than the words: only an agent has a session to
-    open, and only a task that recorded nothing of its own can be said to have
-    done no work. A shell task that ran, changed files and then printed an HTTP
-    401 of its own is an ordinary task failure with an authentication message in
-    it, so it is reported as one.
+    open, and only a task whose log proves no prompt went out can be said to
+    have done no work. The harness saves each prompt in the log's ``session``
+    just before sending it, so an empty saved session is that proof. An agent
+    can also be refused at prompt time, after it has already acted, so the same
+    words with a prompt sent — or with no saved session to tell — are an
+    authentication failure at an unsettled stage (``agent_auth``). A shell task
+    that ran, changed files and then printed an HTTP 401 of its own is an
+    ordinary task failure with an authentication message in it, so it is
+    reported as one.
 
     :param report: the task report so far, for its attribution and exit code.
     :param last: the task's last log entry, when it has one.
-    :returns: ``timeout``, ``agent_session``, ``unclear_stage`` or ``task``.
+    :returns: ``timeout``, ``agent_session``, ``agent_auth``, ``unclear_stage``
+        or ``task``.
     """
     # stderr and the saved reason only: those are where an executor and a
     # harness explain themselves. A task's own output can discuss a login
@@ -432,7 +440,14 @@ def _failure_kind(report: TaskReport, last: LogEntry | None) -> str:
     began = bool(report.step_records) or (last is not None and bool(last.output))
     if on_harness and not began:
         if any(marker in said for marker in SESSION_REFUSALS):
-            return "agent_session"
+            # `session` absent from the saved entry (an older log) settles
+            # nothing, so only a present, prompt-free session counts.
+            unprompted = (
+                last is not None
+                and "session" in last.model_fields_set
+                and not any(turn.get("source") == "user" for turn in last.session)
+            )
+            return "agent_session" if unprompted else "agent_auth"
         return "unclear_stage"
     return "task"
 

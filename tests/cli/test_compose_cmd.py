@@ -94,7 +94,8 @@ def test_sequential_chains_brief_and_previous_result(workdir):
     assert "{{step_1.output}}" not in first.task
     # Each later step sees the brief and exactly its predecessor, attributed.
     assert "{{inputs.brief}}" in second.task
-    assert "RESULT FROM step_1 (harness:alpha)" in second.task
+    # The agent is a reference, not a literal: a run may re-point step_1.
+    assert "RESULT FROM step_1 ({{step_1.tool}})" in second.task
     assert "{{step_1.output}}" in second.task
     assert "{{step_2.output}}" not in second.task
     assert "{{step_2.output}}" in third.task
@@ -129,8 +130,8 @@ def test_synthesis_waits_for_every_attributed_worker(workdir):
     assert synthesis.depends_on == ["step_1", "step_2"]
     assert synthesis.task.startswith("Merge the findings\n")
     for marker in (
-        "RESULT FROM step_1 (harness:alpha)",
-        "RESULT FROM step_2 (harness:beta)",
+        "RESULT FROM step_1 ({{step_1.tool}})",
+        "RESULT FROM step_2 ({{step_2.tool}})",
         "{{step_1.output}}",
         "{{step_2.output}}",
         "{{inputs.brief}}",

@@ -121,6 +121,20 @@ def _prompt(instruction: str, sections: list[tuple[str, str]]) -> str:
     return "\n\n".join(blocks) + "\n"
 
 
+def _attribution(task: str) -> str:
+    """Return the marker title naming an upstream result and who produced it.
+
+    The agent is a ``{{<task>.tool}}`` reference rather than the tool written
+    beside it in the YAML: a run may be launched with ``--agent`` pointing that
+    step at a different agent, and a label baked in at compose time would then
+    tell the next agent the wrong thing.
+
+    :param task: the upstream task whose result is being quoted.
+    :returns: the section title.
+    """
+    return f"RESULT FROM {task} ({{{{{task}.tool}}}})"
+
+
 def _tasks(
     steps: list[tuple[str, str]], parallel: bool, synthesis: tuple[str, str] | None
 ) -> list[dict[str, object]]:
@@ -138,13 +152,8 @@ def _tasks(
         sections = [brief]
         depends: list[str] = []
         if not parallel and index > 1:
-            previous, previous_tool = f"{STEP_PREFIX}{index - 1}", steps[index - 2][0]
-            sections.append(
-                (
-                    f"RESULT FROM {previous} ({previous_tool})",
-                    f"{{{{{previous}.output}}}}",
-                )
-            )
+            previous = f"{STEP_PREFIX}{index - 1}"
+            sections.append((_attribution(previous), f"{{{{{previous}.output}}}}"))
             depends = [previous]
         tasks.append(
             {
@@ -159,10 +168,10 @@ def _tasks(
         tool, prompt = synthesis
         sections = [brief] + [
             (
-                f"RESULT FROM {STEP_PREFIX}{i} ({step_tool})",
+                _attribution(f"{STEP_PREFIX}{i}"),
                 f"{{{{{STEP_PREFIX}{i}.output}}}}",
             )
-            for i, (step_tool, _) in enumerate(steps, 1)
+            for i in range(1, len(steps) + 1)
         ]
         tasks.append(
             {

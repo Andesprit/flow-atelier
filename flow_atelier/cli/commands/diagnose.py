@@ -171,6 +171,12 @@ def _render(report: DiagnoseReport) -> None:
                 head += f"  exit={task.exit_code}"
             console.print(head)
             console.print(f"  agent: {_agent_text(task)}")
+            if task.checkout:
+                console.print(
+                    f"  checkout: {escape(task.checkout)} [dim](its own worktree; "
+                    "any edits it made are here, not in the run directory)[/dim]",
+                    soft_wrap=True,
+                )
             if task.kind in _KIND_TEXT:
                 console.print(f"  [yellow]{_KIND_TEXT[task.kind]}[/yellow]")
             if task.reason:
@@ -221,6 +227,8 @@ def _render(report: DiagnoseReport) -> None:
         for task in report.cancelled:
             console.print(f"  {escape(task.task)} [dim](cancelled)[/dim]")
             console.print(f"    {_EXECUTION_TEXT[task.execution or 'unknown']}")
+            if task.checkout:
+                console.print(f"    checkout: {escape(task.checkout)}", soft_wrap=True)
             if task.reason:
                 console.print(f"    reason: {escape(task.reason)}")
             if task.step_records:

@@ -1118,3 +1118,22 @@ def test_a_failure_before_any_prompt_says_no_work_was_asked(workdir):
     flat = _flat(_run("diagnose", FLOW).stdout)
     assert "failed before it was sent its prompt" in flat
     assert "no work was asked of it" in flat
+
+
+def test_an_isolated_task_s_checkout_is_where_its_edits_are(failed_run):
+    """With --worktree, the run directory is not where a failed agent worked."""
+    progress = _flow_dir(Atelier()).joinpath("progress.json")
+    payload = json.loads(progress.read_text())
+    payload["workspaces"] = {
+        "source": "/src/repo",
+        "base": "abc123",
+        "selected": ["worker_b"],
+        "paths": {"worker_b": "/src/repo/.atelier/workspaces/f/worker_b"},
+    }
+    progress.write_text(json.dumps(payload))
+
+    report = json.loads(_run("diagnose", FLOW, "--json").stdout)
+    assert report["failures"][0]["checkout"] == "/src/repo/.atelier/workspaces/f/worker_b"
+    assert report["cancelled"][0]["checkout"] is None
+    flat = _flat(_run("diagnose", FLOW).stdout)
+    assert "checkout: /src/repo/.atelier/workspaces/f/worker_b" in flat

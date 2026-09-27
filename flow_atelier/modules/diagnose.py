@@ -127,6 +127,9 @@ class TaskReport(BaseModel):
     #: work ran and returned nonzero.
     kind: str | None = None
     excerpt: Excerpt | None = None
+    #: the task's own Git worktree when the run gave it one (``--worktree``):
+    #: where its edits, partial or not, actually are.
+    checkout: str | None = None
 
 
 class SavedRun(BaseModel):
@@ -498,6 +501,7 @@ def _task_report(
         step_records=steps,
         output_saved=None if outputs is None else value is not None,
         output_chars=len(str(value)) if value is not None else None,
+        checkout=progress.workspaces.paths.get(task) if progress.workspaces else None,
     )
     if saved.status in (TaskStatus.skipped, TaskStatus.pending):
         report.execution = "not_started"

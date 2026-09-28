@@ -107,9 +107,15 @@ def compare_cmd(
     """Compare agent choices, loop outcomes and duration across saved runs."""
     atelier = Atelier()
     if second is None:
-        if first in atelier.list_flows():
-            console.print("[red]compare needs a second flow id.[/red] "
-                          "Use 'atelier compare <first-flow-id> <second-flow-id>'.")
+        # 'latest' is a flow alias unless a conduit is really named that.
+        if first in atelier.list_flows() or (
+            first == "latest" and first not in atelier.store.list_conduits()
+        ):
+            console.print(
+                f"[red]compare needs a second flow id.[/red] "
+                f"Use 'atelier compare {escape(first)} <other-flow-id>', or "
+                "'atelier compare <conduit>' for that conduit's two newest runs."
+            )
             raise typer.Exit(code=1)
         ids = _newest(atelier, first)
         if len(ids) < 2:

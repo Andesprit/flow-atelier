@@ -82,6 +82,12 @@ def test_compare_errors_and_recipe_version_missing_task(tmp_path):
     assert first.returncode == 0, first.stdout + first.stderr
     first_id = project.flow_id(first)
     assert project.cli("compare", "ship").returncode != 0
+    alias = project.cli("compare", "latest")
+    assert alias.returncode == 1
+    flat = " ".join(alias.stdout.split())
+    assert "compare needs a second flow id" in flat
+    assert "atelier compare latest <other-flow-id>" in flat
+    assert "two runs of latest" not in flat
 
     project.install("other", """\
 name: other

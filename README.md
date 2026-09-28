@@ -371,6 +371,10 @@ it](docs/first-workflow.md) is a 5-minute Bash-only exercise that builds a
 three-step conduit, fails it on purpose, diagnoses it from saved history, and
 shows what `--resume` keeps that `--again` redoes.
 
+To combine a fix/test loop, swappable agents, and parallel reviews in one
+file, use `atelier create ship --template fix-loop` and follow the
+[loop, agents, and graph walkthrough](docs/loop-agents-graph.md).
+
 ### Your first AI workflow: review what you staged
 
 `atelier create --template code-review` writes a two-step conduit that
@@ -1363,7 +1367,7 @@ flow folder under `.atelier/flows/` in the current working directory.
 ```
 # authoring
 atelier init
-atelier create <name> [--description <text>] [--template hello|code-review]
+atelier create <name> [--description <text>] [--template hello|code-review|fix-loop]
                                                        # scaffold a starter conduit
 atelier compose <name> --step <harness>=<prompt> --step ... [--parallel]
                        [--synthesize <harness>=<prompt>] [--description <text>]

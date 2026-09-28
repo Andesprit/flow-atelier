@@ -48,6 +48,7 @@ class Template(str, Enum):
 
     hello = "hello"
     code_review = "code-review"
+    fix_loop = "fix-loop"
 
 
 # The patch is quoted into the prompt, so the framing line is load-bearing: a
@@ -110,7 +111,127 @@ _CODE_REVIEW = {
     ],
 }
 
-_TEMPLATES = {Template.hello: _HELLO, Template.code_review: _CODE_REVIEW}
+
+class _ReadableDumper(yaml.SafeDumper):
+    """Keep the one-file starter's nested lists and prompts easy to edit."""
+
+    def increase_indent(self, flow=False, indentless=False):
+        return super().increase_indent(flow, False)
+
+
+def _readable_string(dumper, value):
+    style = "|" if "\n" in value else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+_ReadableDumper.add_representer(str, _readable_string)
+
+_FIX_LOOP = {
+    "description": "Plan, fix until tests pass, then review in parallel",
+    "inputs": {
+        "goal": {"description": "What to build or repair"},
+        "test_command": {
+            "description": "Shell command that checks the change",
+            "default": "python -m pytest -q",
+        },
+    },
+    "max_concurrency": 2,
+    "tasks": [
+        {
+            "plan": {
+                "description": "plan the change",
+                "tool": "harness:claude-code",
+                "task": "Plan how to achieve this goal: {{inputs.goal}}. Keep the plan actionable.",
+            }
+        },
+        {
+            "fix_until_green": {
+                "description": "fix and test until the test command succeeds",
+                "tool": "tool:conduit",
+                "depends_on": ["plan"],
+                "repeat": 4,
+                "until": "output.match(TESTS PASSED)",
+                "on_exhaust": "fail",
+                "inputs": {
+                    "goal": "{{inputs.goal}}",
+                    "plan": "{{plan.output}}",
+                    "feedback": "{{loop.previous}}",
+                    "test_command": "{{inputs.test_command}}",
+                },
+                "tasks": [
+                    {
+                        "fix": {
+                            "description": "make the change using test feedback",
+                            "tool": "harness:claude-code",
+                            "task": (
+                                "Goal: {{inputs.goal}}\n"
+                                "Plan: {{inputs.plan}}\n"
+                                "Previous test result: {{inputs.feedback}}\n"
+                                "Make the needed changes.\n"
+                            ),
+                        }
+                    },
+                    {
+                        "test": {
+                            "description": "run the test command and report its result",
+                            "tool": "tool:bash",
+                            "depends_on": ["fix"],
+                            "task": (
+                                "if {{inputs.test_command}}; then\n"
+                                "  printf 'TESTS PASSED\\n'\n"
+                                "else\n"
+                                "  printf 'TESTS FAILED\\n'\n"
+                                "fi\n"
+                            ),
+                        }
+                    },
+                ],
+            }
+        },
+        {
+            "review_correctness": {
+                "description": "review correctness after tests pass",
+                "tool": "harness:claude-code",
+                "depends_on": ["fix_until_green"],
+                "task": (
+                    "Review correctness for {{inputs.goal}}.\n"
+                    "Test result: {{fix_until_green.output}}\n"
+                    "Report concrete findings.\n"
+                ),
+            }
+        },
+        {
+            "review_maintainability": {
+                "description": "review maintainability after tests pass",
+                "tool": "harness:claude-code",
+                "depends_on": ["fix_until_green"],
+                "task": (
+                    "Review maintainability for {{inputs.goal}}.\n"
+                    "Test result: {{fix_until_green.output}}\n"
+                    "Report concrete findings.\n"
+                ),
+            }
+        },
+        {
+            "verdict": {
+                "description": "combine the two reviews",
+                "tool": "harness:claude-code",
+                "depends_on": ["review_correctness", "review_maintainability"],
+                "task": (
+                    "Combine these reviews into a verdict.\n"
+                    "Correctness: {{review_correctness.output}}\n"
+                    "Maintainability: {{review_maintainability.output}}\n"
+                ),
+            }
+        },
+    ],
+}
+
+_TEMPLATES = {
+    Template.hello: _HELLO,
+    Template.code_review: _CODE_REVIEW,
+    Template.fix_loop: _FIX_LOOP,
+}
 
 
 def _next_steps(template: Template, name: str) -> str:
@@ -131,6 +252,16 @@ def _next_steps(template: Template, name: str) -> str:
             f"[dim]→ atelier run {safe}[/dim]\n"
             "[dim]→ atelier outputs latest --task review[/dim]"
         )
+    if template is Template.fix_loop:
+        safe = escape(name)
+        return (
+            "[dim]uses claude-code by default; swap any step with --agent[/dim]\n"
+            f"[dim]→ atelier check {safe} --recursive[/dim]\n"
+            f"[dim]→ atelier plan {safe}[/dim]\n"
+            f"[dim]→ atelier run {safe} --agent fix_until_green.fix=codex "
+            "--input goal='fix tests'[/dim]\n"
+            "[dim]→ atelier diagnose latest[/dim]"
+        )
     return f"[dim]→ run it with: atelier run {escape(name)} --input name=world[/dim]"
 
 
@@ -143,7 +274,10 @@ def create_cmd(
     template: Template = typer.Option(
         Template.hello,
         "--template",
-        help="Starter to write: 'hello' greets, 'code-review' reviews staged changes.",
+        help=(
+            "Starter to write: 'hello' greets, 'code-review' reviews staged changes, "
+            "'fix-loop' plans, fixes until tests pass, and reviews in parallel."
+        ),
     ),
 ) -> None:
     """Write a starter conduit and print how to run it.
@@ -158,11 +292,18 @@ def create_cmd(
     if template is Template.hello:
         text = starter_conduit_yaml(name, description)
     else:
-        text = yaml.safe_dump(
-            {"name": name, "description": description,
-             "inputs": spec["inputs"], "tasks": spec["tasks"]},
-            sort_keys=False,
-        )
+        document = {
+            "name": name,
+            "description": description,
+            **({"max_concurrency": spec["max_concurrency"]}
+               if "max_concurrency" in spec else {}),
+            "inputs": spec["inputs"],
+            "tasks": spec["tasks"],
+        }
+        if template is Template.fix_loop:
+            text = yaml.dump(document, Dumper=_ReadableDumper, sort_keys=False)
+        else:
+            text = yaml.safe_dump(document, sort_keys=False)
     try:
         Conduit.model_validate(yaml.safe_load(text))
     except (ValidationError, ValueError) as exc:

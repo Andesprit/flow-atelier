@@ -22,10 +22,8 @@ class NestedFailure:
 
     @property
     def summary(self) -> str:
-        return (
-            f"{self.calling_task} -> {self.task} [{self.tool}], "
-            f"loop iteration {self.iteration}/{self.of}: {self.reason}"
-        )
+        where = f", loop iteration {self.iteration}/{self.of}" if self.of > 1 else ""
+        return f"{self.calling_task} -> {self.task} [{self.tool}]{where}: {self.reason}"
 
 
 def brief_failure_reason(text: str) -> str:

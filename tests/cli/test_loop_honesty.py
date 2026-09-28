@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from flow_atelier.modules.loop_report import LoopPass, loop_pass_lines
+from flow_atelier.modules.nested_failure import NestedFailure
 from tests.cli.test_agent_binding_workflow import FAKE_AGENT, Project
 
 BASELINE = Path(__file__).resolve().parents[1] / "fixtures/loop_ship"
@@ -22,6 +23,15 @@ def test_long_loop_timeline_keeps_ends_and_counts_hidden_passes():
     assert "pass 1/12" in lines[0]
     assert "4 passes hidden" in lines[4]
     assert "pass 12/12" in lines[-1]
+
+
+def test_nested_failure_names_iteration_only_for_repeated_calls():
+    once = NestedFailure(flow_id="f", calling_task="call", task="fix",
+                         tool="harness:coder", iteration=1, of=1, reason="boom")
+    assert once.summary == "call -> fix [harness:coder]: boom"
+    looped = NestedFailure(flow_id="f", calling_task="call", task="fix",
+                           tool="harness:coder", iteration=2, of=4, reason="boom")
+    assert looped.summary == "call -> fix [harness:coder], loop iteration 2/4: boom"
 
 
 def _project(tmp_path, *, broken_coder=False):

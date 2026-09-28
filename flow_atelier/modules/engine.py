@@ -53,6 +53,8 @@ from flow_atelier.schemas.conduit import (
     Conduit,
     TaskDefinition,
     ToolType,
+    inline_child_conduit,
+    inline_conduit_name,
     split_harness_tool,
 )
 from flow_atelier.schemas.flow import parse_flow_id
@@ -280,6 +282,10 @@ def validate_conduit(conduit: Conduit) -> dict[str, list[Dependency]]:
             t.tool == ToolType.conduit
             and "{{" not in t.task
             and not CONDUIT_NAME_RE.match(t.task.strip())
+            and not (
+                t.tasks is not None
+                and t.task == inline_conduit_name(conduit.name, t.name)
+            )
         ):
             raise ConduitValidationError(
                 f"task {t.name!r}: tool:conduit target {t.task!r} is not a valid "
@@ -321,6 +327,14 @@ def validate_conduit(conduit: Conduit) -> dict[str, list[Dependency]]:
                     )
                 # ref.kind == "input": not validated — inputs may be supplied
                 # at run time via --input or HITL, so they need not be declared.
+
+        if t.tasks is not None:
+            try:
+                validate_conduit(inline_child_conduit(conduit, t))
+            except ConduitValidationError as exc:
+                raise ConduitValidationError(
+                    f"{conduit.name}.{t.name}.{exc}"
+                ) from exc
 
     return parsed
 

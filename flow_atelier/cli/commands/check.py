@@ -33,7 +33,12 @@ from flow_atelier.modules.engine import (
     validate_conduit,
 )
 from flow_atelier.modules.plan import exhaustion_warnings
-from flow_atelier.schemas.conduit import Conduit, TaskDefinition, ToolType
+from flow_atelier.schemas.conduit import (
+    Conduit,
+    TaskDefinition,
+    ToolType,
+    parse_inline_conduit_name,
+)
 from flow_atelier.services.executor.harness import PROBE_TIMEOUT_SECONDS, ProbeResult
 
 # Errors the per-conduit job can legitimately produce; a programming error
@@ -136,6 +141,9 @@ def _team_of(conduit: Conduit, hops: list[tuple[str, str]]) -> list[_TeamTask]:
         :param name: the task's own name.
         :returns: the qualified path.
         """
+        inline = parse_inline_conduit_name(conduit.name)
+        if inline is not None:
+            return f"{inline[0]}.{inline[1]}.{name}"
         here = f"{conduit.name}.{name}"
         return _chain(hops, here) if hops else here
 

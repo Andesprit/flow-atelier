@@ -93,6 +93,31 @@ async def test_create_conduit_returns_201_and_persists(client):
     assert any(item["name"] == "release_notes" for item in items)
 
 
+async def test_inline_body_loads_and_an_editor_cannot_silently_drop_it(client):
+    payload = _payload()
+    payload["tasks"] = [{
+        "name": "loop", "description": "fix and test", "tool": "tool:conduit",
+        "repeat": 2, "until": "output.match(PASS)",
+        "tasks": [
+            {"name": "fix", "description": "fix", "tool": "tool:bash", "task": "echo FIX"},
+            {"name": "test", "description": "test", "tool": "tool:bash",
+             "depends_on": ["fix"], "task": "echo PASS"},
+        ],
+    }]
+    created = await client.post("/conduits", json=payload)
+    assert created.status_code == 201, created.text
+    loaded = await client.get("/conduits/release_notes")
+    assert loaded.status_code == 200
+    assert [task["name"] for task in loaded.json()["tasks"][0]["tasks"]] == ["fix", "test"]
+    flattened = loaded.json()["tasks"]
+    flattened[0].pop("tasks")
+    refused = await client.patch("/conduits/release_notes", json={"tasks": flattened})
+    assert refused.status_code == 400
+    assert "preserve its nested tasks" in refused.json()["detail"]
+    reread = await client.get("/conduits/release_notes")
+    assert len(reread.json()["tasks"][0]["tasks"]) == 2
+
+
 async def test_create_conduit_collision_returns_409(client):
     """Verify creating a conduit with a duplicate name returns 409.
 

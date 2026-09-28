@@ -33,10 +33,12 @@ tasks:
 
 Save that as `.atelier/conduits/ci/conduit.yaml` and run `atelier run ci`.
 
-For a loop that calls a child workflow with several tasks, `atelier plan ship`
-shows the child tasks under the calling step. Choose the agent for just that
-call with `atelier run ship --agent fix_until_green.fix=codex:MODEL:EFFORT`;
-the choice is saved with the run and reused by `run --resume`. See
+For a loop with several steps, put `tasks:` under the looping task (the
+[one-file example](tests/fixtures/loop_ship_inline/ship/conduit.yaml) includes
+planning, a fix/test loop, parallel reviews, and a verdict). `atelier plan
+ship` shows the loop body under its calling step. Choose its agent for one
+run with `atelier run ship --agent fix_until_green.fix=codex:MODEL:EFFORT`;
+the choice is saved and reused by `run --resume`. See
 [the agent selection guide](docs/reusing-a-workflow-with-other-agents.md) for
 a loop example and the corresponding `plan` and `check --recursive --probe`
 commands.
@@ -1174,8 +1176,11 @@ while: output.not_match(<regex>)   # loop while no output matches; break otherwi
 Set at most one of `until` / `while`. The first iteration always runs
 before the predicate is checked.
 
-For `tool:conduit` loops, the predicate sees **every nested sub-task
-output of that iteration** and fires on any match.
+For a loop with several tasks, put `tasks:` on its `tool:conduit` step. Each
+iteration runs the body as a child flow; the predicate sees **every body task's
+output from that iteration** and fires on any match. The body receives only
+the values forwarded by the calling task's `inputs:` map. `{{conduit_dir}}`
+still points at the directory containing the one file.
 
 ```yaml
 - retry_while_rate_limited:
@@ -1186,11 +1191,30 @@ output of that iteration** and fires on any match.
 
 - run_until_test_passes:
     tool: tool:conduit
-    task: build_and_test
+    description: fix then test
     repeat: 5
     until: output.match(PASS)
     on_exhaust: fail
+    inputs:
+      goal: "{{inputs.goal}}"
+      feedback: "{{loop.previous}}"
+    tasks:
+      - fix:
+          description: repair from the previous test result
+          tool: harness:codex
+          task: "Fix {{inputs.goal}}. Previous test: {{inputs.feedback}}"
+      - test:
+          description: check the repair
+          tool: tool:bash
+          depends_on: [fix]
+          task: make test
 ```
+
+For a body reused by other workflows, put its tasks in a separate conduit and
+use `task: build_and_test` instead of the inline `tasks:` list. Do not set
+both fields on one task. `atelier check` validates an inline body's tasks and
+dependencies even without `--recursive`; use `--recursive` to follow named
+children and to include the body in `--probe`.
 
 Without `on_exhaust: fail`, a loop that reaches its limit without meeting
 `until` or `while` still completes and its dependents receive the last output.

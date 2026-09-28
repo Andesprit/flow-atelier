@@ -14,7 +14,7 @@ import re
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 from flow_atelier.schemas.interaction import InteractionPolicy
@@ -24,11 +24,23 @@ _TASK_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 # so they must reject "/", ".", ".." to prevent path traversal on write/delete.
 # Hyphens are allowed because real conduits on disk use them (autonomous-projects).
 CONDUIT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_INLINE_NAME_RE = re.compile(r"^~inline~([A-Za-z0-9_-]+)~([A-Za-z0-9_]+)$")
 # A harness name becomes the suffix of a `harness:<name>` executor key, and is
 # what a user types in YAML — keep it to a lowercase slug so the key a conduit
 # references and the key `ATELIER_HARNESSES` registers can never disagree over
 # case or spacing.
 HARNESS_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def inline_conduit_name(parent: str, task: str) -> str:
+    """Give an inline body a stable identity outside installed conduit names."""
+    return f"~inline~{parent}~{task}"
+
+
+def parse_inline_conduit_name(name: str) -> tuple[str, str] | None:
+    """Return the parent and calling task for an internal inline identity."""
+    match = _INLINE_NAME_RE.fullmatch(name)
+    return (match.group(1), match.group(2)) if match else None
 
 
 def split_harness_tool(tool: str) -> tuple[str, str | None, str | None]:
@@ -111,6 +123,25 @@ class TaskDefinition(BaseModel):
     timeout: int | None = None
     interactive: bool = False
     inputs: dict[str, Any] = Field(default_factory=dict)
+    tasks: list[TaskDefinition] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_inline_tasks(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(data.get("tasks"), list):
+            data["tasks"] = _normalize_task_list(data["tasks"])
+        return data
+
+    @model_validator(mode="after")
+    def _validate_inline_body(self) -> TaskDefinition:
+        if self.tasks is not None:
+            if self.tool != ToolType.conduit:
+                raise ValueError("inline tasks require tool: tool:conduit")
+            if not self.tasks:
+                raise ValueError("inline tasks must contain at least one task")
+            if any(child.tasks is not None for child in self.tasks):
+                raise ValueError("nested inline bodies are not supported; use a named conduit")
+        return self
 
     @field_validator("name")
     @classmethod
@@ -290,16 +321,30 @@ class Conduit(BaseModel):
         raw_tasks = data.get("tasks")
         if not isinstance(raw_tasks, list):
             return data
-        normalized: list[dict[str, Any]] = []
-        for item in raw_tasks:
-            if isinstance(item, dict) and len(item) == 1:
-                key = next(iter(item))
-                value = item[key]
-                if isinstance(value, dict) and "name" not in value:
-                    value = {"name": key, **value}
-                normalized.append(value)
-            else:
-                normalized.append(item)
+        normalized = _normalize_task_list(raw_tasks)
+        for task in normalized:
+            if isinstance(task, dict) and task.get("tasks") is not None:
+                internal = inline_conduit_name(data.get("name", ""), task.get("name", ""))
+                if "task" in task and task["task"] != internal:
+                    raise ValueError(
+                        f"{data.get('name')}.{task.get('name')}: use either "
+                        "'tasks:' for an inline body or 'task:' for a shared conduit"
+                    )
+                task["task"] = internal
+                if isinstance(task["tasks"], list):
+                    body = []
+                    for raw in _normalize_task_list(task["tasks"]):
+                        try:
+                            body.append(TaskDefinition.model_validate(raw))
+                        except ValidationError as exc:
+                            first = exc.errors()[0]
+                            name = raw.get("name", "<task>") if isinstance(raw, dict) else "<task>"
+                            field = ".".join(str(part) for part in first["loc"])
+                            raise ValueError(
+                                f"{data.get('name')}.{task.get('name')}.{name}: "
+                                f"{field}: {first['msg']}"
+                            ) from exc
+                    task["tasks"] = body
         data["tasks"] = normalized
         return data
 
@@ -314,3 +359,32 @@ class Conduit(BaseModel):
             dupes = sorted({n for n in names if names.count(n) > 1})
             raise ValueError(f"duplicate task names: {dupes}")
         return self
+
+
+def inline_child_conduit(parent: Conduit, task: TaskDefinition) -> Conduit:
+    """Build an in-memory child from a calling task's inline body."""
+    if task.tasks is None:
+        raise ValueError(f"{parent.name}.{task.name} has no inline body")
+    child = Conduit(
+        name=parent.name,
+        description=task.description,
+        timeout=parent.timeout,
+        max_concurrency=parent.max_concurrency,
+        inputs={key: InputSpec(description=key) for key in task.inputs},
+        tasks=task.tasks,
+    )
+    return child.model_copy(update={"name": inline_conduit_name(parent.name, task.name)})
+
+
+def _normalize_task_list(raw_tasks: list[Any]) -> list[Any]:
+    """Flatten the YAML task shorthand at either conduit level."""
+    normalized = []
+    for item in raw_tasks:
+        if isinstance(item, dict) and len(item) == 1:
+            key = next(iter(item))
+            value = item[key]
+            if isinstance(value, dict):
+                normalized.append({"name": key, **value} if "name" not in value else value)
+                continue
+        normalized.append(item)
+    return normalized

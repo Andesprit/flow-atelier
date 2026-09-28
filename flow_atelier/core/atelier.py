@@ -887,6 +887,18 @@ class Atelier:
         :raises FileExistsError: if the update renames to a name already taken
         """
         existing = self.store.read_conduit(name)
+        if "tasks" in payload.model_fields_set and any(t.tasks is not None for t in existing.tasks):
+            submitted = {t.name: t for t in payload.tasks or []}
+            if any(
+                t.tasks is not None and (
+                    t.name not in submitted or submitted[t.name].tasks is None
+                )
+                for t in existing.tasks
+            ):
+                raise ValueError(
+                    "this conduit has an inline loop body; preserve its nested "
+                    "tasks when updating it, or edit conduit.yaml directly"
+                )
         merged = existing.model_dump()
         if "interaction" in payload.model_fields_set:
             merged["interaction"] = payload.interaction

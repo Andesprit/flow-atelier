@@ -16,7 +16,7 @@ from flow_atelier.modules.conditions import (
     PlainDependency,
     sink_task_names,
 )
-from flow_atelier.schemas.conduit import Conduit
+from flow_atelier.schemas.conduit import Conduit, parse_inline_conduit_name
 
 
 @dataclass(frozen=True)
@@ -243,8 +243,9 @@ def build_plan(
     for t in conduit.tasks:  # preserve definition order within each wave
         waves[level[t.name]].append(planned[t.name])
 
+    inline = parse_inline_conduit_name(conduit.name)
     return ExecutionPlan(
-        conduit_name=conduit.name,
+        conduit_name=f"{inline[0]}.{inline[1]}" if inline else conduit.name,
         max_concurrency=conduit.max_concurrency,
         waves=waves,
         sinks=[t.name for t in conduit.tasks if t.name in sinks],

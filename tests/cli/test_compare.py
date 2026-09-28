@@ -115,3 +115,21 @@ tasks:
     assert row["first"] is None
     assert row["second"]["status"] == "completed"
     assert row["different"] is True
+
+
+def test_compare_names_planned_agent_of_a_task_that_never_ran(tmp_path):
+    project = _project(tmp_path)
+    for command in ("bash check.sh", "false"):
+        run = project.cli("run", "ship", "--input", "goal=fix tests",
+                          "--input", f"test_command={command}")
+        assert run.returncode in (0, 1), run.stdout + run.stderr
+    compared = project.cli("compare", "ship", "--json")
+    assert compared.returncode == 0, compared.stdout + compared.stderr
+    row = next(row for row in json.loads(compared.stdout)["tasks"]
+               if row["task"] == "verdict")
+    assert row["second"] == {"status": "cancelled", "agent": "harness:claude-code",
+                             "planned": True, "loop": None}
+    project.env["COLUMNS"] = "200"
+    text = project.cli("compare", "ship").stdout
+    assert "harness:claude-code (planned)" in text
+    assert "agent unrecorded" not in text

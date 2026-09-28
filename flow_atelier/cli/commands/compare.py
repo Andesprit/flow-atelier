@@ -1,4 +1,7 @@
-"""Compare two saved runs without loading or executing their recipes."""
+"""Compare two saved runs without executing their recipes.
+
+A recipe is read only to name the planned agent of a task that never ran.
+"""
 from __future__ import annotations
 
 import json
@@ -43,6 +46,14 @@ def _snapshot(atelier: Atelier, flow_id: str) -> dict:
         current = atelier.store.read_progress(current_id)
         logs = atelier.store.read_logs(current_id)
         actual = {entry.task: entry.tool for entry in logs}
+        try:
+            # Only for tasks that never ran: the recipe as it reads now.
+            planned = {
+                t.name: t.tool
+                for t in atelier.store.read_conduit(parse_flow_id(current_id)[0]).tasks
+            }
+        except (OSError, ValueError):
+            planned = {}
         passes_by_task: dict[str, list] = {}
         for item in loop_passes(atelier.store, current_id, current, logs):
             passes_by_task.setdefault(item.task, []).append(item)
@@ -50,13 +61,15 @@ def _snapshot(atelier: Atelier, flow_id: str) -> dict:
             key = f"{path}.{name}" if path else name
             outcome = task.loop_outcome
             passes = passes_by_task.get(name, [])
+            agent = (
+                current.task_agents.get(name)
+                or progress.task_agents.get(key)
+                or actual.get(name)
+            )
             tasks[key] = {
                 "status": task.status.value,
-                "agent": (
-                    current.task_agents.get(name)
-                    or progress.task_agents.get(key)
-                    or actual.get(name)
-                ),
+                "agent": agent or planned.get(name),
+                **({"planned": True} if not agent and name in planned else {}),
                 "loop": ({
                     "passes": len(passes) if passes else task.iteration,
                     "max_passes": task.of,
@@ -150,7 +163,10 @@ def compare_cmd(
         def describe(item: dict | None) -> str:
             if item is None:
                 return "missing"
-            parts = [item["agent"] or "agent unrecorded"]
+            parts = [
+                f"{item['agent']} (planned)" if item.get("planned")
+                else item["agent"] or "agent unrecorded"
+            ]
             if item["status"] != "completed":
                 parts.append(item["status"])
             if loop := item["loop"]:

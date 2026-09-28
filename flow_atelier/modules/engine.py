@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from flow_atelier.modules.binding import provenance_note
+from flow_atelier.modules.binding import bind_conduit, child_bindings, provenance_note
 from flow_atelier.modules.conditions import (
     Dependency,
     DependencyParseError,
@@ -403,11 +403,9 @@ class Engine:
             parent step that spawned this child; recorded on the child's
             progress so resume can match the right child when a parent has two
             steps invoking the same sub-conduit. ``None`` for top-level runs.
-        :param task_agents: the per-task agent selections already applied to
-            ``conduit``, recorded on this run's progress before any task
-            executes so a later resume or re-run can reuse them. Not forwarded
-            to nested ``tool:conduit`` runs: a selection names a task of the
-            recipe it was given for, never a same-named task in a child.
+        :param task_agents: agent selections relative to this conduit. Direct
+            choices are already applied; dotted choices are forwarded only
+            through their named calling task to each child invocation.
         :param workspaces: the separate checkouts already created for some of
             this run's tasks, recorded on progress before anything executes and
             used as those tasks' working directory. Every other task keeps
@@ -842,6 +840,7 @@ class Engine:
                         working_dir=working_dir,
                         ancestor_conduits=(*ancestor_conduits, conduit.name),
                         invoking_task=t.name,
+                        task_agents=task_agents,
                     ),
                     loop_history=loop_history,
                     loop_history_limit=self.loop_history_limit,
@@ -1270,6 +1269,7 @@ class Engine:
         working_dir: Path | None = None,
         ancestor_conduits: tuple[str, ...] = (),
         invoking_task: str | None = None,
+        task_agents: Mapping[str, str] | None = None,
     ):
         """Build the nested-conduit runner passed to executors via FlowContext.
 
@@ -1295,6 +1295,11 @@ class Engine:
             :param parent_flow_id: flow id of the parent run, for linkage.
             """
             child_conduit = self.store.read_conduit(conduit_name)
+            selected = child_bindings(task_agents or {}, invoking_task or "")
+            child_conduit = bind_conduit(
+                child_conduit,
+                {k: v for k, v in selected.items() if "." not in k},
+            )
 
             # Resume an existing failed child if one exists
             resume_id = self._find_child_to_resume(
@@ -1314,6 +1319,7 @@ class Engine:
                     working_dir=working_dir,
                     ancestor_conduits=ancestor_conduits,
                     invoking_task=invoking_task,
+                    task_agents=selected,
                 )
 
             return await self.run(
@@ -1327,6 +1333,7 @@ class Engine:
                 working_dir=working_dir,
                 ancestor_conduits=ancestor_conduits,
                 invoking_task=invoking_task,
+                task_agents=selected,
             )
 
         return _run_nested

@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.binding import (
     BindingError,
-    bind_conduit,
+    bind_agent_paths,
     check_replaceable,
     normalize_bindings,
 )
@@ -198,13 +198,15 @@ class Atelier:
         process's launcher table are all left untouched.
 
         :param conduit: the recipe as installed.
-        :param agents: mapping of top-level task name to harness tool.
+        :param agents: mapping of root or dotted task path to harness tool.
         :param origin: what asked for the change, for the diagnostics.
         :returns: the conduit to hand the engine.
         :raises BindingError: a selector or an agent name is unusable.
         """
         agents = normalize_bindings(agents, where=origin)
-        bound = bind_conduit(conduit, agents, origin=origin)
+        bound = bind_agent_paths(
+            conduit, agents, self.store.read_conduit, origin=origin
+        )
         self._require_registered(agents, origin=origin)
         return bound
 
@@ -229,6 +231,20 @@ class Atelier:
                     "'atelier list harnesses' to see the registered names, or "
                     "register your own with ATELIER_HARNESSES",
                     code=1,
+                )
+
+    def require_agent_ready(self, agents: Mapping[str, str]) -> None:
+        """Check selected harness launchers before any task or flow starts."""
+        for path, tool in agents.items():
+            if "." not in path:
+                continue  # existing root readiness gate owns its diagnostics
+            executor = resolve_executor(self.executors, tool)
+            if executor is None:
+                continue  # _require_registered reports this with its own hint
+            ok, reason = executor.is_available()
+            if not ok:
+                raise BindingError(
+                    f"--agent {path}=...: {tool} cannot start: {reason}", code=1
                 )
 
     def _inherit_agents(
@@ -275,7 +291,9 @@ class Atelier:
                 code=1,
             ) from exc
         try:
-            bound = bind_conduit(conduit, saved, origin=origin)
+            bound = bind_agent_paths(
+                conduit, saved, self.store.read_conduit, origin=origin
+            )
         except BindingError as exc:
             raise BindingError(
                 f"{exc} — the recipe changed since that run, so its saved "
@@ -283,7 +301,9 @@ class Atelier:
                 f"`atelier run {conduit.name} --agent ...`",
                 code=1,
             ) from exc
-        bound = bind_conduit(bound, agents, origin="--agent")
+        bound = bind_agent_paths(
+            bound, agents, self.store.read_conduit, origin="--agent"
+        )
         effective = {**saved, **agents}
         # Availability is asked of what will actually run: an agent this call
         # replaces may have been uninstalled since, and that is precisely the
@@ -292,7 +312,9 @@ class Atelier:
         self._require_registered(
             {
                 t: v for t, v in saved.items()
-                if t not in agents and (executes is None or t in executes)
+                if t not in agents and (
+                    executes is None or t.split(".", 1)[0] in executes
+                )
             },
             origin=f"{origin} (replace it with `--agent <task>=<agent>`)",
         )
@@ -451,7 +473,7 @@ class Atelier:
             flow so a later resume continues in the same directories. Omit it
             and every task shares one working directory, as before.
         :returns: the newly created flow id
-        :raises BindingError: a selection names no top-level harness task of
+        :raises BindingError: a selection names no reachable harness task of
             the conduit, or an agent nothing is registered for
         :raises WorkspaceError: a worktree selection, the source checkout or a
             destination directory is unusable
@@ -467,6 +489,7 @@ class Atelier:
         conduit = self.store.read_conduit(name)
         agents = normalize_bindings(dict(agents or {}))
         conduit = self.bind_agents(conduit, agents)
+        self.require_agent_ready(agents)
         # The destination is named after the flow, so the id has to exist
         # before the checkouts do. The engine takes it as given.
         flow_id = new_flow_id(name) if worktrees else None
@@ -563,7 +586,16 @@ class Atelier:
         }
         partial = self._partly_looped(flow_id, conduit, unfinished)
         if requested:
-            check_replaceable(prior, requested, partial=partial)
+            check_replaceable(
+                prior, {k: v for k, v in requested.items() if "." not in k},
+                partial=partial,
+            )
+            for path in requested:
+                if "." not in path:
+                    continue
+                self._check_nested_replacement(
+                    conduit, flow_id, prior, path, requested[path], partial
+                )
         conduit, effective = self._inherit_agents(
             conduit, flow_id, prior, requested, executes=unfinished
         )
@@ -581,6 +613,10 @@ class Atelier:
             )
         if effective:
             self._require_ready(conduit, only=unfinished)
+            self.require_agent_ready({
+                k: v for k, v in effective.items()
+                if k.split(".", 1)[0] in unfinished
+            })
         # The checkouts are the run's, not this invocation's: a resume
         # continues in the exact directories the first attempt recorded, with
         # whatever a failed worker left in them. Drift in the recipe is caught
@@ -612,6 +648,28 @@ class Atelier:
             task_agents=effective,
             workspaces=prior.workspaces,
         )
+
+    def _check_nested_replacement(
+        self, conduit: Conduit, flow_id: str, progress: Progress,
+        path: str, tool: str, partial: Mapping[str, str],
+    ) -> None:
+        """Apply the top-level replacement safety rule at each call in a path."""
+        parts = path.split(".")
+        for call in parts[:-1]:
+            check_replaceable(progress, {call: tool}, partial=partial)
+            task = next((t for t in conduit.tasks if t.name == call), None)
+            if task is None or task.tool != "tool:conduit" or "{{" in task.task:
+                return  # bind_agent_paths supplies the selector diagnostic
+            child_id = self.engine._find_child_to_resume(
+                flow_id, task.task.strip(), call
+            )
+            if child_id is None:
+                return
+            flow_id = child_id
+            conduit = self.store.read_conduit(task.task.strip())
+            progress = self.store.read_progress(flow_id)
+            partial = self._partly_looped(flow_id, conduit, set(progress.tasks))
+        check_replaceable(progress, {parts[-1]: tool}, partial=partial)
 
     def _partly_looped(
         self, flow_id: str, conduit: Conduit, unfinished: Container[str]
@@ -710,6 +768,7 @@ class Atelier:
         )
         if effective:
             self._require_ready(conduit)
+            self.require_agent_ready(effective)
         chosen_dir = working_dir is not None
         if working_dir is None and prior.run_path:
             working_dir = prior.run_path

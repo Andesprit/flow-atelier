@@ -17,7 +17,7 @@ from flow_atelier.cli._shared import (
 from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import format_conduit_error, render_plan
 from flow_atelier.core.atelier import Atelier
-from flow_atelier.modules.binding import BindingError
+from flow_atelier.modules.binding import BindingError, child_bindings
 from flow_atelier.modules.engine import ConduitValidationError, validate_conduit
 from flow_atelier.modules.plan import PlanIsolation, build_plan
 from flow_atelier.modules.workspace import (
@@ -27,8 +27,8 @@ from flow_atelier.modules.workspace import (
 )
 
 AGENT_HELP = (
-    "TASK=HARNESS: run one top-level agent task on another agent for this "
-    "invocation (repeatable). The conduit file is never changed."
+    "TASK=HARNESS or CALL.TASK=HARNESS: choose an agent in this workflow or "
+    "a static child conduit for this invocation (repeatable)."
 )
 
 WORKTREE_HELP = (
@@ -76,6 +76,10 @@ def plan_cmd(
         recipe = atelier.store.read_conduit(conduit_name)
         conduit = atelier.bind_agents(recipe, agents)
         parsed = validate_conduit(conduit)
+        plan = _build_nested_plan(
+            atelier, conduit, recipe, agents, parsed=parsed,
+            isolation=_isolation(conduit, worktrees),
+        )
     except BindingError as e:
         console.print(f"[red]{escape(str(e))}[/red]")
         raise typer.Exit(code=e.code)
@@ -83,11 +87,50 @@ def plan_cmd(
         console.print(f"[red]FAIL: {escape(format_conduit_error(e))}[/red]")
         raise typer.Exit(code=1)
 
-    plan = build_plan(conduit, parsed, recipe=recipe, isolation=_isolation(conduit, worktrees))
     if json_mode:
-        typer.echo(json.dumps(dataclasses.asdict(plan), indent=2))
+        payload = dataclasses.asdict(plan)
+        _omit_absent_children(payload)
+        typer.echo(json.dumps(payload, indent=2))
         return
     render_plan(plan, console)
+
+
+def _omit_absent_children(plan: dict) -> None:
+    """Keep the JSON shape of old plans when a task has no static child."""
+    for wave in plan["waves"]:
+        for task in wave:
+            child = task.get("child")
+            if child is None:
+                task.pop("child", None)
+            else:
+                _omit_absent_children(child)
+
+
+def _build_nested_plan(
+    atelier: Atelier, conduit, recipe, agents,
+    *, parsed=None, isolation=None, ancestors: frozenset[str] = frozenset(),
+):
+    """Attach a separate static plan to each statically named child call."""
+    if conduit.name in ancestors:
+        return build_plan(conduit, parsed or validate_conduit(conduit), recipe=recipe)
+    ancestors = ancestors | {conduit.name}
+    children = {}
+    for task in conduit.tasks:
+        if task.tool != "tool:conduit" or "{{" in task.task:
+            continue
+        try:
+            child_recipe = atelier.store.read_conduit(task.task.strip())
+        except FileNotFoundError:
+            continue  # the root's own plan remains useful for a missing child
+        selected = child_bindings(agents, task.name)
+        child = atelier.bind_agents(child_recipe, selected)
+        children[task.name] = _build_nested_plan(
+            atelier, child, child_recipe, selected, ancestors=ancestors,
+        )
+    return build_plan(
+        conduit, parsed or validate_conduit(conduit), recipe=recipe,
+        isolation=isolation, children=children,
+    )
 
 
 def _isolation(conduit, tasks: list[str]) -> PlanIsolation | None:

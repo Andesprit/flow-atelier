@@ -116,6 +116,11 @@ def status_cmd(
             "(recipe) marks the conduit's own choice, and the conduit file is "
             "unchanged[/dim]"
         )
+        nested = {k: v for k, v in progress.task_agents.items() if "." in k}
+        if nested:
+            console.print("[bold]Nested agent choices[/bold]")
+            for path, tool in sorted(nested.items()):
+                console.print(f"  {escape(path)}: {escape(tool)}")
     if spaces is not None:
         console.print(
             f"[dim]checkout: this task's own Git worktree, cut from "

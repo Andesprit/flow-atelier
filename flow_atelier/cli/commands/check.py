@@ -23,6 +23,7 @@ from flow_atelier.cli._shared import (
 from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import format_conduit_error
 from flow_atelier.core.atelier import Atelier
+from flow_atelier.modules.binding import child_bindings
 from flow_atelier.modules.conditions import ConditionalDependency, parse_dependency
 from flow_atelier.modules.engine import (
     MAX_NESTED_CONDUIT_DEPTH,
@@ -174,7 +175,6 @@ def _load_child(
         path = str((atelier.store.conduit_dir(name) / "conduit.yaml").absolute())
         child = atelier.store.read_conduit(name)
         validate_conduit(child)
-        problems = atelier.tool_readiness(child)
     except FileNotFoundError as e:
         # Name the caller and the missing name; there is no source file to
         # point at, and guessing where it "should" live would be a fiction.
@@ -182,8 +182,6 @@ def _load_child(
     except _EXPECTED as e:
         where = f" ({path})" if path else ""
         raise _NestedProblem(f"{chain}{where} — {_diagnostic(e, path or name)}") from e
-    if problems:
-        raise _NestedProblem(f"{chain} ({path}) — {'; '.join(problems)}")
     cache[name] = (child, path)
     return child, path
 
@@ -237,6 +235,7 @@ def _walk_calls(
     cache: dict[str, tuple[Conduit, str]],
     seen: set[tuple[str, int]],
     team: list[_TeamTask] | None = None,
+    agents: Mapping[str, str] | None = None,
 ) -> None:
     """Follow ``conduit``'s ``tool:conduit`` calls depth-first, in order.
 
@@ -244,11 +243,9 @@ def _walk_calls(
     might skip it, and a templated target is refused rather than guessed.
 
     ``seen`` is keyed by ``(name, level)``, not by name alone, so a child
-    shared by a short and a long path is still walked on the long one — the
-    cache must never hide a chain that would break the engine's depth guard.
-    A repeated call is not a cycle; only the live ancestry is. Input
-    bindings belong to the *call*, not to the child, so they are checked on
-    every edge, before ``seen`` can skip the descent a second time.
+    shared by a short and a long path is still walked on the long one. With
+    nested choices, each call is walked separately to retain path-specific
+    agents. A repeated call is not a cycle; only the live ancestry is.
 
     :param atelier: configured :class:`Atelier` providing the store.
     :param conduit: an already-validated conduit whose calls to follow.
@@ -282,14 +279,25 @@ def _walk_calls(
                 f"{chain} — nested conduit depth exceeded {MAX_NESTED_CONDUIT_DEPTH}"
             )
         child, path = _load_child(atelier, target, chain, cache)
+        selected = child_bindings(agents or {}, task.name)
+        child = atelier.bind_agents(child, selected)
+        problems = atelier.tool_readiness(child)
+        if problems:
+            raise _NestedProblem(f"{chain} ({path}) — {'; '.join(problems)}")
         _check_bindings(child, path, task, chain)
-        if (target, level + 1) in seen:
+        # Preserve the existing one-probe-per-child presentation when no
+        # nested choice exists. With path choices, each call has its own agent
+        # assignment and must contribute its own probe row.
+        if (target, level + 1) in seen and not any(
+            "." in key for key in (agents or {})
+        ):
             continue
         seen.add((target, level + 1))
         if team is not None:
             team.extend(_team_of(child, here))
         _walk_calls(
-            atelier, child, level + 1, ancestors | {target}, here, cache, seen, team
+            atelier, child, level + 1, ancestors | {target}, here, cache, seen, team,
+            selected,
         )
 
 
@@ -347,7 +355,7 @@ def _check_one(
             if recursive:
                 _walk_calls(
                     atelier, effective, 0, frozenset({name}), [],
-                    {} if cache is None else cache, set(), team,
+                    {} if cache is None else cache, set(), team, agents,
                 )
             # Child inputs are the parent's business at runtime, not extra
             # `--input` keys: the root's own declarations are what a caller
@@ -560,8 +568,8 @@ def check_cmd(
         [],
         "--agent",
         help=(
-            "task=harness: check that task against that agent instead of the "
-            "one the recipe names (repeatable). The same mapping you would "
+            "task=harness or call.task=harness: check a root or nested agent "
+            "task (repeatable). The same mapping you would "
             "pass to `atelier run`; nothing is saved."
         ),
     ),
@@ -606,13 +614,10 @@ def check_cmd(
     session is a real request to the provider. What passing proves is startup:
     not prompt-time authentication, quota, model access or output quality.
 
-    `--agent <task>=<harness>` checks a top-level task against another agent —
-    the same mapping `atelier run` takes, so what you check is what you then
-    run. It is applied in memory: the conduit file and the saved runs are
-    untouched, and nothing is remembered for next time. Top-level only, so a
-    same-named task inside a called workflow keeps its own recipe's agent. On
-    its own it stays static; with `--probe` the replacements are what get
-    started.
+    `--agent <task>=<harness>` checks a root task; a dotted selector such as
+    `loop.fix=codex` checks only that child call's task. The same mapping goes
+    to `atelier run`. It is applied in memory, and with `--probe` the chosen
+    agents are started without receiving prompts.
 
     :param conduit_name: a single conduit to check; when omitted, all
         project and global conduits are checked.

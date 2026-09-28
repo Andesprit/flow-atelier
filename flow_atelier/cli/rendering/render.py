@@ -672,13 +672,13 @@ def format_conduit_error(exc: Exception) -> str:
     return " ".join(str(exc).split())
 
 
-def _render_planned_task(task: PlannedTask, console: Console) -> None:
+def _render_planned_task(task: PlannedTask, console: Console, indent: str = "") -> None:
     """Render one task line plus its edges, loop badge and gate note.
 
     :param task: the planned task to render.
     :param console: Rich console to write to.
     """
-    head = Text("  ")
+    head = Text(f"{indent}  ")
     head.append(task.name, style="bold")
     head.append(f"  [{task.tool}]", style="dim")
     if task.recipe_tool:
@@ -694,47 +694,50 @@ def _render_planned_task(task: PlannedTask, console: Console) -> None:
     console.print(head)
 
     for e in task.plain_edges:
-        line = Text("      → ", style="dim")
+        line = Text(f"{indent}      → ", style="dim")
         line.append(e.task)
         console.print(line)
     for e in task.conditional_edges:
-        line = Text("      ⇢ ", style="yellow")
+        line = Text(f"{indent}      ⇢ ", style="yellow")
         line.append(e.task)
         marker = "not_match" if e.negate else "match"
         line.append(f"  ?{marker}({e.pattern})", style="yellow")
         console.print(line)
 
     if task.is_gate and task.prunes:
-        note = Text("      ", style="dim")
+        note = Text(f"{indent}      ", style="dim")
         note.append(
             f"⚠ if this output misses, it prunes {len(task.prunes)} task(s): "
             f"{', '.join(task.prunes)}",
             style="dim yellow",
         )
         console.print(note)
+    if task.child is not None:
+        render_plan(task.child, console, indent=f"{indent}    ")
 
 
-def render_plan(plan: ExecutionPlan, console: Console) -> None:
+def render_plan(plan: ExecutionPlan, console: Console, indent: str = "") -> None:
     """Render a static :class:`ExecutionPlan` as grouped wave blocks.
 
     :param plan: the execution plan to render.
     :param console: Rich console to write to.
     """
     console.print(
-        f"[bold]{plan.conduit_name}[/bold]  "
+        f"{indent}[bold]{plan.conduit_name}[/bold]  "
         f"[dim]max_concurrency={plan.max_concurrency}[/dim]"
     )
-    console.print(
-        "[dim italic]static structural view — wave levels are longest-path "
-        "layering, not a runtime trace; real parallelism is also bounded by "
-        "max_concurrency and conditional skips.[/dim italic]"
-    )
+    if not indent:
+        console.print(
+            "[dim italic]static structural view — wave levels are longest-path "
+            "layering, not a runtime trace; real parallelism is also bounded by "
+            "max_concurrency and conditional skips.[/dim italic]"
+        )
     if plan.isolation is not None:
         _render_isolation(plan.isolation, console)
     for i, wave in enumerate(plan.waves):
-        console.print(f"\n[bold]Wave {i}[/bold]")
+        console.print(f"{indent}[bold]Wave {i}[/bold]")
         for task in wave:
-            _render_planned_task(task, console)
+            _render_planned_task(task, console, indent)
 
 
 def _render_isolation(isolation, console: Console) -> None:

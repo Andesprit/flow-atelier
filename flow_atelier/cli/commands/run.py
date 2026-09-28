@@ -303,7 +303,7 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
         "Start a new flow for the named conduit. "
         "Use --input key=value to pass inputs, or --input-file key=path to "
         "pass a text file's contents as one input. "
-        "Use --agent task=harness to run one agent task on another agent. "
+        "Use --agent task=harness or call.task=harness to choose agents. "
         "Use --worktree task to give that task its own Git checkout. "
         "Use --resume <flow_id> to pick up a failed or crashed run. "
         "Use --again <flow_id> to start a fresh run reusing a past flow's inputs."
@@ -331,8 +331,8 @@ def run_cmd(
         [],
         "--agent",
         help=(
-            "task=harness input: run that top-level agent task on that agent "
-            "for this run only (repeatable). The conduit file is never "
+            "task=harness or call.task=harness: choose an agent here or in a "
+            "static child conduit for this run (repeatable). The files are never "
             "changed; with --resume or --again the run's saved choices are "
             "reused and these override them."
         ),
@@ -373,8 +373,8 @@ def run_cmd(
     :param inputs_raw: list of ``key=value`` input strings collected from ``--input``.
     :param input_files_raw: list of ``key=path`` strings collected from
         ``--input-file``; each file's text becomes that key's value.
-    :param agents_raw: list of ``task=harness`` strings collected from
-        ``--agent``; each re-points one top-level agent task for this run.
+    :param agents_raw: list of ``task=harness`` or dotted child selections
+        collected from ``--agent`` for this run.
     :param worktrees_raw: list of task names collected from ``--worktree``;
         each gets its own Git checkout for this run.
     :param show_steps: when true, stream intermediate thinking and tool activity live.
@@ -484,6 +484,7 @@ def run_cmd(
     # replacement is the thing that stops the run.
     try:
         effective = atelier.bind_agents(conduit, agents)
+        atelier.require_agent_ready(agents)
         # Before the readiness probe and before any input prompt: a selector
         # the recipe cannot honour should cost nothing at all.
         check_selectors(effective, worktrees)

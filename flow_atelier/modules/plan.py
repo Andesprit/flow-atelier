@@ -52,6 +52,7 @@ class PlannedTask:
     # True when ``--worktree`` selected this task, so a run would give it its
     # own Git checkout instead of the shared working directory.
     isolated: bool = False
+    child: ExecutionPlan | None = None
 
 
 @dataclass
@@ -104,6 +105,7 @@ def build_plan(
     parsed: dict[str, list],
     recipe: Conduit | None = None,
     isolation: PlanIsolation | None = None,
+    children: dict[str, ExecutionPlan] | None = None,
 ) -> ExecutionPlan:
     """Build a static :class:`ExecutionPlan` from a validated conduit.
 
@@ -205,6 +207,7 @@ def build_plan(
             is_gate=is_gate,
             prunes=prune_set(t.name) if is_gate else [],
             isolated=t.name in isolated,
+            child=(children or {}).get(t.name),
         )
 
     max_level = max(level.values()) if level else 0

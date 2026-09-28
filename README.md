@@ -33,6 +33,14 @@ tasks:
 
 Save that as `.atelier/conduits/ci/conduit.yaml` and run `atelier run ci`.
 
+For a loop that calls a child workflow with several tasks, `atelier plan ship`
+shows the child tasks under the calling step. Choose the agent for just that
+call with `atelier run ship --agent fix_until_green.fix=codex:MODEL:EFFORT`;
+the choice is saved with the run and reused by `run --resume`. See
+[the agent selection guide](docs/reusing-a-workflow-with-other-agents.md) for
+a loop example and the corresponding `plan` and `check --recursive --probe`
+commands.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Andesprit/flow-atelier/main/install.sh | bash
 atelier init                             # writes a hello-world conduit

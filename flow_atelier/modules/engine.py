@@ -975,7 +975,9 @@ class Engine:
                                 )
                             except Exception as exc:  # noqa: BLE001
                                 nested = (
-                                    latest_nested_failure(self.store, flow_id, t.name)
+                                    latest_nested_failure(
+                                        self.store, flow_id, t.name, since=started
+                                    )
                                     if t.tool == ToolType.conduit else None
                                 )
                                 if nested:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from flow_atelier.schemas.progress import TaskStatus
 
@@ -40,8 +41,23 @@ def brief_failure_reason(text: str) -> str:
     return lines[0][:300]
 
 
-def latest_nested_failure(store, parent_flow_id: str, calling_task: str) -> NestedFailure | None:
-    """Use the latest failed child of this call, including its own log attribution."""
+def _before(finished: str | None, since: str) -> bool:
+    """True only when both saved times parse and ``finished`` is earlier."""
+    try:
+        return datetime.fromisoformat(finished) < datetime.fromisoformat(since)
+    except (TypeError, ValueError):
+        return False
+
+
+def latest_nested_failure(
+    store, parent_flow_id: str, calling_task: str, since: str | None = None,
+) -> NestedFailure | None:
+    """Use the latest failed child of this call, including its own log attribution.
+
+    ``since`` is when the calling attempt started. A child that finished before
+    it belongs to an earlier attempt: a resumed call can fail before it starts
+    or resumes any child, and must not be blamed on that older failure.
+    """
     try:
         children = store.list_child_flows(parent_flow_id)
     except (OSError, ValueError):
@@ -52,6 +68,8 @@ def latest_nested_failure(store, parent_flow_id: str, calling_task: str) -> Nest
         except (OSError, ValueError):
             continue
         if progress.invoking_task != calling_task:
+            continue
+        if since is not None and _before(progress.finished_at, since):
             continue
         failed = next(
             ((name, task) for name, task in progress.tasks.items()

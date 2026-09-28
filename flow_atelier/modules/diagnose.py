@@ -860,12 +860,15 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
     for failure in failures:
         if failure.ran_on.value != "tool:conduit":
             continue
-        nested = latest_nested_failure(atelier.store, flow_id, failure.task)
-        if nested is None:
-            continue
         parent_log = next(
             (entry for entry in reversed(entries) if entry.task == failure.task), None
         )
+        nested = latest_nested_failure(
+            atelier.store, flow_id, failure.task,
+            since=parent_log.started_at if parent_log is not None else None,
+        )
+        if nested is None:
+            continue
         if parent_log is not None:
             nested = replace(
                 nested, iteration=parent_log.iteration, of=parent_log.of

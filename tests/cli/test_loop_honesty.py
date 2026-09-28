@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 
 from flow_atelier.modules.loop_report import LoopPass, loop_pass_lines
-from flow_atelier.modules.nested_failure import NestedFailure
+from flow_atelier.modules.nested_failure import NestedFailure, latest_nested_failure
+from flow_atelier.schemas.progress import Progress, TaskProgress, TaskStatus
 from tests.cli.test_agent_binding_workflow import FAKE_AGENT, Project
 
 BASELINE = Path(__file__).resolve().parents[1] / "fixtures/loop_ship"
@@ -32,6 +33,35 @@ def test_nested_failure_names_iteration_only_for_repeated_calls():
     looped = NestedFailure(flow_id="f", calling_task="call", task="fix",
                            tool="harness:coder", iteration=2, of=4, reason="boom")
     assert looped.summary == "call -> fix [harness:coder], loop iteration 2/4: boom"
+
+
+class _Store:
+    """Just enough of a store for reading one parent's saved children."""
+
+    def __init__(self, children):
+        self.children = children
+
+    def list_child_flows(self, parent):
+        return list(self.children)
+
+    def read_progress(self, flow_id):
+        return self.children[flow_id]
+
+    def read_logs(self, flow_id):
+        return []
+
+
+def test_nested_failure_ignores_children_of_an_earlier_attempt():
+    old = Progress(
+        invoking_task="call", finished_at="2026-09-28T10:00:00.000001Z",
+        tasks={"fix": TaskProgress(status=TaskStatus.failed, reason="old")},
+    )
+    store = _Store({"20260928_aaaaaaaa_child": old})
+    assert latest_nested_failure(
+        store, "parent", "call", since="2026-09-28T11:00:00Z"
+    ) is None
+    found = latest_nested_failure(store, "parent", "call", since="2026-09-28T09:00:00Z")
+    assert found is not None and found.reason == "old"
 
 
 def _project(tmp_path, *, broken_coder=False):

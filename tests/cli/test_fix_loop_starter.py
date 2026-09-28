@@ -108,6 +108,8 @@ def test_fix_loop_starter_and_walkthrough(tmp_path: Path):
     banners = re.findall(r"▶ \[(\d+)/(\d+)\]", run.stdout)
     assert banners and all(int(index) <= int(total) for index, total in banners)
     assert "fix_until_green 2/4 > fix" in run.stdout
+    # The footer counts the five top-level tasks, not the loop body's tasks.
+    assert re.search(r"✓5 +⚠1 condition not met", run.stdout)
     assert "~inline~" not in run.stdout
     assert "condition not met" in run.stdout
     assert "condition met" in run.stdout

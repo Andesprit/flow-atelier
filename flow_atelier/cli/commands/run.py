@@ -186,7 +186,10 @@ def drive_flow(
         ):
             event = event.model_copy(update={"stderr": brief_failure_reason(event.stderr)})
         displayed = event.model_copy(update={"task": _task_label(event.task)})
-        collected.append(displayed)
+        # The footer counts this flow's own tasks, as the [i/total] banner does;
+        # a nested body's tasks are already inside their calling task's result.
+        if not current_nested_path():
+            collected.append(displayed)
         running.finish(displayed)
         mark_activity()
         render_task_event(displayed, console)

@@ -162,6 +162,13 @@ def _render(report: DiagnoseReport) -> None:
         )
     if not report.snapshot.consistent:
         console.print(f"[yellow]{escape(report.snapshot.note)}[/yellow]")
+    for warning in report.loop_warnings:
+        console.print(f"[yellow]⚠ {escape(warning)}[/yellow]")
+
+    if report.nested_failures:
+        console.print("\n[bold red]failing nested work[/bold red]")
+        for nested in report.nested_failures:
+            console.print(f"  {escape(nested.summary)}")
 
     if report.failures:
         console.print("\n[bold red]what failed[/bold red]")
@@ -256,8 +263,8 @@ def _render(report: DiagnoseReport) -> None:
             status = escape(child.status) if child.status else "unknown"
             console.print(f"  {child.flow_id}{called_by}  status={status}")
         console.print(
-            "[dim]diagnose each one on its own id for its own detail; this report "
-            "does not aggregate them[/dim]"
+            "[dim]diagnose each child id for full detail; this report does not "
+            "aggregate their full history[/dim]"
         )
 
     console.print(f"\n[bold]the recipe now[/bold]  {escape(report.recipe.note)}")

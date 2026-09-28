@@ -99,6 +99,8 @@ def _omit_absent_children(plan: dict) -> None:
     """Keep the JSON shape of old plans when a task has no static child."""
     for wave in plan["waves"]:
         for task in wave:
+            if task.get("exhaustion_warning") is None:
+                task.pop("exhaustion_warning", None)
             child = task.get("child")
             if child is None:
                 task.pop("child", None)

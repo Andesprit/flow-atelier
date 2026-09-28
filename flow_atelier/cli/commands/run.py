@@ -37,6 +37,8 @@ from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.binding import BindingError
 from flow_atelier.modules.engine import accepted_input_keys
+from flow_atelier.modules.loop_report import unmet_loop_messages
+from flow_atelier.modules.nested_failure import brief_failure_reason
 from flow_atelier.modules.workspace import WorkspaceError, check_selectors
 from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.flow import parse_flow_id
@@ -163,6 +165,11 @@ def drive_flow(
         )
 
     def _on_event(event: TaskEvent) -> None:
+        if (
+            event.flow_id != captured["id"]
+            and "Traceback (most recent call last)" in event.stderr
+        ):
+            event = event.model_copy(update={"stderr": brief_failure_reason(event.stderr)})
         collected.append(event)
         running.finish(event)
         mark_activity()
@@ -218,6 +225,8 @@ def drive_flow(
                 console.print(f"[dim]→ atelier run --resume {captured['id']}[/dim]")
         raise typer.Exit(code=1)
     render_run_footer(collected, console)
+    for warning in unmet_loop_messages(Atelier().get_status(result)):
+        console.print(f"[yellow]⚠ {escape(warning)}[/yellow]")
     console.print(f"[green]flow_id:[/green] {result}")
     return result
 

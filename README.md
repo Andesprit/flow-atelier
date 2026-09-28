@@ -1189,7 +1189,23 @@ output of that iteration** and fires on any match.
     task: build_and_test
     repeat: 5
     until: output.match(PASS)
+    on_exhaust: fail
 ```
+
+Without `on_exhaust: fail`, a loop that reaches its limit without meeting
+`until` or `while` still completes and its dependents receive the last output.
+`atelier check` and `atelier plan` warn when such a loop has dependents. A run,
+`atelier status`, and `atelier diagnose` report the unmet condition, iteration
+count, and which dependent tasks ran. Set `on_exhaust: fail` on that task when
+an unmet condition must stop the workflow; raise `repeat` when more attempts
+are appropriate. The default remains `complete` for existing recipes.
+
+If an agent fails inside a `tool:conduit` loop, the parent run and `diagnose`
+name the child task, agent, and loop iteration. Resume the parent flow with
+`atelier run --resume <parent-flow-id>`, or replace that child agent for the
+remaining work with `atelier run --resume <parent-flow-id> --agent
+<loop-task>.<child-task>=<harness>`. Use `atelier logs <child-flow-id> --show
+all` for the raw error and Python traceback.
 
 
 

@@ -32,6 +32,7 @@ from flow_atelier.modules.engine import (
     resolve_executor,
     validate_conduit,
 )
+from flow_atelier.modules.plan import exhaustion_warnings
 from flow_atelier.schemas.conduit import Conduit, TaskDefinition, ToolType
 from flow_atelier.services.executor.harness import PROBE_TIMEOUT_SECONDS, ProbeResult
 
@@ -339,10 +340,12 @@ def _check_one(
     path: str | None = None
     error: str | None = None
     required: list[str] | None = None
+    warnings: list[str] = []
     try:
         path = str((atelier.store.conduit_dir(name) / "conduit.yaml").absolute())
         conduit = atelier.store.read_conduit(name)
-        validate_conduit(conduit)
+        parsed = validate_conduit(conduit)
+        warnings = list(exhaustion_warnings(conduit, parsed).values())
         # A selection that no longer fits the recipe, or names an agent this
         # machine has nothing registered for, is a failed row like any other.
         effective = atelier.bind_agents(conduit, agents) if agents else conduit
@@ -367,7 +370,7 @@ def _check_one(
         error = str(e)
     except _EXPECTED as e:
         error = _diagnostic(e, path or name)
-    return {
+    row = {
         "name": name,
         "source": source,
         "path": path,
@@ -375,6 +378,9 @@ def _check_one(
         "error": error,
         "required_inputs": required,
     }
+    if warnings:
+        row["warnings"] = warnings
+    return row
 
 
 def _probe_plan(team: list[_TeamTask]) -> dict[str, list[_TeamTask]]:
@@ -684,6 +690,8 @@ def check_cmd(
             console.print(f"{label} — [red]FAIL: {escape(row['error'])}[/red]")
             return
         console.print(f"{label} — [green]OK[/green]")
+        for warning in row.get("warnings", []):
+            console.print(f"    [yellow]⚠ {escape(warning)}[/yellow]")
         if row["required_inputs"]:
             keys = ", ".join(escape(k) for k in row["required_inputs"])
             console.print(f"    [dim]requires --input: {keys}[/dim]")

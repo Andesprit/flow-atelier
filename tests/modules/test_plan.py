@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from flow_atelier.modules.engine import validate_conduit
-from flow_atelier.modules.plan import build_plan
+from flow_atelier.modules.plan import build_plan, exhaustion_warnings
 from flow_atelier.schemas.conduit import Conduit
 
 
@@ -102,6 +102,32 @@ def test_loop_predicate_surfaced():
     assert "VERDICT" in loop.loop_text
     assert tasks["a"].is_loop is False
     assert tasks["a"].loop_text is None
+
+
+def test_exhaustion_warning_requires_predicate_default_and_dependent():
+    loop = {
+        "name": "loop", "description": "d", "task": "echo no",
+        "tool": "tool:bash", "depends_on": [], "repeat": 3,
+        "until": "output.match(YES)",
+    }
+    dependent = {
+        "name": "review", "description": "d", "task": "echo review",
+        "tool": "tool:bash", "depends_on": ["loop"],
+    }
+    conduit = _conduit([loop, dependent])
+    warning = exhaustion_warnings(conduit, validate_conduit(conduit))["loop"]
+    assert "review" in warning and "on_exhaust: fail" in warning
+    while_loop = {**loop, "while": "output.match(YES)"}
+    while_loop.pop("until")
+    conduit = _conduit([while_loop, dependent])
+    assert "stays true" in exhaustion_warnings(conduit, validate_conduit(conduit))["loop"]
+    for tasks in (
+        [loop],
+        [{**loop, "on_exhaust": "fail"}, dependent],
+        [{k: v for k, v in loop.items() if k != "until"}, dependent],
+    ):
+        conduit = _conduit(tasks)
+        assert exhaustion_warnings(conduit, validate_conduit(conduit)) == {}
 
 
 def test_gate_detection_and_prune_set():

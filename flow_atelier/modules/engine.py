@@ -24,6 +24,7 @@ import sys
 import traceback
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,7 @@ from flow_atelier.modules.conditions import (
     parse_output_predicate,
 )
 from flow_atelier.modules.liveness import is_crashed
+from flow_atelier.modules.nested_failure import latest_nested_failure
 from flow_atelier.modules.templating import (
     SkipSignal,
     TemplateError,
@@ -63,6 +65,7 @@ from flow_atelier.schemas.log import (
 )
 from flow_atelier.schemas.progress import (
     FlowStatus,
+    LoopOutcome,
     Progress,
     TaskProgress,
     TaskStatus,
@@ -695,7 +698,8 @@ class Engine:
                     pass
 
         def mark_completed(
-            name: str, iteration: int, reason: str = ""
+            name: str, iteration: int, reason: str = "",
+            loop_outcome: LoopOutcome | None = None,
         ) -> None:
             """Mark a task as completed at ``iteration`` and persist progress.
 
@@ -710,6 +714,7 @@ class Engine:
                 iteration=iteration,
                 of=task_map[name].repeat,
                 reason=reason or None,
+                loop_outcome=loop_outcome,
             )
             progress.current_tasks = [
                 n for n, s in statuses.items() if s == TaskStatus.running
@@ -940,8 +945,18 @@ class Engine:
                                     stderr=f"engine timeout after {effective_timeout}s",
                                 )
                             except Exception as exc:  # noqa: BLE001
+                                nested = (
+                                    latest_nested_failure(self.store, flow_id, t.name)
+                                    if t.tool == ToolType.conduit else None
+                                )
+                                if nested:
+                                    nested = replace(nested, iteration=iteration, of=t.repeat)
                                 result = ExecutionResult(
-                                    exit_code=1, stderr=f"{type(exc).__name__}: {exc}"
+                                    exit_code=1,
+                                    stderr=(
+                                        nested.summary if nested else
+                                        f"{type(exc).__name__}: {exc}"
+                                    ),
                                 )
                             finished = _now()
                             duration = (
@@ -1039,6 +1054,7 @@ class Engine:
                                 predicate_matched = True
                                 break
                     completion_reason = ""
+                    loop_outcome = None
                     if loop_predicate is not None and not predicate_matched:
                         if t.on_exhaust == "fail":
                             reason = (
@@ -1055,8 +1071,23 @@ class Engine:
                         completion_reason = (
                             "loop exhausted without predicate match"
                         )
+                        condition = (
+                            f"until: {t.until}" if t.until is not None
+                            else f"while: {t.while_}"
+                        )
+                        loop_outcome = LoopOutcome(
+                            condition=condition,
+                            met=False,
+                            dependents=[
+                                name for name, deps in parsed_deps.items()
+                                if any(dep.task == t.name for dep in deps)
+                            ],
+                        )
                     outputs[t.name] = last_output
-                    mark_completed(t.name, iteration, reason=completion_reason)
+                    mark_completed(
+                        t.name, iteration, reason=completion_reason,
+                        loop_outcome=loop_outcome,
+                    )
                     self.store.write_outputs(flow_id, outputs)
             except asyncio.CancelledError:
                 if statuses[t.name] not in (

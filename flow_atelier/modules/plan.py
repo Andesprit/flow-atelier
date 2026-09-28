@@ -46,6 +46,7 @@ class PlannedTask:
     conditional_edges: list[PlannedEdge] = field(default_factory=list)
     is_loop: bool = False
     loop_text: str | None = None
+    exhaustion_warning: str | None = None
     is_sink: bool = False
     is_gate: bool = False
     prunes: list[str] = field(default_factory=list)
@@ -100,6 +101,31 @@ def _loop_text(task) -> str | None:
     return " ".join(parts)
 
 
+def exhaustion_warnings(conduit: Conduit, parsed: dict[str, list]) -> dict[str, str]:
+    """Flag conditional loops whose default completion forwards an unmet result."""
+    warnings = {}
+    for task in conduit.tasks:
+        if not (task.until or task.while_) or task.on_exhaust != "complete":
+            continue
+        dependents = [
+            name for name, deps in parsed.items()
+            if any(dep.task == task.name for dep in deps)
+        ]
+        if dependents:
+            condition = f"until: {task.until}" if task.until else f"while: {task.while_}"
+            stop = (
+                f"while {task.while_} stays true" if task.while_ else
+                f"without meeting {condition}"
+            )
+            warnings[task.name] = (
+                f"{task.name} uses default on_exhaust: complete and may finish "
+                f"after {task.repeat} iterations {stop}; "
+                f"dependent tasks {', '.join(dependents)} then run on "
+                f"its last output. Set on_exhaust: fail on {task.name} to stop the run."
+            )
+    return warnings
+
+
 def build_plan(
     conduit: Conduit,
     parsed: dict[str, list],
@@ -125,6 +151,7 @@ def build_plan(
     """
     isolated = set(isolation.tasks) if isolation is not None else set()
     installed = {t.name: t.tool for t in recipe.tasks} if recipe is not None else {}
+    loop_warnings = exhaustion_warnings(conduit, parsed)
     # Longest-path layering: level = 0 for roots, else 1 + max(dep levels).
     # Iterative post-order (parsed is already validated acyclic) so a deep
     # single-chain conduit cannot blow the recursion limit.
@@ -203,6 +230,7 @@ def build_plan(
             conditional_edges=conditional_edges,
             is_loop=t.repeat > 1,
             loop_text=_loop_text(t),
+            exhaustion_warning=loop_warnings.get(t.name),
             is_sink=t.name in sinks,
             is_gate=is_gate,
             prunes=prune_set(t.name) if is_gate else [],

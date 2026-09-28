@@ -712,6 +712,8 @@ def _render_planned_task(task: PlannedTask, console: Console, indent: str = "") 
             style="dim yellow",
         )
         console.print(note)
+    if task.exhaustion_warning:
+        console.print(f"{indent}      [yellow]⚠ {escape(task.exhaustion_warning)}[/yellow]")
     if task.child is not None:
         render_plan(task.child, console, indent=f"{indent}    ")
 

@@ -20,6 +20,7 @@ from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import _FLOW_STATUS_STYLE, _task_status_summary
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.modules.liveness import display_status, is_crashed
+from flow_atelier.modules.loop_report import unmet_loop_messages
 
 
 @app.command("status")
@@ -47,12 +48,17 @@ def status_cmd(
 
     if json_mode:
         payload = progress.model_dump(mode="json")
+        for task in payload["tasks"].values():
+            if task.get("loop_outcome") is None:
+                task.pop("loop_outcome", None)
         payload["flow_id"] = flow_id
         payload["duration_seconds"] = _flow_duration_seconds(progress)
         payload["crashed"] = is_crashed(progress)
         payload["usage"] = (
             usage_totals.model_dump(mode="json") if usage_totals else None
         )
+        if warnings := unmet_loop_messages(progress):
+            payload["loop_warnings"] = warnings
         typer.echo(json.dumps(payload, indent=2))
         return
 
@@ -69,6 +75,8 @@ def status_cmd(
     if usage_line:
         header += f"  {usage_line}"
     console.print(header)
+    for warning in unmet_loop_messages(progress):
+        console.print(f"[yellow]⚠ {escape(warning)}[/yellow]")
     if is_crashed(progress):
         console.print(f"[dim]→ atelier run --resume {flow_id}[/dim]")
 

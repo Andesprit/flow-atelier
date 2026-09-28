@@ -35,7 +35,7 @@ export function TaskNode({ data, selected }: NodeProps) {
     >
       {d.repeat != null && d.repeat > 1 && (
         <div
-          className={cn("absolute -top-4 left-1/2 -translate-x-1/2 flex max-w-[220px] items-center gap-1 rounded-full border px-2 py-0.5", warns ? "border-warning/60 bg-warning/10 text-warning" : "border-ok/60 bg-ok/10 text-ok")}
+          className={cn("absolute -top-4 left-1/2 -translate-x-1/2 flex max-w-[220px] items-center gap-1 rounded-full border bg-card px-2 py-0.5", warns ? "border-warning/60 text-warning" : "border-ok/60 text-ok")}
           title={warns ? "Condition may remain unmet; dependent tasks will run on the last result. Set on_exhaust: fail to stop the run." : predicate ?? undefined}
           aria-label={warns ? `${label}. Dependents will run on the last result if the condition is never met.` : label}
         >

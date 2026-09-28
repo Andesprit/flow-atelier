@@ -94,7 +94,10 @@ describe("designer loop and harness fields", () => {
   it("shows the loop condition and amber exhaustion marker on the canvas node", () => {
     const props = { id: loop.name, data: { idx: 2, name: loop.name, tool: loop.tool, task: loop.task, description: loop.description, repeat: 4, until: loop.until, onExhaust: "complete" }, selected: false } as unknown as React.ComponentProps<typeof TaskNode>;
     render(<ReactFlowProvider><TaskNode {...props} /></ReactFlowProvider>);
-    expect(screen.getByLabelText(/↻4 until TESTS PASSED/)).toBeTruthy();
+    const badge = screen.getByLabelText(/↻4 until TESTS PASSED/);
+    // Solid, so the node's top border does not show through the badge text.
+    expect(badge.className).toContain("bg-card");
+    expect(badge.className).not.toMatch(/bg-\S+\/\d+/);
     expect(screen.getByTitle(/dependent tasks will run on the last result/)).toBeTruthy();
   });
 });

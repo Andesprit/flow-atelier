@@ -1367,7 +1367,7 @@ atelier schedule daemon [--reload-interval 30] [--log-level INFO]
 # HTTP + WebSocket server
 atelier serve [--host 127.0.0.1] [--port 8000] \
               [--reload-interval 30] [--cors-origin URL]* \
-              [--log-level INFO]
+              [--log-level INFO] [--idle-exit MINUTES]
 
 # maintenance
 atelier self-update                                    # prebuilt binary only; uv installs use `uv tool upgrade`
@@ -1500,6 +1500,11 @@ starts, for example
 driving the CLI can hand the link to you. The page loads only while
 `atelier serve` runs from the same project directory as the run. Set
 `ATELIER_SERVE_URL` when you serve on another host or port.
+
+A server started only to show a run page does not need to live forever.
+`atelier serve --idle-exit 30` stops itself after 30 minutes with no open page,
+no request, no running flow in that directory and no scheduled run in progress.
+Without the flag it runs until you stop it.
 
 Binds to `127.0.0.1:8000` by default; pass `--host 0.0.0.0` to expose
 on the LAN — which requires `ATELIER_API_TOKEN`, see [Security](#security).

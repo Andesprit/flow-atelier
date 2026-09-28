@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,12 +14,50 @@ from flow_atelier.cli._shared import console
 from flow_atelier.cli.main import app
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
+from flow_atelier.modules.liveness import is_runner_alive
 from flow_atelier.schemas.api import ScheduledJob
 from flow_atelier.schemas.log import TaskEvent
 from flow_atelier.services.api.app import LOOPBACK_HOSTS, FastApiServer
 from flow_atelier.services.api.scheduler_bus import SchedulerEventBus
 from flow_atelier.services.scheduler import SchedulerDaemon, default_local_zone
 from flow_atelier.services.scheduler.store import ScheduleStore
+
+
+class _IdleClock:
+    """ASGI wrapper that knows how long the server has gone without a client.
+
+    An open request or WebSocket (a run page left open) holds the clock at
+    zero; the clock starts when the last one closes.
+    """
+
+    def __init__(self, app) -> None:
+        """Wrap ``app``.
+
+        :param app: the ASGI application to serve.
+        """
+        self.app = app
+        self.open = 0
+        self.last = time.monotonic()
+
+    async def __call__(self, scope, receive, send) -> None:
+        """Count the connection while ``app`` serves it."""
+        if scope["type"] == "lifespan":
+            await self.app(scope, receive, send)
+            return
+        self.open += 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self.open -= 1
+            self.last = time.monotonic()
+
+    def touch(self) -> None:
+        """Restart the clock: something is still using the server."""
+        self.last = time.monotonic()
+
+    def idle_seconds(self) -> float:
+        """Seconds since the last client left, or 0 while one is connected."""
+        return 0.0 if self.open else time.monotonic() - self.last
 
 
 @app.command(
@@ -42,6 +81,12 @@ def serve_cmd(
         "INFO", "--log-level",
         help="Logging level for the server."
     ),
+    idle_exit: float = typer.Option(
+        0.0, "--idle-exit", min=0, metavar="MINUTES",
+        help="Stop after this many minutes with no open page, no request, no "
+        "running flow in this directory and no scheduled run. 0 (default) "
+        "keeps the server up until you stop it."
+    ),
 ) -> None:
     """Run the FastAPI HTTP and WebSocket server with the embedded scheduler.
 
@@ -51,6 +96,8 @@ def serve_cmd(
     :param cors_origin: allowed CORS origins (defaults to localhost-only
         origins when empty).
     :param log_level: logging level for uvicorn and the daemon.
+    :param idle_exit: minutes of idleness before the server stops itself;
+        0 never stops.
     """
     import uvicorn
 
@@ -148,9 +195,22 @@ def serve_cmd(
             {"type": "scheduled_run_complete", "flow_id": flow_id, **base}
         )
 
+    scheduled_runs = 0
+
+    async def _counted_executor(
+        job: ScheduledJob, working_dir: Path, report: Callable[[str], None]
+    ) -> None:
+        """Run one scheduled fire, counted so ``--idle-exit`` waits for it."""
+        nonlocal scheduled_runs
+        scheduled_runs += 1
+        try:
+            await _broadcasting_executor(job, working_dir, report)
+        finally:
+            scheduled_runs -= 1
+
     daemon = SchedulerDaemon(
         global_schedule_store,
-        executor=_broadcasting_executor,
+        executor=_counted_executor,
         default_zone=default_local_zone(),
         default_working_dir=Path.cwd(),
         reload_interval_seconds=reload_interval,
@@ -201,8 +261,9 @@ def serve_cmd(
     )
     api_app.router.lifespan_context = _lifespan
 
+    clock = _IdleClock(api_app)
     config = uvicorn.Config(
-        api_app,
+        clock,
         host=host,
         port=port,
         log_level=log_level.lower(),
@@ -210,9 +271,35 @@ def serve_cmd(
     )
     server = uvicorn.Server(config)
 
+    def _flow_running_here() -> bool:
+        """Return True while a flow under this directory's store is running."""
+        for fid in atelier.list_flows():
+            try:
+                if is_runner_alive(atelier.store.read_progress(fid)):
+                    return True
+            except (FileNotFoundError, ValueError):
+                continue
+        return False
+
+    async def _stop_when_idle() -> None:
+        """Ask uvicorn to exit once nothing has used the server for a while."""
+        limit = idle_exit * 60
+        while not server.should_exit:
+            await asyncio.sleep(min(30.0, limit / 4))
+            # Skip the flow scan while a page is open: the clock is held anyway.
+            if not clock.open and (scheduled_runs or _flow_running_here()):
+                clock.touch()
+            elif clock.idle_seconds() >= limit:
+                console.print(
+                    f"[green]atelier serve[/green] idle for {idle_exit:g} "
+                    "minutes, stopping"
+                )
+                server.should_exit = True
+
     async def _run() -> None:
         """Start uvicorn and print the actual bind address once it is ready."""
         serve_task = asyncio.create_task(server.serve())
+        idle_watch = asyncio.create_task(_stop_when_idle()) if idle_exit else None
         # Wait for uvicorn to bind so we can print the actual port.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 10.0
@@ -224,11 +311,14 @@ def serve_cmd(
                 actual = server.servers[0].sockets[0].getsockname()[1]
         except (AttributeError, IndexError, OSError):
             pass
+        stops = f", stops after {idle_exit:g} idle minutes" if idle_exit else ""
         console.print(
             f"[green]atelier serve[/green] running at "
-            f"[bold]http://{host}:{actual}[/bold]"
+            f"[bold]http://{host}:{actual}[/bold]{stops}"
         )
         await serve_task
+        if idle_watch is not None:
+            idle_watch.cancel()
 
     try:
         asyncio.run(_run())

@@ -82,6 +82,12 @@ export function Inspector({ task, conduit, conduits, onUpdateTask, conduitInputs
 
   const setHarness = (agent: string, model: string, effort: string) => {
     const tool = `harness:${agent}${model ? `:${model}${effort ? `:${effort}` : ""}` : ""}` as ConduitTask["tool"];
+    // A cleared agent field is mid-edit, not a harness named "": keep it local
+    // until a name is typed, so the conduit never holds `harness:`.
+    if (!agent.trim()) {
+      setDraft({ ...draft, tool });
+      return;
+    }
     commit({ tool });
   };
 

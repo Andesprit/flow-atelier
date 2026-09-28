@@ -83,6 +83,9 @@ describe("designer loop and harness fields", () => {
     const agent = screen.getByRole("combobox", { name: "agent" });
     expect((agent as HTMLInputElement).value).toBe("claude-code");
     expect((screen.getByRole("textbox", { name: "model" }) as HTMLInputElement).value).toBe("opus[1m]");
+    fireEvent.change(agent, { target: { value: "" } });
+    expect(update).not.toHaveBeenCalled();
+    expect((agent as HTMLInputElement).value).toBe("");
     fireEvent.change(agent, { target: { value: "my-agent" } });
     expect(update).toHaveBeenCalledWith("fix", { tool: "harness:my-agent:opus[1m]:high" });
     fireEvent.change(screen.getByRole("textbox", { name: "model" }), { target: { value: "model/v2" } });

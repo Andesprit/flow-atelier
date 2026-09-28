@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.progress import TaskStatus
 
 
@@ -39,6 +40,15 @@ def brief_failure_reason(text: str) -> str:
         if final and not final.startswith("Traceback"):
             return final[:300]
     return lines[0][:300]
+
+
+def _recipe_tool(store, flow_id: str, task_name: str) -> str | None:
+    """Name the recipe's agent for a task that failed before it logged a run."""
+    try:
+        conduit = store.read_conduit(parse_flow_id(flow_id)[0])
+    except (OSError, ValueError):
+        return None
+    return next((t.tool for t in conduit.tasks if t.name == task_name), None)
 
 
 def _before(finished: str | None, since: str) -> bool:
@@ -84,7 +94,10 @@ def latest_nested_failure(
         except (OSError, ValueError):
             logs = []
         entry = next((log for log in reversed(logs) if log.task == task_name), None)
-        tool = (entry.tool if entry else progress.task_agents.get(task_name)) or "unknown agent"
+        tool = (
+            (entry.tool if entry else progress.task_agents.get(task_name))
+            or _recipe_tool(store, flow_id, task_name) or "unknown agent"
+        )
         reason = brief_failure_reason((entry.stderr if entry else "") or task.reason or "")
         return NestedFailure(
             flow_id=flow_id, calling_task=calling_task, task=task_name,

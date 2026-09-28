@@ -7,6 +7,7 @@ from pathlib import Path
 
 from flow_atelier.modules.loop_report import LoopPass, loop_pass_lines
 from flow_atelier.modules.nested_failure import NestedFailure, latest_nested_failure
+from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.progress import Progress, TaskProgress, TaskStatus
 from tests.cli.test_agent_binding_workflow import FAKE_AGENT, Project
 
@@ -50,6 +51,12 @@ class _Store:
     def read_logs(self, flow_id):
         return []
 
+    def read_conduit(self, name):
+        assert name == "child"
+        return Conduit.model_validate({"name": "child", "description": "d", "tasks": [
+            {"fix": {"description": "d", "task": "x", "tool": "harness:coder"}},
+        ]})
+
 
 def test_nested_failure_ignores_children_of_an_earlier_attempt():
     old = Progress(
@@ -62,6 +69,8 @@ def test_nested_failure_ignores_children_of_an_earlier_attempt():
     ) is None
     found = latest_nested_failure(store, "parent", "call", since="2026-09-28T09:00:00Z")
     assert found is not None and found.reason == "old"
+    # Failed before any log entry (e.g. a missing input): the recipe names it.
+    assert found.tool == "harness:coder"
 
 
 def _project(tmp_path, *, broken_coder=False):

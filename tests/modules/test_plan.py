@@ -114,9 +114,13 @@ def test_exhaustion_warning_requires_predicate_default_and_dependent():
         "name": "review", "description": "d", "task": "echo review",
         "tool": "tool:bash", "depends_on": ["loop"],
     }
-    conduit = _conduit([loop, dependent])
+    verdict = {
+        "name": "verdict", "description": "d", "task": "echo verdict",
+        "tool": "tool:bash", "depends_on": ["review"],
+    }
+    conduit = _conduit([loop, dependent, verdict])
     warning = exhaustion_warnings(conduit, validate_conduit(conduit))["loop"]
-    assert "review" in warning and "on_exhaust: fail" in warning
+    assert "review, verdict" in warning and "on_exhaust: fail" in warning
     while_loop = {**loop, "while": "output.match(YES)"}
     while_loop.pop("until")
     conduit = _conduit([while_loop, dependent])

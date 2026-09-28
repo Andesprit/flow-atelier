@@ -60,7 +60,7 @@ def test_exhaustion_is_visible_before_and_after_run(tmp_path):
         result = project.cli(command, "ship")
         assert result.returncode == 0, result.stdout + result.stderr
         assert "on_exhaust: fail" in result.stdout
-        assert "review_security, review_style" in _flat(result.stdout)
+        assert "review_security, review_style, verdict" in _flat(result.stdout)
     planned = json.loads(project.cli("plan", "ship", "--json").stdout)
     assert planned["waves"][1][0]["exhaustion_warning"]
 
@@ -71,7 +71,7 @@ def test_exhaustion_is_visible_before_and_after_run(tmp_path):
     status = project.status(flow_id)
     assert status["status"] == "completed"
     assert status["tasks"]["fix_until_green"]["loop_outcome"]["met"] is False
-    assert "dependent tasks review_security, review_style ran" in status["loop_warnings"][0]
+    assert "dependent tasks review_security, review_style, verdict ran" in status["loop_warnings"][0]
     assert "stopped after 4/4" in _flat(project.cli("status", flow_id).stdout)
     diagnose = project.cli("diagnose", flow_id)
     assert "stopped after 4/4" in _flat(diagnose.stdout)

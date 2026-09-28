@@ -101,16 +101,26 @@ def _loop_text(task) -> str | None:
     return " ".join(parts)
 
 
+def transitive_dependents(parsed: dict[str, list], name: str) -> list[str]:
+    """Return every task downstream of ``name`` through any chain, in recipe order."""
+    found: set[str] = set()
+    frontier = [name]
+    while frontier:
+        current = frontier.pop()
+        for task, deps in parsed.items():
+            if task not in found and any(dep.task == current for dep in deps):
+                found.add(task)
+                frontier.append(task)
+    return [task for task in parsed if task in found]
+
+
 def exhaustion_warnings(conduit: Conduit, parsed: dict[str, list]) -> dict[str, str]:
     """Flag conditional loops whose default completion forwards an unmet result."""
     warnings = {}
     for task in conduit.tasks:
         if not (task.until or task.while_) or task.on_exhaust != "complete":
             continue
-        dependents = [
-            name for name, deps in parsed.items()
-            if any(dep.task == task.name for dep in deps)
-        ]
+        dependents = transitive_dependents(parsed, task.name)
         if dependents:
             condition = f"until: {task.until}" if task.until else f"while: {task.while_}"
             stop = (

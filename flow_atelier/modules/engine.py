@@ -40,6 +40,7 @@ from flow_atelier.modules.conditions import (
 )
 from flow_atelier.modules.liveness import is_crashed
 from flow_atelier.modules.nested_failure import latest_nested_failure
+from flow_atelier.modules.plan import transitive_dependents
 from flow_atelier.modules.templating import (
     SkipSignal,
     TemplateError,
@@ -1099,10 +1100,7 @@ class Engine:
                         loop_outcome = LoopOutcome(
                             condition=condition,
                             met=False,
-                            dependents=[
-                                name for name, deps in parsed_deps.items()
-                                if any(dep.task == t.name for dep in deps)
-                            ],
+                            dependents=transitive_dependents(parsed_deps, t.name),
                         )
                         if t.on_exhaust == "fail":
                             reason = (

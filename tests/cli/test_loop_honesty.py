@@ -7,7 +7,7 @@ from pathlib import Path
 
 from tests.cli.test_agent_binding_workflow import FAKE_AGENT, Project
 
-BASELINE = Path(__file__).resolve().parents[2] / ".atelier/goal/evidence/supervise-initial-baseline/conduits"
+BASELINE = Path(__file__).resolve().parents[1] / "fixtures/loop_ship"
 
 
 def _project(tmp_path, *, broken_coder=False):

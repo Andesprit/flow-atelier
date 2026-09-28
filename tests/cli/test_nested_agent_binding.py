@@ -156,8 +156,7 @@ def test_dynamic_child_target_cannot_be_selected(tmp_path):
 def test_baseline_ship_recipe_swaps_inner_agent_without_editing_yaml(tmp_path):
     """Run the original plan → fix/test loop → parallel reviews → verdict."""
     project = Project(tmp_path)
-    baseline = (Path(__file__).resolve().parents[2] / ".atelier" / "goal" /
-                "evidence" / "supervise-initial-baseline" / "conduits")
+    baseline = Path(__file__).resolve().parents[1] / "fixtures/loop_ship"
     for name in ("ship", "fix_and_test"):
         project.install(name, (baseline / name / "conduit.yaml").read_text())
     for name in ("planner", "coder", "coder2", "reviewer", "lead"):

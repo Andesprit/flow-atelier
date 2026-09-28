@@ -1,0 +1,17 @@
+name: fix_and_test
+description: one attempt - agent fixes, tests run
+inputs:
+  goal: what to build
+  feedback: last attempt's test output
+tasks:
+  - fix:
+      description: coder edits the code
+      tool: harness:coder
+      task: "Goal: {{inputs.goal}}. Last test run: {{inputs.feedback}}. Fix the code."
+  - test:
+      description: run the tests
+      tool: tool:bash
+      depends_on: [fix]
+      task: |
+        n=$(cat .attempts 2>/dev/null || echo 0); n=$((n+1)); echo $n > .attempts
+        if [ $n -ge 2 ]; then echo "TESTS PASSED"; else echo "TESTS FAILED: 1 failing"; fi

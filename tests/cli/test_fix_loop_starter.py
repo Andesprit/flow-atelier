@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -103,6 +104,17 @@ def test_fix_loop_starter_and_walkthrough(tmp_path: Path):
     assert "TESTS FAILED" in project.prompts("codex")[1]
     assert len(project.prompts("claude-code")) == 4
     assert recipe_path.read_bytes() == recipe
+    banners = re.findall(r"▶ \[(\d+)/(\d+)\]", run.stdout)
+    assert banners and all(int(index) <= int(total) for index, total in banners)
+    assert "fix_until_green 2/4 > fix" in run.stdout
+    assert "~inline~" not in run.stdout
+    assert "condition not met" in run.stdout
+    assert "condition met" in run.stdout
+    assert [item["condition_met"] for item in status["loop_passes"]] == [False, True]
+    assert all(item["agents"] == ["fix [harness:codex]"] for item in status["loop_passes"])
+    passed_status_text = project.cli("status", flow_id).stdout
+    assert "fix_until_green pass 2/4" in passed_status_text
+    assert "TESTS PASSED · condition met" in passed_status_text
 
     failed = project.cli(
         "run", "ship", "--input", "goal=make the demo pass",
@@ -114,12 +126,27 @@ def test_fix_loop_starter_and_walkthrough(tmp_path: Path):
     failed_status = project.status(failed_id)
     assert failed_status["status"] == "failed"
     assert "exhausted 4 iterations" in failed_status["tasks"]["fix_until_green"]["reason"]
+    assert failed_status["tasks"]["fix_until_green"]["iteration"] == 4
+    assert len(failed_status["loop_passes"]) == 4
+    assert all(item["condition_met"] is False for item in failed_status["loop_passes"])
+    failed_banners = re.findall(r"▶ \[(\d+)/(\d+)\]", failed.stdout)
+    assert failed_banners and all(int(index) <= int(total) for index, total in failed_banners)
+    assert "fix_until_green 4/4 > fix" in failed.stdout
+    assert "~inline~" not in failed.stdout
+    assert "condition not met" in failed.stdout
+    assert "✓ fix_until_green [tool:conduit] (4/4)" not in failed.stdout
+    failed_status_text = project.cli("status", failed_id).stdout
+    assert "fix_until_green pass 4/4" in failed_status_text
+    assert "TESTS FAILED · condition not met" in " ".join(failed_status_text.split())
     assert failed_status["tasks"]["review_correctness"]["status"] == "cancelled"
     diagnosis = project.cli("diagnose", failed_id)
     assert diagnosis.returncode == 0, diagnosis.stdout + diagnosis.stderr
     assert "fix_until_green" in diagnosis.stdout
     assert "exhausted 4 iterations" in " ".join(diagnosis.stdout.split())
     assert "TESTS FAILED" in diagnosis.stdout
+    assert "fix_until_green pass 4/4" in diagnosis.stdout
+    assert "fix [harness:codex]" in diagnosis.stdout
+    assert "~inline~" not in diagnosis.stdout
 
     (project.work / ".attempts").unlink()
     repaired = project.cli(

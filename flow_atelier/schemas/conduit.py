@@ -43,6 +43,12 @@ def parse_inline_conduit_name(name: str) -> tuple[str, str] | None:
     return (match.group(1), match.group(2)) if match else None
 
 
+def display_conduit_name(name: str) -> str:
+    """Show an inline child's parent and task instead of its storage name."""
+    inline = parse_inline_conduit_name(name)
+    return f"{inline[0]} > {inline[1]}" if inline else name
+
+
 def split_harness_tool(tool: str) -> tuple[str, str | None, str | None]:
     """Split ``harness:<name>[:<model>[:<effort>]]`` into its three parts.
 

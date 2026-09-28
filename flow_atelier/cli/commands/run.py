@@ -36,11 +36,11 @@ from flow_atelier.cli.rendering.render import (
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.binding import BindingError
-from flow_atelier.modules.engine import accepted_input_keys
+from flow_atelier.modules.engine import accepted_input_keys, current_nested_path
 from flow_atelier.modules.loop_report import unmet_loop_messages
 from flow_atelier.modules.nested_failure import brief_failure_reason
 from flow_atelier.modules.workspace import WorkspaceError, check_selectors
-from flow_atelier.schemas.conduit import Conduit
+from flow_atelier.schemas.conduit import Conduit, display_conduit_name
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.log import TaskEvent
 from flow_atelier.schemas.progress import TaskStatus
@@ -65,14 +65,15 @@ class _RunningTasks:
         self._started: dict[str, float] = {}
         self.count = 0
 
-    def start(self, task_name: str) -> int:
+    def start(self, task_name: str, *, counted: bool = True) -> int:
         """Record ``task_name`` as running and return its 1-based position.
 
         :param task_name: name of the task entering the running state.
         :returns: how many tasks have started so far this run.
         """
         self._started[task_name] = time.monotonic()
-        self.count += 1
+        if counted:
+            self.count += 1
         return self.count
 
     def finish(self, event: TaskEvent) -> None:
@@ -81,7 +82,9 @@ class _RunningTasks:
         :param event: the task event just emitted.
         """
         still_looping = (
-            event.status == TaskStatus.completed and event.iteration < event.of
+            event.status == TaskStatus.completed
+            and event.iteration < event.of
+            and event.loop_condition_met is not True
         )
         if not still_looping:
             self._started.pop(event.task, None)
@@ -156,6 +159,13 @@ def drive_flow(
     running = _RunningTasks()
     page_base = AtelierSettings().serve_url.rstrip("/")
 
+    def _task_label(name: str) -> str:
+        parents = [
+            f"{task} {iteration}/{of}" if of > 1 else task
+            for task, iteration, of in current_nested_path()
+        ]
+        return " > ".join((*parents, name))
+
     def _announce_page(fid: str) -> None:
         # soft_wrap keeps the URL on one line when the output is piped to a
         # log, where Rich would otherwise wrap at 80 columns.
@@ -170,14 +180,21 @@ def drive_flow(
             and "Traceback (most recent call last)" in event.stderr
         ):
             event = event.model_copy(update={"stderr": brief_failure_reason(event.stderr)})
-        collected.append(event)
-        running.finish(event)
+        displayed = event.model_copy(update={"task": _task_label(event.task)})
+        collected.append(displayed)
+        running.finish(displayed)
         mark_activity()
-        render_task_event(event, console)
+        render_task_event(displayed, console)
 
     def _on_started(fid: str) -> None:
         if flow_id is None:
-            console.print(_render_orchestration_msg(f"starting flow {fid}"))
+            name, _, _ = parse_flow_id(fid)
+            if current_nested_path():
+                console.print(_render_orchestration_msg(
+                    f"starting {display_conduit_name(name)}"
+                ))
+            else:
+                console.print(_render_orchestration_msg(f"starting flow {fid}"))
         # The engine also reports each nested tool:conduit run it starts. The
         # flow this command drives is the first one (or the resumed one), and
         # its page links to the nested runs.
@@ -186,10 +203,14 @@ def drive_flow(
             _announce_page(fid)
 
     def _on_task_starting(task_name: str, tool: str) -> None:
-        index = running.start(task_name)
+        nested = bool(current_nested_path())
+        label = _task_label(task_name)
+        index = running.start(label, counted=not nested)
         mark_activity()
         console.print()
-        console.print(render_task_start(task_name, tool, index, total_tasks, verb=verb))
+        console.print(render_task_start(
+            label, tool, index, 0 if nested else total_tasks, verb=verb,
+        ))
 
     # The engine does not announce a resumed flow, so name its page here.
     if flow_id is not None:

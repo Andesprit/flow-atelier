@@ -109,6 +109,14 @@ def _now() -> str:
 
 _current_task_ctx: ContextVar[str] = ContextVar("current_task_name", default="")
 _current_flow_ctx: ContextVar[str] = ContextVar("current_flow_id", default="")
+_nested_path_ctx: ContextVar[tuple[tuple[str, int, int], ...]] = ContextVar(
+    "nested_task_path", default=()
+)
+
+
+def current_nested_path() -> tuple[tuple[str, int, int], ...]:
+    """Return the calling task and pass of each enclosing nested flow."""
+    return _nested_path_ctx.get()
 
 
 def current_flow_id(default: str = "") -> str:
@@ -620,6 +628,7 @@ class Engine:
             iteration: int,
             result: ExecutionResult,
             duration: float,
+            loop_condition_met: bool | None = None,
         ) -> None:
             """Emit a TaskEvent for a completed/failed iteration.
 
@@ -643,6 +652,7 @@ class Engine:
                     success=result.success,
                     status=TaskStatus.completed if result.success else TaskStatus.failed,
                     live_streamed=result.live_streamed or t.interactive,
+                    loop_condition_met=loop_condition_met,
                     steps=result.steps,
                 )
             )
@@ -735,7 +745,9 @@ class Engine:
             ]
             self.store.write_progress(flow_id, progress)
 
-        def mark_failed(name: str, reason: str = "") -> None:
+        def mark_failed(
+            name: str, reason: str = "", loop_outcome: LoopOutcome | None = None
+        ) -> None:
             """Mark a task as failed and persist progress.
 
             :param name: task name that has failed.
@@ -745,8 +757,10 @@ class Engine:
             statuses[name] = TaskStatus.failed
             progress.tasks[name] = TaskProgress(
                 status=TaskStatus.failed,
+                iteration=progress.tasks[name].iteration,
                 of=task_map[name].repeat,
                 reason=reason or None,
+                loop_outcome=loop_outcome,
             )
             self.store.write_progress(flow_id, progress)
 
@@ -971,6 +985,7 @@ class Engine:
                                         nested.summary if nested else
                                         f"{type(exc).__name__}: {exc}"
                                     ),
+                                    child_flow_id=nested.flow_id if nested else None,
                                 )
                             finished = _now()
                             duration = (
@@ -1000,15 +1015,18 @@ class Engine:
                                     started_at=started,
                                     finished_at=finished,
                                     duration_seconds=round(duration, 3),
-                                    extra=attempt_extra,
+                                    extra={**attempt_extra, **(
+                                        {"child_flow_id": result.child_flow_id}
+                                        if result.child_flow_id else {}
+                                    )},
                                     steps=result.steps,
                                     usage=result.usage,
                                     session=result.session,
                                 ),
                             )
-                            emit_event(t, iteration, result, duration)
                             if result.success:
                                 break
+                            emit_event(t, iteration, result, duration)
                             if attempt < max_attempts:
                                 await asyncio.sleep(t.retry_backoff)
                                 continue
@@ -1039,6 +1057,7 @@ class Engine:
                             else:
                                 stagnant_streak = 1
                             if stagnant_streak >= t.stagnation_limit:
+                                emit_event(t, iteration, result, duration)
                                 reason = (
                                     f"stagnated: {stagnant_streak} identical "
                                     "consecutive outputs"
@@ -1050,6 +1069,7 @@ class Engine:
                                         f"task {t.name!r} {reason}"
                                     )
                                 return
+                        pass_met: bool | None = None
                         if loop_predicate is not None:
                             # Conduit tasks evaluate the predicate against the
                             # outputs of every nested sub-task (any-match),
@@ -1062,29 +1082,16 @@ class Engine:
                                 # iterations via {{loop.history}} and
                                 # false-positive the predicate.
                                 scope_outputs = [last_output]
-                            if await evaluate_loop_predicate(
+                            pass_met = await evaluate_loop_predicate(
                                 loop_predicate, scope_outputs, loop_mode
-                            ):
-                                predicate_matched = True
-                                break
+                            )
+                        emit_event(t, iteration, result, duration, pass_met)
+                        if pass_met:
+                            predicate_matched = True
+                            break
                     completion_reason = ""
                     loop_outcome = None
                     if loop_predicate is not None and not predicate_matched:
-                        if t.on_exhaust == "fail":
-                            reason = (
-                                f"exhausted {t.repeat} iterations without "
-                                "matching its loop predicate"
-                            )
-                            mark_failed(t.name, reason)
-                            if not failed:
-                                failed = True
-                                failure_error = RuntimeError(
-                                    f"task {t.name!r} {reason}"
-                                )
-                            return
-                        completion_reason = (
-                            "loop exhausted without predicate match"
-                        )
                         condition = (
                             f"until: {t.until}" if t.until is not None
                             else f"while: {t.while_}"
@@ -1097,6 +1104,27 @@ class Engine:
                                 if any(dep.task == t.name for dep in deps)
                             ],
                         )
+                        if t.on_exhaust == "fail":
+                            reason = (
+                                f"exhausted {t.repeat} iterations without "
+                                "matching its loop predicate"
+                            )
+                            mark_failed(t.name, reason, loop_outcome)
+                            if not failed:
+                                failed = True
+                                failure_error = RuntimeError(
+                                    f"task {t.name!r} {reason}"
+                                )
+                            return
+                        completion_reason = (
+                            "loop exhausted without predicate match"
+                        )
+                    elif loop_predicate is not None:
+                        condition = (
+                            f"until: {t.until}" if t.until is not None
+                            else f"while: {t.while_}"
+                        )
+                        loop_outcome = LoopOutcome(condition=condition, met=True)
                     outputs[t.name] = last_output
                     mark_completed(
                         t.name, iteration, reason=completion_reason,
@@ -1340,6 +1368,7 @@ class Engine:
             :param parent_flow_id: flow id of the parent run, for linkage.
             """
             child_conduit = self.store.read_conduit(conduit_name)
+            parent_pass = self.store.read_progress(parent_flow_id).tasks[invoking_task or ""]
             selected = child_bindings(task_agents or {}, invoking_task or "")
             child_conduit = bind_conduit(
                 child_conduit,
@@ -1350,13 +1379,31 @@ class Engine:
             resume_id = self._find_child_to_resume(
                 parent_flow_id, conduit_name, invoking_task
             )
-            if resume_id is not None:
-                prior_inputs = self.store.read_input(resume_id)
+            path_token = _nested_path_ctx.set((*_nested_path_ctx.get(), (
+                invoking_task or conduit_name, parent_pass.iteration, parent_pass.of,
+            )))
+            try:
+                if resume_id is not None:
+                    prior_inputs = self.store.read_input(resume_id)
+                    return await self.run(
+                        child_conduit,
+                        prior_inputs,
+                        parent_flow_id,
+                        resume_from=resume_id,
+                        on_task_event=on_task_event,
+                        on_flow_started=on_flow_started,
+                        on_task_starting=on_task_starting,
+                        show_steps=show_steps,
+                        working_dir=working_dir,
+                        ancestor_conduits=ancestor_conduits,
+                        invoking_task=invoking_task,
+                        task_agents=selected,
+                    )
+
                 return await self.run(
                     child_conduit,
-                    prior_inputs,
+                    child_inputs,
                     parent_flow_id,
-                    resume_from=resume_id,
                     on_task_event=on_task_event,
                     on_flow_started=on_flow_started,
                     on_task_starting=on_task_starting,
@@ -1366,19 +1413,7 @@ class Engine:
                     invoking_task=invoking_task,
                     task_agents=selected,
                 )
-
-            return await self.run(
-                child_conduit,
-                child_inputs,
-                parent_flow_id,
-                on_task_event=on_task_event,
-                on_flow_started=on_flow_started,
-                on_task_starting=on_task_starting,
-                show_steps=show_steps,
-                working_dir=working_dir,
-                ancestor_conduits=ancestor_conduits,
-                invoking_task=invoking_task,
-                task_agents=selected,
-            )
+            finally:
+                _nested_path_ctx.reset(path_token)
 
         return _run_nested

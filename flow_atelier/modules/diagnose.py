@@ -23,7 +23,7 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError
 
 from flow_atelier.modules.liveness import is_crashed, is_runner_alive
-from flow_atelier.modules.loop_report import unmet_loop_messages
+from flow_atelier.modules.loop_report import LoopPass, loop_passes, unmet_loop_messages
 from flow_atelier.modules.nested_failure import NestedFailure, latest_nested_failure
 from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.flow import parse_flow_id
@@ -208,6 +208,7 @@ class DiagnoseReport(BaseModel):
     children: list[ChildPointer] = Field(default_factory=list)
     nested_failures: list[NestedFailure] = Field(default_factory=list)
     loop_warnings: list[str] = Field(default_factory=list)
+    loop_passes: list[LoopPass] = Field(default_factory=list)
     unavailable: list[str] = Field(default_factory=list)
     next_steps: list[NextStep] = Field(default_factory=list)
 
@@ -871,6 +872,7 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
             )
         nested_failures.append(nested)
     loop_warnings = unmet_loop_messages(progress)
+    recorded_passes = loop_passes(atelier.store, flow_id, progress, entries)
     unmet_loop_tasks = [
         name for name, task in progress.tasks.items()
         if task.loop_outcome is not None and not task.loop_outcome.met
@@ -942,6 +944,7 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
         children=children,
         nested_failures=nested_failures,
         loop_warnings=loop_warnings,
+        loop_passes=recorded_passes,
         unavailable=unavailable,
         next_steps=_next_steps(
             flow_id,

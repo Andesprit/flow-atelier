@@ -453,13 +453,22 @@ def render_task_event(event: TaskEvent, console: Console) -> None:
         return
 
     if event.success:
-        border_style = "green"
-        title = Text(f"✓ {title_core}", style="bold green")
+        condition_unmet = event.loop_condition_met is False
+        border_style = "yellow" if condition_unmet else "green"
+        title = Text(
+            f"{'⚠' if condition_unmet else '✓'} {title_core}"
+            + (
+                " · condition not met" if condition_unmet else
+                " · condition met" if event.loop_condition_met is True else ""
+            ),
+            style="bold yellow" if condition_unmet else "bold green",
+        )
         body_source = event.output
         # Compact single-line path: successful task with nothing to show.
         if not body_source.strip():
             console.print(
-                f"[green]✓[/green] [bold]{event.task}[/bold] "
+                f"[{'yellow' if condition_unmet else 'green'}]"
+                f"{'⚠' if condition_unmet else '✓'}[/] [bold]{event.task}[/bold] "
                 f"[dim]\\[{event.tool}]{iter_suffix}[/dim]  "
                 f"[dim]{subtitle}  (no output)[/dim]"
             )
@@ -470,7 +479,8 @@ def render_task_event(event: TaskEvent, console: Console) -> None:
         # compact single-line summary instead.
         if event.live_streamed:
             console.print(
-                f"[green]✓[/green] [bold]{event.task}[/bold] "
+                f"[{'yellow' if condition_unmet else 'green'}]"
+                f"{'⚠' if condition_unmet else '✓'}[/] [bold]{event.task}[/bold] "
                 f"[dim]\\[{event.tool}]{iter_suffix}[/dim]  "
                 f"[dim]{subtitle}  (streamed live above)[/dim]"
             )
@@ -547,7 +557,10 @@ def render_run_footer(events: list[TaskEvent], console: Console) -> None:
     """
     if not events:
         return
-    counts: Counter[TaskStatus] = Counter(e.status for e in events)
+    counts: Counter[TaskStatus] = Counter(
+        e.status for e in events if e.loop_condition_met is not False
+    )
+    unmet = sum(e.loop_condition_met is False for e in events)
     total_dur = sum(e.duration_seconds for e in events)
     parts: list[str] = []
     for status, glyph, style in _TASK_STATUS_GLYPHS:
@@ -555,6 +568,8 @@ def render_run_footer(events: list[TaskEvent], console: Console) -> None:
         if n == 0:
             continue
         parts.append(f"[{style}]{glyph}{n}[/{style}]")
+    if unmet:
+        parts.append(f"[yellow]⚠{unmet} condition not met[/yellow]")
     summary = "  ".join(parts) if parts else "—"
     console.print(
         f"[dim]{summary}  ·  total {_format_duration_seconds(total_dur)}[/dim]"

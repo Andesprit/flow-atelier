@@ -20,7 +20,9 @@ from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import _FLOW_STATUS_STYLE, _task_status_summary
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.modules.liveness import display_status, is_crashed
-from flow_atelier.modules.loop_report import unmet_loop_messages
+from flow_atelier.modules.loop_report import loop_pass_lines, loop_passes, unmet_loop_messages
+from flow_atelier.schemas.conduit import display_conduit_name
+from flow_atelier.schemas.flow import parse_flow_id
 
 
 @app.command("status")
@@ -44,6 +46,7 @@ def status_cmd(
         raise typer.Exit(code=1)
 
     logs = atelier.get_flow_logs(flow_id)
+    passes = loop_passes(atelier.store, flow_id, progress, logs)
     usage_totals = _flow_usage_totals(logs)
 
     if json_mode:
@@ -59,15 +62,23 @@ def status_cmd(
         )
         if warnings := unmet_loop_messages(progress):
             payload["loop_warnings"] = warnings
+        if passes:
+            payload["loop_passes"] = [item.model_dump(mode="json") for item in passes]
         typer.echo(json.dumps(payload, indent=2))
         return
 
     effective = display_status(progress)
     flow_status_style = _FLOW_STATUS_STYLE.get(effective, "white")
     duration = _flow_duration_seconds(progress)
+    conduit_name, _, _ = parse_flow_id(flow_id)
+    display_name = display_conduit_name(conduit_name)
+    display_part = (
+        f"[dim]({escape(display_name)})[/dim]  "
+        if display_name != conduit_name else ""
+    )
     header = (
         f"[bold]flow[/bold] {flow_id}  "
-        f"status=[{flow_status_style}]{effective}[/{flow_status_style}]  "
+        f"{display_part}status=[{flow_status_style}]{effective}[/{flow_status_style}]  "
         f"started={_format_clock(progress.started_at)}  "
         f"duration={_format_duration_seconds(duration)}"
     )
@@ -138,4 +149,8 @@ def status_cmd(
             f"directory.[/dim]"
         )
     console.print(table)
+    if passes:
+        console.print("[bold]loop passes[/bold]")
+        for line in loop_pass_lines(passes):
+            console.print(f"  {escape(line)}")
     console.print(_task_status_summary(progress))

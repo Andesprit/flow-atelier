@@ -94,6 +94,8 @@ class ExecutionResult(BaseModel):
     ``tool:conduit`` tasks when evaluating the per-iteration loop
     predicate.
     """
+    child_flow_id: str | None = None
+    """Nested flow that produced this result, for pass-by-pass reporting."""
     live_streamed: bool = False
     """The executor already wrote this task's output to the user's terminal
     as it arrived, so a result panel repeating it would be pure duplication.
@@ -168,4 +170,7 @@ class TaskEvent(BaseModel):
     status: TaskStatus = TaskStatus.completed
     reason: str = ""
     live_streamed: bool = False
+    # None for ordinary tasks; for a conditional loop pass, whether this pass
+    # reached the stopping condition. A successful executor can still leave it unmet.
+    loop_condition_met: bool | None = None
     steps: list[IntermediateStep] = Field(default_factory=list)

@@ -68,7 +68,10 @@ atelier status latest
 `test [tool:bash]` inside `fix_until_green`, with the two reviews in the same
 wave. Neither command starts an agent. In the run, Codex receives both fix
 prompts; the second includes `TESTS FAILED` from the first attempt. Status
-reports a completed loop after two of four possible iterations. The recipe still names
+reports `fix_until_green` at iteration `2/4` and lists both passes: the fix
+agent, the test's last line, and whether the condition was met. During the run,
+the child banners read `fix_until_green 1/4 > fix` and then `2/4 > fix`;
+an unmet pass has an amber `condition not met` marker. The recipe still names
 Claude Code for `fix`: the `--agent` choice applies only to this run.
 
 For a specific model and effort, the same address accepts
@@ -92,8 +95,10 @@ atelier diagnose latest
 
 The `run` command is expected to exit 1. Status records that
 `fix_until_green` exhausted four iterations without matching its loop
-predicate and that the reviews were cancelled. `diagnose` identifies the same
-loop and shows the last test output: `one failing test` and `TESTS FAILED`.
+predicate and that the reviews were cancelled. Both status and diagnose show
+passes `1/4` through `4/4`, each with `fix [harness:codex]`, `TESTS FAILED`,
+and `condition not met`. The live result panel warns on each unmet pass, and
+the final loop row in status reads `4/4`.
 Repair the check or code so the command exits zero. Here, choose the working
 test command for a fresh run:
 

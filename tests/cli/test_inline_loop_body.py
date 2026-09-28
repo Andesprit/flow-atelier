@@ -97,6 +97,8 @@ def test_inline_failure_diagnose_and_parent_resume(tmp_path: Path):
         assert "fix_until_green" in report.stdout
     diagnose = project.cli("diagnose", flow_id)
     assert "fix [harness:coder]" in " ".join(diagnose.stdout.split())
+    assert "fix_until_green pass 1/4" in " ".join(diagnose.stdout.split())
+    assert "condition unknown" in " ".join(diagnose.stdout.split())
     assert f"atelier run --resume {flow_id}" in " ".join(diagnose.stdout.split())
     assert "Traceback (most recent call last)" not in diagnose.stdout
     resumed = project.cli("run", "--resume", flow_id,

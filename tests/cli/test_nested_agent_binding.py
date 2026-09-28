@@ -202,6 +202,7 @@ def test_resume_refuses_to_reassign_a_partly_completed_loop(tmp_path):
     refused = project.cli("run", "--resume", flow_id,
                           "--agent", "loop.fix=codex")
     assert refused.returncode != 0
-    assert "iteration 1" in refused.stdout
+    # The second pass failed; status and the refusal both name that real pass.
+    assert "iteration 2" in refused.stdout
     assert "--again" in refused.stdout
     assert not project.prompts("codex")

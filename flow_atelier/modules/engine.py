@@ -1018,6 +1018,13 @@ class Engine:
                                     extra={**attempt_extra, **(
                                         {"child_flow_id": result.child_flow_id}
                                         if result.child_flow_id else {}
+                                    ), **(
+                                        # Pass history must not report an
+                                        # unknown condition for a plain repeat.
+                                        {"no_loop_condition": True}
+                                        if t.tool == ToolType.conduit
+                                        and t.repeat > 1 and loop_predicate is None
+                                        else {}
                                     )},
                                     steps=result.steps,
                                     usage=result.usage,

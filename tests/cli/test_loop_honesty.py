@@ -163,3 +163,20 @@ def test_explicit_exhaustion_failure_keeps_exit_code_and_suppresses_warning(tmp_
     status = project.status(project.flow_id(run))
     assert status["status"] == "failed"
     assert status["tasks"]["review_security"]["status"] == "cancelled"
+
+
+def test_plain_repeat_of_a_shell_body_names_no_agent_and_no_condition(tmp_path):
+    project = Project(tmp_path)
+    project.install("tick", "name: tick\ndescription: d\ntasks:\n"
+                    "  - beat:\n      description: d\n      tool: tool:bash\n"
+                    "      task: echo BEAT\n")
+    project.install("outer", "name: outer\ndescription: d\ntasks:\n"
+                    "  - again:\n      description: d\n      tool: tool:conduit\n"
+                    "      task: tick\n      repeat: 2\n")
+    run = project.cli("run", "outer")
+    assert run.returncode == 0, run.stdout + run.stderr
+    text = _flat(project.cli("status", project.flow_id(run)).stdout)
+    assert "again pass 1/2: no agent · BEAT" in text
+    assert "again pass 2/2: no agent · BEAT" in text
+    assert "condition" not in text
+    assert "agent unrecorded" not in text

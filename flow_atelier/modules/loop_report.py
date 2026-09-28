@@ -18,6 +18,7 @@ class LoopPass(BaseModel):
     agents: list[str] = Field(default_factory=list)
     result: str = ""
     condition_met: bool | None = None
+    has_condition: bool = True
     child_flow_id: str | None = None
 
 
@@ -78,6 +79,7 @@ def loop_passes(store, flow_id: str, progress: Progress,
         passes.append(LoopPass(
             task=task, iteration=iteration, of=entry.of, agents=agents,
             result=result, condition_met=met,
+            has_condition=not entry.extra.get("no_loop_condition"),
             child_flow_id=child_id if isinstance(child_id, str) else None,
         ))
     return passes
@@ -101,16 +103,19 @@ def loop_pass_lines(passes: Sequence[LoopPass], *, limit: int = 8) -> list[str]:
                     "use --json for all"
                 )
                 continue
-            agents = ", ".join(item.agents) if item.agents else "agent unrecorded"
+            agents = ", ".join(item.agents) if item.agents else (
+                "no agent" if item.child_flow_id else "agent unrecorded"
+            )
             state = (
-                "condition met" if item.condition_met is True else
-                "condition not met" if item.condition_met is False else
-                "condition unknown"
+                "" if not item.has_condition else
+                " · condition met" if item.condition_met is True else
+                " · condition not met" if item.condition_met is False else
+                " · condition unknown"
             )
             result = item.result or "no result output"
             lines.append(
                 f"{item.task} pass {item.iteration}/{item.of}: "
-                f"{agents} · {result} · {state}"
+                f"{agents} · {result}{state}"
             )
     return lines
 

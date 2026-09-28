@@ -1,11 +1,11 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useId, useRef } from "react";
 import { X } from "lucide-react";
 import type { Conduit, ConduitTask, InputSpec } from "@/types/conduit";
 import { hintStr, slugifyTaskName } from "@/types/conduit";
 import { Badge } from "@/components/ui/badge";
 import { withoutCondition } from "@/utils/conditions";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { toolColor } from "@/constants/tools";
+import { TOOL_META, toolColor } from "@/constants/tools";
 
 interface Props {
   task: ConduitTask | undefined;
@@ -28,6 +28,7 @@ export function Inspector({ task, conduit, conduits, onUpdateTask, conduitInputs
   const [newInputName, setNewInputName] = useState("");
   const [newInputHint, setNewInputHint] = useState("");
   const taskRef = useRef<HTMLTextAreaElement>(null);
+  const agentListId = useId();
 
   useEffect(() => setDraft(task), [task]);
 
@@ -75,6 +76,14 @@ export function Inspector({ task, conduit, conduits, onUpdateTask, conduitInputs
   const selectedConduit = draft.tool === "tool:conduit" && draft.task
     ? conduits.find((c) => c.name === draft.task)
     : undefined;
+  const harnessParts = draft.tool.startsWith("harness:") ? draft.tool.split(":") : null;
+  const loopMode = draft.until != null ? "until" : draft.while != null ? "while" : "none";
+  const loopPredicate = draft.until ?? draft.while ?? "";
+
+  const setHarness = (agent: string, model: string, effort: string) => {
+    const tool = `harness:${agent}${model ? `:${model}${effort ? `:${effort}` : ""}` : ""}` as ConduitTask["tool"];
+    commit({ tool });
+  };
 
   const [hitlNewKey, setHitlNewKey] = useState("");
   const [hitlNewVal, setHitlNewVal] = useState("");
@@ -154,6 +163,45 @@ export function Inspector({ task, conduit, conduits, onUpdateTask, conduitInputs
       </header>
 
       <section className="space-y-5">
+        {harnessParts && (
+          <div className="space-y-3 border-b border-border/60 pb-5">
+            <Field label="agent">
+              <input
+                aria-label="agent"
+                list={agentListId}
+                value={harnessParts[1] ?? ""}
+                onChange={(e) => setHarness(e.target.value, harnessParts[2] ?? "", harnessParts[3] ?? "")}
+                placeholder="choose or enter another harness"
+                className="w-full border-0 border-b border-border-strong bg-transparent pb-1.5 font-mono text-body text-foreground focus:border-primary"
+              />
+              <datalist id={agentListId}>
+                {TOOL_META.filter((item) => item.name.startsWith("harness:")).map((item) => (
+                  <option key={item.name} value={item.name.slice("harness:".length)} />
+                ))}
+              </datalist>
+            </Field>
+            <Field label="model (optional)">
+              <input
+                aria-label="model"
+                value={harnessParts[2] ?? ""}
+                onChange={(e) => setHarness(harnessParts[1] ?? "", e.target.value, harnessParts[3] ?? "")}
+                placeholder="model id from your agent"
+                className="w-full border-0 border-b border-border-strong bg-transparent pb-1.5 font-mono text-body text-foreground focus:border-primary"
+              />
+            </Field>
+            <Field label="effort (optional)">
+              <input
+                aria-label="effort"
+                value={harnessParts[3] ?? ""}
+                disabled={!harnessParts[2]}
+                onChange={(e) => setHarness(harnessParts[1] ?? "", harnessParts[2] ?? "", e.target.value)}
+                placeholder="requires a model"
+                className="w-full border-0 border-b border-border-strong bg-transparent pb-1.5 font-mono text-body text-foreground focus:border-primary disabled:opacity-50"
+              />
+            </Field>
+            <p className="font-sans text-mini text-muted-foreground">Choose a palette agent or type another installed harness. Model and effort must be offered by that agent.</p>
+          </div>
+        )}
         <Field label="name">
           <input
             value={draft.name}
@@ -243,7 +291,11 @@ export function Inspector({ task, conduit, conduits, onUpdateTask, conduitInputs
         </Field>
         )}
         <Field label={draft.tool === "tool:conduit" ? "conduit" : "task"}>
-          {draft.tool === "tool:conduit" ? (
+          {draft.tool === "tool:conduit" && draft.tasks ? (
+            <div className="border border-border/60 px-2 py-1.5 font-mono text-label text-foreground">
+              Inline body · {draft.tasks.length} tasks
+            </div>
+          ) : draft.tool === "tool:conduit" ? (
             <Popover open={conduitPickerOpen} onOpenChange={setConduitPickerOpen}>
               <PopoverTrigger asChild>
                 <button
@@ -298,7 +350,20 @@ export function Inspector({ task, conduit, conduits, onUpdateTask, conduitInputs
         </Field>
         {(draft.tool === "tool:conduit" || draft.tool === "tool:hitl") && (
           <Field label="task inputs">
-            {draft.tool === "tool:conduit" && selectedConduit ? (
+            {draft.tool === "tool:conduit" && draft.tasks ? (
+              <div className="space-y-2">
+                {Object.entries(taskInputs).map(([key, value]) => (
+                  <label key={key} className="block font-mono text-mini text-muted-foreground">
+                    {key}
+                    <input
+                      value={value}
+                      onChange={(e) => setTaskInput(key, e.target.value)}
+                      className="mt-1 w-full border-0 border-b border-border-strong bg-transparent pb-1 font-mono text-label text-foreground focus:border-primary"
+                    />
+                  </label>
+                ))}
+              </div>
+            ) : draft.tool === "tool:conduit" && selectedConduit ? (
               <div className="space-y-2">
                 {Object.entries(selectedConduit.inputs).map(([key, hint]) => (
                   <div key={key} className="space-y-1">
@@ -419,7 +484,7 @@ export function Inspector({ task, conduit, conduits, onUpdateTask, conduitInputs
                     key={n ?? "off"}
                     type="button"
                     onClick={() => {
-                      commit({ repeat: n });
+                      commit(n == null ? { repeat: n, until: null, while: null, onExhaust: "complete" } : { repeat: n });
                       setRepeatOpen(false);
                       setRepeatCustom(false);
                     }}
@@ -468,6 +533,65 @@ export function Inspector({ task, conduit, conduits, onUpdateTask, conduitInputs
             )}
           </div>
         </Field>
+        {(draft.repeat ?? 1) >= 2 && (
+          <div className="space-y-3 border-b border-border/60 pb-5">
+            <Field label="stop when">
+              <select
+                aria-label="stop when"
+                value={loopMode}
+                onChange={(e) => {
+                  const mode = e.target.value;
+                  commit({
+                    until: mode === "until" ? loopPredicate || "output.match()" : null,
+                    while: mode === "while" ? loopPredicate || "output.match()" : null,
+                    ...(mode === "none" ? { onExhaust: "complete" as const } : {}),
+                  });
+                }}
+                className="w-full border border-border/60 bg-background px-2 py-1.5 font-mono text-label text-foreground focus:border-primary"
+              >
+                <option value="none">none — run every iteration</option>
+                <option value="until">until — stop when true</option>
+                <option value="while">while — continue while true</option>
+              </select>
+            </Field>
+            {loopMode !== "none" && (
+              <Field label="output condition">
+                <input
+                  aria-label="output condition"
+                  value={loopPredicate}
+                  onChange={(e) => commit({ [loopMode]: e.target.value })}
+                  placeholder="output.match(TESTS PASSED)"
+                  className="w-full border-0 border-b border-border-strong bg-transparent pb-1.5 font-mono text-label text-foreground focus:border-primary"
+                />
+                <p className="mt-1 font-sans text-mini text-muted-foreground">Use output.match(regex) or output.not_match(regex).</p>
+              </Field>
+            )}
+            <label className="flex items-start gap-2 font-sans text-label text-foreground">
+              <input
+                type="checkbox"
+                checked={loopMode !== "none" && draft.onExhaust === "fail"}
+                disabled={loopMode === "none"}
+                onChange={(e) => commit({ onExhaust: e.target.checked ? "fail" : "complete" })}
+                className="mt-0.5"
+              />
+              <span>Fail the run if the condition is never met</span>
+            </label>
+            {loopMode === "none" && <p className="font-sans text-mini text-muted-foreground">Set a stop condition to enable this option.</p>}
+            {loopMode !== "none" && draft.onExhaust !== "fail" && <p className="font-sans text-mini text-muted-foreground">If the limit is reached, dependent tasks run on the last result.</p>}
+          </div>
+        )}
+        {draft.tool === "tool:conduit" && draft.tasks && (
+          <Field label="inline loop body">
+            <ol className="space-y-1 border border-border/60 p-2">
+              {draft.tasks.map((child) => (
+                <li key={child.name} className="font-mono text-label text-foreground">
+                  {child.name} <span className="text-muted-foreground">· {child.tool}</span>
+                </li>
+              ))}
+            </ol>
+            <p className="mt-2 font-sans text-mini text-muted-foreground">Edit body tasks in conduit.yaml, or swap an agent for one run with --agent {draft.name}.TASK=HARNESS.</p>
+          </Field>
+        )}
         <Field label="depends on">
           <div>
             {draft.dependsOn.length === 0 ? (

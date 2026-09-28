@@ -118,6 +118,38 @@ async def test_inline_body_loads_and_an_editor_cannot_silently_drop_it(client):
     assert len(reread.json()["tasks"][0]["tasks"]) == 2
 
 
+async def test_designer_style_save_preserves_inline_loop_and_agent_model(client):
+    """A full task-list PATCH from the designer must keep the starter's loop intact."""
+    payload = _payload(name="ship")
+    payload["tasks"] = [{
+        "name": "fix_until_green", "description": "fix until tests pass",
+        "tool": "tool:conduit", "repeat": 4,
+        "until": "output.match(TESTS PASSED)", "on_exhaust": "fail",
+        "inputs": {"goal": "{{inputs.goal}}"},
+        "tasks": [
+            {"name": "fix", "description": "fix", "tool": "harness:claude-code:opus[1m]:high", "task": "Fix it"},
+            {"name": "test", "description": "test", "tool": "tool:bash", "depends_on": ["fix"], "task": "echo TESTS PASSED"},
+        ],
+    }]
+    created = await client.post("/conduits", json=payload)
+    assert created.status_code == 201, created.text
+    before = (await client.get("/conduits/ship")).json()
+    editor_payload = {
+        key: before[key]
+        for key in ("name", "description", "inputs", "timeout", "max_concurrency", "interaction", "tasks")
+    }
+    saved = await client.patch("/conduits/ship", json=editor_payload)
+    assert saved.status_code == 200, saved.text
+    after = (await client.get("/conduits/ship")).json()
+    assert after == before
+    assert after["tasks"][0]["tasks"][0]["tool"] == "harness:claude-code:opus[1m]:high"
+
+    editor_payload["tasks"][0]["until"] = "not a predicate"
+    invalid = await client.patch("/conduits/ship", json=editor_payload)
+    assert invalid.status_code == 422
+    assert "predicate must start" in invalid.text
+
+
 async def test_create_conduit_collision_returns_409(client):
     """Verify creating a conduit with a duplicate name returns 409.
 

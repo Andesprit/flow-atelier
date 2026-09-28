@@ -24,6 +24,7 @@ from flow_atelier.cli._shared import (
     parse_worktrees_option,
     seconds_since_activity,
 )
+from flow_atelier.cli.commands.recipe_diagnostics import RecipeSource, validation_errors
 from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import (
     _render_orchestration_msg,
@@ -263,7 +264,13 @@ def _load_conduit(atelier: Atelier, name: str) -> Conduit | None:
         return atelier.store.read_conduit(name)
     except FileNotFoundError:
         return None
-    except (yaml.YAMLError, ValidationError, ValueError) as exc:
+    except ValidationError as exc:
+        path = atelier.store.conduit_dir(name) / "conduit.yaml"
+        message = "\n".join(validation_errors(exc, RecipeSource(str(path), name)))
+        console.print(f"[red]invalid conduit:[/red] {escape(message)}")
+        console.print(f"[dim]→ fix conduits/{name}/conduit.yaml[/dim]")
+        raise typer.Exit(code=1)
+    except (yaml.YAMLError, ValueError) as exc:
         console.print(f"[red]invalid conduit:[/red] {escape(format_conduit_error(exc))}")
         console.print(f"[dim]→ fix conduits/{name}/conduit.yaml[/dim]")
         raise typer.Exit(code=1)

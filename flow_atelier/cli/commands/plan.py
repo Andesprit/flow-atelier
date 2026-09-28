@@ -14,6 +14,7 @@ from flow_atelier.cli._shared import (
     parse_agents_option,
     parse_worktrees_option,
 )
+from flow_atelier.cli.commands.recipe_diagnostics import RecipeSource, validation_errors
 from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import format_conduit_error, render_plan
 from flow_atelier.core.atelier import Atelier
@@ -72,6 +73,7 @@ def plan_cmd(
     if conduit_name not in sources:
         _exit_unknown_conduit(conduit_name, list(sources))
 
+    recipe = None
     try:
         recipe = atelier.store.read_conduit(conduit_name)
         conduit = atelier.bind_agents(recipe, agents)
@@ -83,7 +85,14 @@ def plan_cmd(
     except BindingError as e:
         console.print(f"[red]{escape(str(e))}[/red]")
         raise typer.Exit(code=e.code)
-    except (ValidationError, ConduitValidationError, ValueError) as e:
+    except ValidationError as e:
+        message = format_conduit_error(e)
+        if recipe is None:
+            path = atelier.store.conduit_dir(conduit_name) / "conduit.yaml"
+            message = "\n".join(validation_errors(e, RecipeSource(str(path), conduit_name)))
+        console.print(f"[red]FAIL: {escape(message)}[/red]")
+        raise typer.Exit(code=1)
+    except (ConduitValidationError, ValueError) as e:
         console.print(f"[red]FAIL: {escape(format_conduit_error(e))}[/red]")
         raise typer.Exit(code=1)
 

@@ -95,6 +95,22 @@ def test_multiple_schema_errors_are_all_reported_in_original_json_shape(tmp_path
     assert row["error"].count("conduit.yaml:") == 2
 
 
+@pytest.mark.parametrize("command", [("plan", "ship"), ("run", "ship", "--input", "goal=x")])
+def test_plan_and_run_name_invalid_inline_body_task(tmp_path, command):
+    project = Project(tmp_path)
+    assert project.cli("create", "ship", "--template", "fix-loop").returncode == 0
+    path = project.work / ".atelier/conduits/ship/conduit.yaml"
+    recipe = yaml.safe_load(path.read_text())
+    del recipe["tasks"][1]["fix_until_green"]["tasks"][0]["fix"]["description"]
+    path.write_text(yaml.safe_dump(recipe, sort_keys=False))
+
+    result = project.cli(*command)
+    assert result.returncode == 1
+    assert "conduit.yaml:" in result.stdout
+    assert "ship.fix_until_green.fix: missing description" in result.stdout
+    assert "tasks[1].tasks[0]" not in result.stdout
+
+
 def test_defaulted_child_input_need_not_be_forwarded(tmp_path):
     project = Project(tmp_path)
     assert project.cli("create", "ship", "--template", "fix-loop").returncode == 0

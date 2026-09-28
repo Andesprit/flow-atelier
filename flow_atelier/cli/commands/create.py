@@ -256,6 +256,8 @@ def _next_steps(template: Template, name: str) -> str:
         safe = escape(name)
         return (
             "[dim]uses claude-code by default; swap any step with --agent[/dim]\n"
+            "[dim]→ atelier harness check claude-code[/dim]\n"
+            "[dim]→ atelier harness check codex[/dim]\n"
             f"[dim]→ atelier check {safe} --recursive[/dim]\n"
             f"[dim]→ atelier plan {safe}[/dim]\n"
             f"[dim]→ atelier run {safe} --agent fix_until_green.fix=codex "

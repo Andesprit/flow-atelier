@@ -56,7 +56,8 @@ def test_fix_loop_starter_and_walkthrough(tmp_path: Path):
     assert [p.name for p in recipe_path.parent.parent.iterdir()] == ["ship"]
     hints = " ".join(created.stdout.split())
     for hint in (
-        "atelier check ship --recursive", "atelier plan ship",
+        "atelier harness check codex", "atelier check ship --recursive",
+        "atelier plan ship",
         "atelier run ship", "--agent fix_until_green.fix=codex",
         "atelier diagnose latest",
     ):

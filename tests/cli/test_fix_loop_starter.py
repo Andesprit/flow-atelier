@@ -114,6 +114,10 @@ def test_fix_loop_starter_and_walkthrough(tmp_path: Path):
     assert [item["condition_met"] for item in status["loop_passes"]] == [False, True]
     assert all(item["agents"] == ["fix [harness:codex]"] for item in status["loop_passes"])
     passed_status_text = project.cli("status", flow_id).stdout
+    loop_row = next(line for line in passed_status_text.splitlines()
+                    if line.startswith("│ fix_until_green"))
+    assert "fix: harness:codex" in loop_row
+    assert "tool:conduit" not in loop_row
     assert "fix_until_green pass 2/4" in passed_status_text
     assert "TESTS PASSED · condition met" in passed_status_text
 

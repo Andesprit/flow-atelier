@@ -116,8 +116,16 @@ def status_cmd(
         row = [escape(name), tp.status.value]
         if show_agent:
             chosen = progress.task_agents.get(name)
+            inner = sorted(
+                (path[len(name) + 1:], tool)
+                for path, tool in progress.task_agents.items()
+                if path.startswith(f"{name}.")
+            )
             if chosen:
                 row.append(escape(chosen))
+            elif inner:
+                # A call's own tool says nothing; name what its body runs on.
+                row.append(escape(", ".join(f"{path}: {tool}" for path, tool in inner)))
             elif name in ran_on:
                 row.append(f"{escape(ran_on[name])} [dim](recipe)[/dim]")
             else:

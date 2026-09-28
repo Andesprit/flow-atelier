@@ -17,7 +17,7 @@ import difflib
 import re
 from collections.abc import Callable, Iterable, Mapping
 
-from flow_atelier.schemas.conduit import Conduit
+from flow_atelier.schemas.conduit import MAX_NESTED_CONDUIT_DEPTH, Conduit
 from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 from flow_atelier.schemas.progress import Progress, TaskStatus
 
@@ -186,7 +186,7 @@ def valid_agent_selectors(
     *, prefix: str = "", ancestors: frozenset[str] = frozenset(),
 ) -> list[str]:
     """List statically addressable harness tasks below a recipe."""
-    if conduit.name in ancestors or len(ancestors) >= 10:
+    if conduit.name in ancestors or len(ancestors) >= MAX_NESTED_CONDUIT_DEPTH:
         return []
     ancestors = ancestors | {conduit.name}
     found: list[str] = []

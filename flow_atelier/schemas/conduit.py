@@ -24,6 +24,9 @@ _TASK_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 # so they must reject "/", ".", ".." to prevent path traversal on write/delete.
 # Hyphens are allowed because real conduits on disk use them (autonomous-projects).
 CONDUIT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# Hard ceiling on nested tool:conduit recursion as a backstop for chains
+# that are acyclic-by-name yet still pathologically deep.
+MAX_NESTED_CONDUIT_DEPTH = 25
 _INLINE_NAME_RE = re.compile(r"^~inline~([A-Za-z0-9_-]+)~([A-Za-z0-9_]+)$")
 # A harness name becomes the suffix of a `harness:<name>` executor key, and is
 # what a user types in YAML — keep it to a lowercase slug so the key a conduit

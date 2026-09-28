@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+from flow_atelier.modules.binding import valid_agent_selectors
+from flow_atelier.schemas.conduit import MAX_NESTED_CONDUIT_DEPTH, Conduit
 from tests.cli.test_agent_binding_workflow import FAKE_AGENT, Project
 
 PARENT = """\
@@ -206,3 +208,20 @@ def test_resume_refuses_to_reassign_a_partly_completed_loop(tmp_path):
     assert "iteration 2" in refused.stdout
     assert "--again" in refused.stdout
     assert not project.prompts("codex")
+
+
+def test_selectors_reach_as_deep_as_the_engine_runs():
+    depth = MAX_NESTED_CONDUIT_DEPTH - 1
+
+    def load(name: str) -> Conduit:
+        level = int(name[1:])
+        task = (
+            {"description": "d", "task": "x", "tool": "harness:codex"}
+            if level == depth else
+            {"description": "d", "task": f"c{level + 1}", "tool": "tool:conduit"}
+        )
+        return Conduit.model_validate(
+            {"name": name, "description": "d", "tasks": [{"t": task}]}
+        )
+
+    assert valid_agent_selectors(load("c0"), load) == [".".join(["t"] * (depth + 1))]

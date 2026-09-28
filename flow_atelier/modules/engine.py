@@ -51,6 +51,7 @@ from flow_atelier.modules.templating import (
 from flow_atelier.modules.workspace import workspace_note
 from flow_atelier.schemas.conduit import (
     CONDUIT_NAME_RE,
+    MAX_NESTED_CONDUIT_DEPTH,
     Conduit,
     TaskDefinition,
     ToolType,
@@ -94,10 +95,6 @@ class ConduitCycleError(ConduitValidationError):
 # Margin added to conduit.timeout for the engine's backstop wait_for, so
 # executors that self-enforce ctx.timeout always finish gracefully first.
 BACKSTOP_GRACE_SECONDS = 5
-
-# Hard ceiling on nested tool:conduit recursion as a backstop for chains
-# that are acyclic-by-name yet still pathologically deep.
-MAX_NESTED_CONDUIT_DEPTH = 25
 
 
 def _now() -> str:

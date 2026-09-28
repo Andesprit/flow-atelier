@@ -133,3 +133,19 @@ def test_compare_names_planned_agent_of_a_task_that_never_ran(tmp_path):
     text = project.cli("compare", "ship").stdout
     assert "harness:claude-code (planned)" in text
     assert "agent unrecorded" not in text
+
+
+def test_compare_points_a_failed_loop_body_at_diagnose(tmp_path):
+    project = _project(tmp_path)
+    ok = project.cli("run", "ship", "--input", "goal=fix tests",
+                     "--input", "test_command=bash check.sh")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    project.break_agent("codex")
+    broken = project.cli("run", "ship", "--input", "goal=fix tests",
+                         "--input", "test_command=bash check.sh",
+                         "--agent", "fix_until_green.fix=codex")
+    assert broken.returncode == 1
+    project.env["COLUMNS"] = "200"
+    text = project.cli("compare", "ship").stdout
+    assert "condition unknown" in text
+    assert f"atelier diagnose {project.flow_id(broken)}" in text

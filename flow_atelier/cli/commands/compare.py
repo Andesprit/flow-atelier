@@ -177,3 +177,15 @@ def compare_cmd(
         table.add_row(escape(row["task"]), describe(row["first"]),
                       describe(row["second"]), "changed" if row["different"] else "")
     console.print(table)
+    for run in (a, b):
+        stopped = [
+            name for name, item in run["tasks"].items()
+            if item["loop"] and item["loop"]["condition_met"] is None
+            and item["status"] == "failed"
+        ]
+        if stopped:
+            console.print(
+                f"[dim]{escape(', '.join(stopped))} failed before its loop "
+                f"condition was checked; for the cause → atelier diagnose "
+                f"{escape(run['flow_id'])}[/dim]"
+            )

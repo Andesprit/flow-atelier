@@ -132,7 +132,7 @@ _FIX_LOOP = {
         "goal": {"description": "What to build or repair"},
         "test_command": {
             "description": "Shell command that checks the change",
-            "default": "python -m pytest -q",
+            "default": "python3 -m pytest -q",
         },
     },
     "max_concurrency": 2,

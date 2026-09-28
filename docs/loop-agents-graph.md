@@ -36,8 +36,9 @@ output.match(TESTS PASSED)` stops early; `on_exhaust: fail` keeps reviews from
 running if the test never passes. The fix prompt receives the previous attempt
 through `{{loop.previous}}`.
 
-The `test_command` input defaults to `python -m pytest -q` for a Python
-project. This small shell test makes the loop visible without requiring a
+The `test_command` input defaults to `python3 -m pytest -q` for a Python
+project; pass `--input test_command='python -m pytest -q'` if your machine
+only has `python`. This small shell test makes the loop visible without requiring a
 Python test suite. It fails once, then passes:
 
 ```bash

@@ -66,7 +66,7 @@ def test_fix_loop_starter_and_walkthrough(tmp_path: Path):
         in created.stdout
     )
     parsed = yaml.safe_load(recipe)
-    assert parsed["inputs"]["test_command"]["default"] == "python -m pytest -q"
+    assert parsed["inputs"]["test_command"]["default"] == "python3 -m pytest -q"
     assert parsed["max_concurrency"] >= 2
 
     checked = project.cli("check", "ship", "--recursive")

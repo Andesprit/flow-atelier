@@ -177,7 +177,7 @@ _FIX_LOOP = {
                             "tool": "tool:bash",
                             "depends_on": ["fix"],
                             "task": (
-                                "if {{inputs.test_command}}; then\n"
+                                "if ( {{inputs.test_command}} ) 2>&1; then\n"
                                 "  printf 'TESTS PASSED\\n'\n"
                                 "else\n"
                                 "  printf 'TESTS FAILED\\n'\n"

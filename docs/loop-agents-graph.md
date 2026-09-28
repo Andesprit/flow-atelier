@@ -51,8 +51,9 @@ SH
 ```
 
 For your own project, omit the `test_command` input to use the default, or
-pass your real check command. The test task prints `TESTS FAILED` when that
-command exits nonzero and `TESTS PASSED` when it succeeds. A failing check is
+pass your real check command. The test task prints the command's output,
+including its error output, then `TESTS FAILED` when that command exits
+nonzero and `TESTS PASSED` when it succeeds. A failing check is
 feedback for the next loop attempt, so it does not abort the run by itself.
 
 ## Preview and run

@@ -25,7 +25,7 @@ def _project(tmp_path: Path) -> Project:
         'echo "test suite green"\n',
     )
     (project.work / "always-fail.sh").write_text(
-        'echo "one failing test"\nexit 1\n'
+        'echo "one failing test on stderr" >&2\nexit 1\n'
     )
     return project
 
@@ -129,6 +129,8 @@ def test_fix_loop_starter_and_walkthrough(tmp_path: Path):
     assert failed_status["tasks"]["fix_until_green"]["iteration"] == 4
     assert len(failed_status["loop_passes"]) == 4
     assert all(item["condition_met"] is False for item in failed_status["loop_passes"])
+    # The test command's stderr is the failure detail the fix agent needs.
+    assert "one failing test on stderr" in project.prompts("codex")[-1]
     failed_banners = re.findall(r"▶ \[(\d+)/(\d+)\]", failed.stdout)
     assert failed_banners and all(int(index) <= int(total) for index, total in failed_banners)
     assert "fix_until_green 4/4 > fix" in failed.stdout

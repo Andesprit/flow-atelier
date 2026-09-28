@@ -14,7 +14,7 @@ import re
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 from flow_atelier.schemas.interaction import InteractionPolicy
@@ -338,19 +338,9 @@ class Conduit(BaseModel):
                     )
                 task["task"] = internal
                 if isinstance(task["tasks"], list):
-                    body = []
-                    for raw in _normalize_task_list(task["tasks"]):
-                        try:
-                            body.append(TaskDefinition.model_validate(raw))
-                        except ValidationError as exc:
-                            first = exc.errors()[0]
-                            name = raw.get("name", "<task>") if isinstance(raw, dict) else "<task>"
-                            field = ".".join(str(part) for part in first["loc"])
-                            raise ValueError(
-                                f"{data.get('name')}.{task.get('name')}.{name}: "
-                                f"{field}: {first['msg']}"
-                            ) from exc
-                    task["tasks"] = body
+                    # Leave validation to Pydantic so all independent errors
+                    # retain their nested locations instead of only the first.
+                    task["tasks"] = _normalize_task_list(task["tasks"])
         data["tasks"] = normalized
         return data
 

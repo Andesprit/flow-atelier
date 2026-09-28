@@ -720,7 +720,7 @@ atelier check typo_demo
 ```
 
 ```
-typo_demo [project] — FAIL: tasks[1].depend_on: Extra inputs are not permitted
+typo_demo [project] — FAIL: conduit.yaml:12 typo_demo.consume: unknown key 'depend_on'; remove it or correct its spelling. Did you mean depends_on?
 ```
 
 Correct it to `depends_on:` and the same file checks, plans `consume`

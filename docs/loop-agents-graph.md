@@ -79,6 +79,27 @@ For a specific model and effort, the same address accepts
 those choices. You can also override a top-level task, for example
 `--agent review_correctness=codex`.
 
+## Compare agents after a swap
+
+Run the same inputs again with a different fix agent, then compare the saved
+runs. `--again` copies the first run's inputs; the dotted `--agent` choice
+applies only to the new run:
+
+```bash
+rm .attempts
+atelier run ship --again latest --agent fix_until_green.fix=claude-code
+atelier compare ship
+```
+
+`compare ship` selects its two newest top-level runs by start time. It shows
+each run's status and duration, each task's recorded agent, and the loop's
+passes and condition result. Changed rows are marked. If other runs happened
+in between, use `atelier compare <first-flow-id> <second-flow-id>` or add
+`--json` for structured output. Comparison reads saved runs; it does not call
+an agent or alter the recipe. Reset the project's test data and other relevant
+state before a rerun if you want to judge the agent choice fairly; `--again`
+reuses inputs, but it does not reset the working directory.
+
 ## Make it fail, diagnose it, repair it
 
 Create a test command that never passes:

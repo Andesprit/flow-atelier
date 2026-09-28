@@ -1288,7 +1288,7 @@ class Engine:
 
     # ------------------------------------------------------------------ helpers
 
-    def _find_child_to_resume(
+    def find_child_to_resume(
         self, parent_flow_id: str, conduit_name: str, invoking_task: str | None
     ) -> str | None:
         """Find the most recent resumable child flow for a conduit.
@@ -1373,7 +1373,7 @@ class Engine:
             )
 
             # Resume an existing failed child if one exists
-            resume_id = self._find_child_to_resume(
+            resume_id = self.find_child_to_resume(
                 parent_flow_id, conduit_name, invoking_task
             )
             path_token = _nested_path_ctx.set((*_nested_path_ctx.get(), (

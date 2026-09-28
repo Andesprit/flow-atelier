@@ -572,9 +572,9 @@ async def test_find_child_to_resume_disambiguates_by_invoking_task(store):
 
     engine = Engine({}, store)
     # step1 resumes its own failed child despite the newer completed one.
-    assert engine._find_child_to_resume(parent, "build", "step1") == c1
+    assert engine.find_child_to_resume(parent, "build", "step1") == c1
     # step2's child already completed → nothing to resume.
-    assert engine._find_child_to_resume(parent, "build", "step2") is None
+    assert engine.find_child_to_resume(parent, "build", "step2") is None
 
 
 async def test_find_child_to_resume_takes_the_latest_round_of_a_loop(store):
@@ -603,7 +603,7 @@ async def test_find_child_to_resume_takes_the_latest_round_of_a_loop(store):
         )
 
     engine = Engine({}, store)
-    assert engine._find_child_to_resume(parent, "build", "loop") == "20260101_00000000_build"
+    assert engine.find_child_to_resume(parent, "build", "loop") == "20260101_00000000_build"
 
 
 async def test_find_child_to_resume_skips_live_running_child(store):
@@ -635,7 +635,7 @@ async def test_find_child_to_resume_skips_live_running_child(store):
         ),
     )
     engine = Engine({}, store)
-    assert engine._find_child_to_resume(parent, "build", "step1") is None
+    assert engine.find_child_to_resume(parent, "build", "step1") is None
 
     # Dead runner (a pid that has exited): the orphaned child is resumable.
     dead = subprocess.Popen(["true"])
@@ -649,4 +649,4 @@ async def test_find_child_to_resume_skips_live_running_child(store):
             runner_host=host,
         ),
     )
-    assert engine._find_child_to_resume(parent, "build", "step1") == child
+    assert engine.find_child_to_resume(parent, "build", "step1") == child

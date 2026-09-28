@@ -660,7 +660,7 @@ class Atelier:
             task = next((t for t in conduit.tasks if t.name == call), None)
             if task is None or task.tool != "tool:conduit" or "{{" in task.task:
                 return  # bind_agent_paths supplies the selector diagnostic
-            child_id = self.engine._find_child_to_resume(
+            child_id = self.engine.find_child_to_resume(
                 flow_id, task.task.strip(), call
             )
             if child_id is None:

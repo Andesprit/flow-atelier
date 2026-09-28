@@ -41,7 +41,11 @@ from flow_atelier.modules.engine import accepted_input_keys, current_nested_path
 from flow_atelier.modules.loop_report import unmet_loop_messages
 from flow_atelier.modules.nested_failure import brief_failure_reason
 from flow_atelier.modules.workspace import WorkspaceError, check_selectors
-from flow_atelier.schemas.conduit import Conduit, display_conduit_name
+from flow_atelier.schemas.conduit import (
+    Conduit,
+    display_conduit_name,
+    parse_inline_conduit_name,
+)
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.log import TaskEvent
 from flow_atelier.schemas.progress import TaskStatus
@@ -505,6 +509,15 @@ def run_cmd(
         console.print(
             "[red]error:[/red] conduit name is required (unless using --resume or --again)"
         )
+        raise typer.Exit(code=2)
+
+    if inline := parse_inline_conduit_name(conduit_name):
+        console.print(
+            f"[red]error:[/red] {escape(conduit_name)} is the internal name of "
+            f"the inline body of {escape(inline[0])}.{escape(inline[1])}, not a "
+            "conduit you can run"
+        )
+        console.print(f"[dim]→ atelier run {escape(inline[0])}[/dim]")
         raise typer.Exit(code=2)
 
     inputs = _parse_inputs(inputs_raw)

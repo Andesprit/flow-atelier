@@ -138,6 +138,15 @@ def test_inline_saved_choice_and_exhaustion(tmp_path: Path):
     assert "stopped after 4/4" in " ".join(diagnosed.stdout.split())
 
 
+def test_run_refuses_internal_inline_name(tmp_path: Path):
+    project = _project(tmp_path)
+    run = project.cli("run", "~inline~ship~fix_until_green", "--input", "goal=x")
+    assert run.returncode == 2
+    flat = " ".join(run.stdout.split())
+    assert "internal name of the inline body of ship.fix_until_green" in flat
+    assert "atelier run ship" in flat
+
+
 def test_inline_validation_and_namespace(tmp_path: Path):
     project = _project(tmp_path)
     recipe = project.recipe("ship").decode()

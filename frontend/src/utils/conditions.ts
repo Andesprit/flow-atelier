@@ -96,7 +96,11 @@ export function fromWireTask(task: ConduitTask): ConduitTask {
     if (condition) conditions[source] = condition;
   }
 
-  const out: ConduitTask = { ...task, dependsOn };
+  const out: ConduitTask = {
+    ...task,
+    dependsOn,
+    ...(task.tasks ? { tasks: task.tasks.map(fromWireTask) } : {}),
+  };
   if (Object.keys(conditions).length > 0) out.conditions = conditions;
   else delete out.conditions;
   return out;
@@ -117,6 +121,7 @@ export function toWireTask(task: ConduitTask): ConduitTask {
     dependsOn: (task.dependsOn ?? []).map((dep) =>
       formatDependency(dep, conditions?.[dep]),
     ),
+    ...(task.tasks ? { tasks: task.tasks.map(toWireTask) } : {}),
   };
 }
 

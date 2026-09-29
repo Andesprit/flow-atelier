@@ -512,11 +512,13 @@ def test_an_unsupplied_required_child_input_fails_before_anything_runs(workdir):
 
     _, rows = _report(["root", "--recursive"], expect_exit=1)
     _shape(rows[0])
-    assert rows[0]["error"] == (
+    assert rows[0]["error"].startswith(
         f"root.call0 -> kid ({child.absolute()}) — task 'call0' supplies no "
         "value for required inputs: ['finding']; add them under the task's "
         "own 'inputs:' map, which is all a called conduit receives"
     )
+    assert "conduit.yaml:4 root.call0" in rows[0]["error"]
+    assert "finding: '{{inputs.finding}}'" in rows[0]["error"]
 
 
 def test_a_parent_input_of_the_same_name_does_not_satisfy_the_child(workdir):
@@ -576,8 +578,8 @@ def test_a_declared_child_input_nobody_uses_still_needs_no_binding(workdir):
     assert _report(["root", "--recursive"], expect_exit=0)[1][0]["ok"] is True
 
 
-def test_a_key_the_child_only_references_is_accepted_but_not_required(workdir):
-    """Undeclared references are the engine's own acceptance rule, both ways."""
+def test_a_key_the_child_only_references_must_be_forwarded(workdir):
+    """An undeclared input reference needs a value from the caller."""
     body = (
         "name: kid\ndescription: d\ntasks:\n  - name: a\n    description: a\n"
         '    task: "echo {{inputs.loose}}"\n    tool: tool:bash\n'
@@ -586,7 +588,10 @@ def test_a_key_the_child_only_references_is_accepted_but_not_required(workdir):
     _write(workdir, "root", _binds("root", "kid", "loose: x"))
     assert _report(["root", "--recursive"], expect_exit=0)[1][0]["ok"] is True
     _write(workdir, "root", _binds("root", "kid"))
-    assert _report(["root", "--recursive"], expect_exit=0)[1][0]["ok"] is True
+    error = _report(["root", "--recursive"], expect_exit=1)[1][0]["error"]
+    assert "root.call0" in error
+    assert "{{inputs.loose}}" in error
+    assert "loose: '{{inputs.loose}}'" in error
 
 
 def test_a_key_referenced_only_in_the_childs_own_forward_is_accepted(workdir):
@@ -1024,7 +1029,8 @@ def test_the_readme_binding_example_is_what_the_checker_really_says(workdir):
     )
     report.write_text(without, encoding="utf-8")
     _, rows = _report(["report", "--recursive"], expect_exit=1)
-    assert rows[0]["error"].rsplit(" — ", 1)[1] == says[1].rsplit(" — ", 1)[1]
+    assert rows[0]["error"].splitlines()[0].rsplit(" — ", 1)[1] == says[1].rsplit(" — ", 1)[1]
+    assert "finding: '{{inputs.finding}}'" in rows[0]["error"]
 
 
 def test_the_readme_binding_example_really_runs_with_the_tone_it_asks_for(

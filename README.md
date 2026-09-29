@@ -33,6 +33,16 @@ tasks:
 
 Save that as `.atelier/conduits/ci/conduit.yaml` and run `atelier run ci`.
 
+For a loop with several steps, put `tasks:` under the looping task (the
+[one-file example](tests/fixtures/loop_ship_inline/ship/conduit.yaml) includes
+planning, a fix/test loop, parallel reviews, and a verdict). `atelier plan
+ship` shows the loop body under its calling step. Choose its agent for one
+run with `atelier run ship --agent fix_until_green.fix=codex:MODEL:EFFORT`;
+the choice is saved and reused by `run --resume`. See
+[the agent selection guide](docs/reusing-a-workflow-with-other-agents.md) for
+a loop example and the corresponding `plan` and `check --recursive --probe`
+commands.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Andesprit/flow-atelier/main/install.sh | bash
 atelier init                             # writes a hello-world conduit
@@ -360,6 +370,10 @@ Ready for a real one? [Your first workflow: run it, break it, recover
 it](docs/first-workflow.md) is a 5-minute Bash-only exercise that builds a
 three-step conduit, fails it on purpose, diagnoses it from saved history, and
 shows what `--resume` keeps that `--again` redoes.
+
+To combine a fix/test loop, swappable agents, and parallel reviews in one
+file, use `atelier create ship --template fix-loop` and follow the
+[loop, agents, and graph walkthrough](docs/loop-agents-graph.md).
 
 ### Your first AI workflow: review what you staged
 
@@ -706,7 +720,7 @@ atelier check typo_demo
 ```
 
 ```
-typo_demo [project] — FAIL: tasks[1].depend_on: Extra inputs are not permitted
+typo_demo [project] — FAIL: conduit.yaml:12 typo_demo.consume: unknown key 'depend_on'; remove it or correct its spelling. Did you mean depends_on?
 ```
 
 Correct it to `depends_on:` and the same file checks, plans `consume`
@@ -1166,8 +1180,11 @@ while: output.not_match(<regex>)   # loop while no output matches; break otherwi
 Set at most one of `until` / `while`. The first iteration always runs
 before the predicate is checked.
 
-For `tool:conduit` loops, the predicate sees **every nested sub-task
-output of that iteration** and fires on any match.
+For a loop with several tasks, put `tasks:` on its `tool:conduit` step. Each
+iteration runs the body as a child flow; the predicate sees **every body task's
+output from that iteration** and fires on any match. The body receives only
+the values forwarded by the calling task's `inputs:` map. `{{conduit_dir}}`
+still points at the directory containing the one file.
 
 ```yaml
 - retry_while_rate_limited:
@@ -1178,10 +1195,45 @@ output of that iteration** and fires on any match.
 
 - run_until_test_passes:
     tool: tool:conduit
-    task: build_and_test
+    description: fix then test
     repeat: 5
     until: output.match(PASS)
+    on_exhaust: fail
+    inputs:
+      goal: "{{inputs.goal}}"
+      feedback: "{{loop.previous}}"
+    tasks:
+      - fix:
+          description: repair from the previous test result
+          tool: harness:codex
+          task: "Fix {{inputs.goal}}. Previous test: {{inputs.feedback}}"
+      - test:
+          description: check the repair
+          tool: tool:bash
+          depends_on: [fix]
+          task: make test
 ```
+
+For a body reused by other workflows, put its tasks in a separate conduit and
+use `task: build_and_test` instead of the inline `tasks:` list. Do not set
+both fields on one task. `atelier check` validates an inline body's tasks and
+dependencies even without `--recursive`; use `--recursive` to follow named
+children and to include the body in `--probe`.
+
+Without `on_exhaust: fail`, a loop that reaches its limit without meeting
+`until` or `while` still completes and its dependents receive the last output.
+`atelier check` and `atelier plan` warn when such a loop has dependents. A run,
+`atelier status`, and `atelier diagnose` report the unmet condition, iteration
+count, and which dependent tasks ran. Set `on_exhaust: fail` on that task when
+an unmet condition must stop the workflow; raise `repeat` when more attempts
+are appropriate. The default remains `complete` for existing recipes.
+
+If an agent fails inside a `tool:conduit` loop, the parent run and `diagnose`
+name the child task, agent, and loop iteration. Resume the parent flow with
+`atelier run --resume <parent-flow-id>`, or replace that child agent for the
+remaining work with `atelier run --resume <parent-flow-id> --agent
+<loop-task>.<child-task>=<harness>`. Use `atelier logs <child-flow-id> --show
+all` for the raw error and Python traceback.
 
 
 
@@ -1315,7 +1367,7 @@ flow folder under `.atelier/flows/` in the current working directory.
 ```
 # authoring
 atelier init
-atelier create <name> [--description <text>] [--template hello|code-review]
+atelier create <name> [--description <text>] [--template hello|code-review|fix-loop]
                                                        # scaffold a starter conduit
 atelier compose <name> --step <harness>=<prompt> --step ... [--parallel]
                        [--synthesize <harness>=<prompt>] [--description <text>]

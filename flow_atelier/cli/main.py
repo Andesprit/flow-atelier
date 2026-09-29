@@ -156,6 +156,7 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     add,
     ask,
     check,
+    compare,
     compose,
     create,
     diagnose,

@@ -105,5 +105,6 @@ const TOOL_COLOR_BY_NAME: Record<string, string> = Object.fromEntries(
  * whatever the surrounding text happens to be.
  */
 export function toolColor(tool: ToolType): string {
-  return TOOL_COLOR_BY_NAME[tool] ?? "var(--color-tool-harness-other)";
+  const base = tool.startsWith("harness:") ? tool.split(":", 2).join(":") : tool;
+  return TOOL_COLOR_BY_NAME[base] ?? "var(--color-tool-harness-other)";
 }

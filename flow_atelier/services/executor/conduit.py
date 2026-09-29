@@ -105,4 +105,5 @@ class ConduitExecutor(ExecutorBase):
             stderr="" if exit_code == 0 else f"nested conduit {status}",
             output=last_output,
             sub_outputs=sub_outputs,
+            child_flow_id=child_flow_id,
         )

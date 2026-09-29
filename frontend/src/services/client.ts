@@ -36,6 +36,24 @@ export function resetTokenPrompt(): void {
   declined = false;
 }
 
+// FastAPI reports a rejected body as {"detail": [{"msg": ...}, ...]} or
+// {"detail": "..."}; a raw dump of that JSON is unreadable in a toast.
+function readableError(text: string): string {
+  try {
+    const { detail } = JSON.parse(text) as { detail?: unknown };
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      const messages = detail
+        .map((item) => (item as { msg?: unknown })?.msg)
+        .filter((msg): msg is string => typeof msg === "string");
+      if (messages.length > 0) return messages.join("; ");
+    }
+  } catch {
+    // Not JSON: the text is already what the server said.
+  }
+  return text;
+}
+
 export async function fetchJson<TResponse>(
   url: string,
   body?: unknown,
@@ -90,7 +108,7 @@ export async function fetchJson<TResponse>(
   }
   if (!res.ok) {
     const errorText = await res.text();
-    throw new Error(`API error ${res.status}: ${errorText}`);
+    throw new Error(`API error ${res.status}: ${readableError(errorText)}`);
   }
   // A successful call may have no body (e.g. a 204 DELETE). Parsing an empty
   // string as JSON throws, so a successful delete would surface as an error.

@@ -229,7 +229,8 @@ class Project:
         """
         path = self.work / ".atelier" / "conduits" / name
         path.mkdir(parents=True, exist_ok=True)
-        (path / "conduit.yaml").write_text(text, encoding="utf-8")
+        # newline="\n": Windows would write CRLF, and tests edit recipes by "\n".
+        (path / "conduit.yaml").write_text(text, encoding="utf-8", newline="\n")
 
     def recipe(self, name: str) -> bytes:
         """Return a recipe's exact bytes.
@@ -289,7 +290,11 @@ class Project:
         """
         return [
             "\n".join(block.get("text", "") for block in json.loads(line))
-            for log in sorted(self.records[name].glob("*.jsonl"))
+            # oldest process first: files are named by pid, which Windows
+            # does not hand out in start order
+            for log in sorted(
+                self.records[name].glob("*.jsonl"), key=lambda p: p.stat().st_mtime_ns
+            )
             for line in log.read_text(encoding="utf-8").splitlines()
         ]
 

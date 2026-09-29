@@ -138,6 +138,9 @@ def test_inline_saved_choice_and_exhaustion(tmp_path: Path):
     assert "stopped after 4/4" in " ".join(diagnosed.stdout.split())
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="click expands a leading ~ in Windows arguments"
+)
 def test_run_refuses_internal_inline_name(tmp_path: Path):
     project = _project(tmp_path)
     run = project.cli("run", "~inline~ship~fix_until_green", "--input", "goal=x")

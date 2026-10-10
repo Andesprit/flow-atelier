@@ -696,6 +696,31 @@ class FilesystemStore(StoreBase):
         tmp.write_text(yaml.safe_dump(outputs, sort_keys=False))
         _atomic_replace(tmp, path)
 
+    # ------------------------------------------------------------------ sessions.yaml
+
+    def read_sessions(self, flow_id: str) -> dict[str, dict[str, str]]:
+        """Return the parsed ``sessions.yaml`` map (empty if missing).
+
+        :param flow_id: flow identifier
+        :returns: mapping of session name to ``{"id", "harness"}``
+        """
+        path = self._flow_dir(flow_id) / "sessions.yaml"
+        if not path.exists():
+            return {}
+        loaded = yaml.safe_load(path.read_text())
+        return loaded if isinstance(loaded, dict) else {}
+
+    def write_sessions(self, flow_id: str, sessions: dict[str, dict[str, str]]) -> None:
+        """Atomically write ``sessions.yaml`` for ``flow_id``.
+
+        :param flow_id: flow identifier
+        :param sessions: mapping of session name to ``{"id", "harness"}``
+        """
+        path = self._flow_dir(flow_id) / "sessions.yaml"
+        tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
+        tmp.write_text(yaml.safe_dump(sessions, sort_keys=False))
+        _atomic_replace(tmp, path)
+
     # ------------------------------------------------------------------ input.yaml
 
     def read_input(self, flow_id: str) -> dict[str, Any]:

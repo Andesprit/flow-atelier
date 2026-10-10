@@ -1492,6 +1492,82 @@ def _select(id_: str, category: str | None, options: list) -> SessionConfigOptio
     )
 
 
+def _session_events(record: Path) -> list[str]:
+    """Return the session requests the fake agent served, as ``event:session_id``.
+
+    :param record: the directory the fake agent logged its events into.
+    """
+    return [
+        f"{event['event']}:{event.get('session_id', '')}"
+        for log in record.glob("*.events")
+        for event in map(json.loads, log.read_text().splitlines())
+        if "session" in event["event"]
+    ]
+
+
+async def test_a_new_session_reports_its_id_even_when_the_turn_times_out(tmp_path) -> None:
+    """The id is what lets a retry continue instead of starting cold."""
+    script = {"turns": [{"chunks": ["late"], "delay_before": 5}]}
+    result = await AcpHarnessExecutor(_fake_cmd(script)).execute(
+        _task("go"), "go", _ctx(timeout=1)
+    )
+    assert result.exit_code == 124
+    assert result.agent_session_id == "fake-session-1"
+    assert result.session_continued is False
+
+
+async def test_an_agent_that_can_resume_continues_the_session(tmp_path) -> None:
+    """``session/resume`` is used and no new session is opened."""
+    script = {"reload": "resume", "record_path": str(tmp_path),
+              "turns": [{"chunks": ["fixed"]}]}
+    ctx = _ctx()
+    ctx.resume_session = "earlier"
+    result = await AcpHarnessExecutor(_fake_cmd(script)).execute(_task("go"), "go", ctx)
+    assert result.success, result.stderr
+    assert _session_events(tmp_path) == ["resume_session:earlier"]
+    assert (result.output, result.agent_session_id, result.session_continued) == (
+        "fixed", "earlier", True,
+    )
+
+
+async def test_a_loaded_session_does_not_repeat_its_history_as_output(tmp_path) -> None:
+    """``session/load`` replays the conversation; none of it is this task's work."""
+    script = {"reload": "load", "replay": ["old answer ", "old detail"],
+              "record_path": str(tmp_path), "turns": [{"chunks": ["fixed"]}]}
+    ctx = _ctx()
+    ctx.resume_session = "earlier"
+    sink = RecordingSink()
+    result = await AcpHarnessExecutor(_fake_cmd(script), sink=sink).execute(
+        _task("go"), "go", ctx
+    )
+    assert _session_events(tmp_path) == ["load_session:earlier"]
+    assert (result.output, result.session_continued) == ("fixed", True)
+    assert "old" not in json.dumps([result.session, sink.display_log], default=str)
+
+
+async def test_a_session_that_cannot_be_continued_falls_back_to_a_new_one(
+    tmp_path, caplog
+) -> None:
+    """The task still runs, without the earlier context, and the log says why."""
+    for name, script in {
+        "unable": {},
+        "refused": {"reload": "resume", "reload_fails": "session not found"},
+    }.items():
+        record = tmp_path / name
+        record.mkdir()
+        ctx = _ctx()
+        ctx.resume_session = "earlier"
+        result = await AcpHarnessExecutor(
+            _fake_cmd({**script, "record_path": str(record), "turns": [{"chunks": ["done"]}]})
+        ).execute(_task("go"), "go", ctx)
+        assert result.success, result.stderr
+        assert _session_events(record)[-1] == "new_session:"
+        assert (result.agent_session_id, result.session_continued) == ("fake-session-1", False)
+    assert "the agent cannot reload sessions" in caplog.text
+    assert "session not found" in caplog.text
+    assert caplog.text.count("starting a new one") == 2
+
+
 def test_select_values_skips_an_empty_group() -> None:
     """A group with no values is legal ACP and contributes nothing.
 

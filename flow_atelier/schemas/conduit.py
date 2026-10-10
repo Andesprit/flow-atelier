@@ -131,6 +131,7 @@ class TaskDefinition(BaseModel):
     retry_backoff: float = 0.0
     timeout: int | None = None
     interactive: bool = False
+    session: str | None = None
     inputs: dict[str, Any] = Field(default_factory=dict)
     tasks: list[TaskDefinition] | None = None
 
@@ -241,6 +242,19 @@ class TaskDefinition(BaseModel):
         if v is not None and v < 1:
             raise ValueError("timeout must be >= 1")
         return v
+
+    @model_validator(mode="after")
+    def _validate_session(self) -> TaskDefinition:
+        """Allow ``session`` only where there is an agent session to continue.
+
+        :returns: the validated ``TaskDefinition`` instance.
+        """
+        if self.session is not None:
+            if not self.tool.startswith("harness:"):
+                raise ValueError("session requires a harness:<name> tool")
+            if not self.session.strip():
+                raise ValueError("session must not be empty")
+        return self
 
     @model_validator(mode="after")
     def _validate_loop_predicates(self) -> TaskDefinition:

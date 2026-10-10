@@ -19,6 +19,9 @@ Script schema::
             "available": ["low", "medium", "high"],
             "per_model": {"m2": {"current": "high", "available": ["high", "max"]}}
         },
+        "reload": null | "resume" | "load",
+        "reload_fails": null | "session not found",
+        "replay": ["text an earlier turn said"],
         "turns": [
             {
                 "chunks": ["text ", "more text"],
@@ -48,6 +51,11 @@ When ``modes`` is set, ``new_session`` advertises them to the client and
 ``set_session_mode`` emits a ``[mode_set:<mode_id>]`` chunk so tests can
 assert which mode the harness selected by inspecting the run output.
 
+``reload`` makes the agent advertise that it can continue an earlier session:
+``resume`` restores it silently, ``load`` replays ``replay`` as message chunks
+before answering, the way a real agent replays the whole conversation.
+``reload_fails`` makes either refuse with that message.
+
 When ``efforts`` is set, the session carries a ``thought_level`` select
 alongside the model one. ``per_model`` makes it model-dependent the way a
 real agent's is: selecting a model listed there replaces the effort option's
@@ -76,15 +84,19 @@ from acp.schema import (
     Cost,
     Implementation,
     InitializeResponse,
+    LoadSessionResponse,
     ModelInfo,
     NewSessionResponse,
     PromptCapabilities,
     PromptResponse,
+    ResumeSessionResponse,
+    SessionCapabilities,
     SessionConfigOptionSelect,
     SessionConfigSelectOption,
     SessionMode,
     SessionModelState,
     SessionModeState,
+    SessionResumeCapabilities,
     SetSessionConfigOptionResponse,
     SetSessionModelResponse,
     SetSessionModeResponse,
@@ -110,6 +122,9 @@ class FakeAgent:
         auth_methods: list[dict[str, Any]] | None = None,
         fail_session: str | None = None,
         record_path: str | None = None,
+        reload: str | None = None,
+        reload_fails: str | None = None,
+        replay: list[str] | None = None,
     ) -> None:
         """Initialize the fake agent with a scripted turn list.
 
@@ -126,6 +141,10 @@ class FakeAgent:
         :param fail_session: when set, new_session raises with this message —
             what a logged-out agent does.
         :param record_path: prompt log file, or an existing directory for per-process logs.
+        :param reload: ``resume`` or ``load`` to advertise that way of
+            continuing an earlier session; ``None`` advertises neither.
+        :param reload_fails: when set, continuing a session raises with this message.
+        :param replay: message chunks ``load_session`` replays before answering.
         """
         self._turns = list(turns)
         self._modes_spec = modes
@@ -135,6 +154,9 @@ class FakeAgent:
         self._auth_methods = auth_methods or []
         self._fail_session = fail_session
         self._record_path = record_path
+        self._reload = reload
+        self._reload_fails = reload_fails
+        self._replay = replay or []
         self._conn: acp.Client | None = None
 
     def _log(self, event: str, **fields: Any) -> None:
@@ -177,7 +199,10 @@ class FakeAgent:
         return InitializeResponse(
             protocol_version=acp.PROTOCOL_VERSION,
             agent_capabilities=AgentCapabilities(
-                load_session=False,
+                load_session=self._reload == "load",
+                session_capabilities=SessionCapabilities(
+                    resume=SessionResumeCapabilities() if self._reload == "resume" else None
+                ),
                 prompt_capabilities=PromptCapabilities(
                     audio=False, embedded_context=False, image=False
                 ),
@@ -397,13 +422,19 @@ class FakeAgent:
         """
         return None
 
-    async def load_session(self, *args, **kwargs):
-        """Stub load_session to satisfy the Agent protocol.
+    async def load_session(self, cwd: str, session_id: str, **kwargs) -> LoadSessionResponse:
+        """Continue ``session_id``, replaying the scripted history first.
 
-        :param args: positional arguments accepted by the protocol.
-        :param kwargs: keyword arguments accepted by the protocol.
+        :param cwd: working directory provided by the client.
+        :param session_id: the session the client wants to continue.
+        :param kwargs: additional keyword arguments accepted by the protocol.
         """
-        return None
+        self._log("load_session", cwd=cwd, session_id=session_id)
+        if self._reload_fails:
+            raise RequestError(-32002, self._reload_fails)
+        for text in self._replay:
+            await self._echo(session_id, text)
+        return LoadSessionResponse()
 
     async def list_sessions(self, *args, **kwargs):
         """Stub list_sessions to satisfy the Agent protocol.
@@ -501,13 +532,17 @@ class FakeAgent:
         """
         raise NotImplementedError
 
-    async def resume_session(self, *args, **kwargs):
-        """Stub resume_session to satisfy the Agent protocol.
+    async def resume_session(self, cwd: str, session_id: str, **kwargs) -> ResumeSessionResponse:
+        """Continue ``session_id`` without replaying its history.
 
-        :param args: positional arguments accepted by the protocol.
-        :param kwargs: keyword arguments accepted by the protocol.
+        :param cwd: working directory provided by the client.
+        :param session_id: the session the client wants to continue.
+        :param kwargs: additional keyword arguments accepted by the protocol.
         """
-        raise NotImplementedError
+        self._log("resume_session", cwd=cwd, session_id=session_id)
+        if self._reload_fails:
+            raise RequestError(-32002, self._reload_fails)
+        return ResumeSessionResponse()
 
     async def close_session(self, *args, **kwargs):
         """Stub close_session to satisfy the Agent protocol.
@@ -551,6 +586,9 @@ async def _main() -> None:
         auth_methods=script.get("auth_methods"),
         fail_session=script.get("fail_session"),
         record_path=script.get("record_path"),
+        reload=script.get("reload"),
+        reload_fails=script.get("reload_fails"),
+        replay=script.get("replay"),
     )
     # `session/set_model` is unstable in ACP; the real adapters serve it, so
     # the fake must opt in to be routed the request at all.

@@ -109,6 +109,14 @@ class ExecutionResult(BaseModel):
     steps: list[IntermediateStep] = Field(default_factory=list)
     usage: TurnUsage | None = None
     session: list[dict[str, Any]] = Field(default_factory=list)
+    agent_session_id: str | None = None
+    """The agent's own id for the conversation this invocation ran in. Set by
+    harness executors as soon as the session is open, so a turn that then
+    timed out or failed still reports it. The engine saves it for a task that
+    names a ``session``, so a later task can continue the same conversation."""
+    session_continued: bool = False
+    """Whether this invocation continued an earlier agent session instead of
+    opening a new one."""
 
     @property
     def success(self) -> bool:

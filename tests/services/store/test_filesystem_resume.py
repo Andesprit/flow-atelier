@@ -99,6 +99,17 @@ def test_read_outputs_non_mapping_yaml_returns_empty(store):
 # ---------------------------------------------------------------- create_flow(flow_id=...)
 
 
+def test_sessions_round_trip_and_default_to_empty(store):
+    """Named agent sessions are saved per flow and absent until one is opened.
+
+    :param store: FilesystemStore fixture.
+    """
+    flow_id = store.create_flow("c", {}, None)
+    assert store.read_sessions(flow_id) == {}
+    store.write_sessions(flow_id, {"worker": {"id": "s1", "harness": "claude-code"}})
+    assert store.read_sessions(flow_id) == {"worker": {"id": "s1", "harness": "claude-code"}}
+
+
 def test_create_flow_with_explicit_flow_id(store):
     """Verify create_flow uses the provided flow_id instead of generating one.
 

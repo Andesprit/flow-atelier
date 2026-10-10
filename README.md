@@ -1193,6 +1193,50 @@ that is *succeeding*.
 - `timeout: <seconds>` — override the per-task time limit for one task.
 When omitted, the conduit-level `timeout` applies.
 
+### Continuing an agent's conversation (`session`)
+
+Every agent task normally opens a new conversation, so the agent reads
+the project again each time. Give two tasks the same `session` name and
+the later one becomes the next turn of the earlier one's conversation:
+
+```yaml
+- build:
+    description: Implement the change
+    task: Implement {{inputs.goal}}
+    tool: harness:claude-code
+    session: worker
+- review:
+    description: Review what was built
+    task: Review the last commit and list what must be fixed.
+    tool: harness:codex
+    depends_on: [build]
+- repair:
+    description: Fix what the review found
+    task: "The reviewer found:\n{{review.output}}\nFix these."
+    tool: harness:claude-code
+    session: worker
+    depends_on: [review]
+```
+
+`repair` starts with everything `build` already knows, so it only has to
+read the findings.
+
+- Only `harness:` tasks can name a session, and a session belongs to the
+  agent that opened it: a task on another agent that uses the same name
+  starts its own conversation.
+- The name is a template. `session: "fix-{{inputs.ticket}}"` starts a new
+  conversation when the ticket changes, which is how a recipe keeps one
+  conversation from growing forever.
+- Sessions belong to the whole run. A looping task continues its own
+  session on each iteration, a retry continues the session of the attempt
+  that failed or timed out, `--resume` keeps them, and a conduit that a
+  parent runs again and again finds the session its last run left.
+- Tasks that share a session take turns, even when they could run in
+  parallel.
+- If the agent cannot reload the session, or no longer has it, the task
+  runs in a new one and a warning says why. Each log entry of such a task
+  records `session` and `session_continued`.
+
 
 
 ### Asking a human (`tool:hitl`)

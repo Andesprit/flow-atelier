@@ -149,6 +149,8 @@ class InteractionRouter:
         context = replace(
             self.context, interaction=InteractionPolicy(), supervisor_executor=None,
             supervisor_run=True, show_steps=False, on_step=None,
+            # The supervisor decides in its own session, never the worker's.
+            resume_session=None,
             timeout=min(config.timeout, self.context.timeout),
         )
         result = await asyncio.wait_for(

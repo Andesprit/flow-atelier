@@ -66,6 +66,11 @@ class FlowContext:
     when an executor resolves its own templates (e.g. nested-conduit inputs).
     ``None`` when the conduit is not registered in the store."""
 
+    resume_session: str | None = None
+    """The agent's id of an earlier session this invocation should continue,
+    set by the engine for a task that names a ``session``. ``None`` opens a
+    new session."""
+
     interaction: InteractionPolicy = field(default_factory=InteractionPolicy)
     supervisor_executor: ExecutorBase | None = None
     supervisor_run: bool = False

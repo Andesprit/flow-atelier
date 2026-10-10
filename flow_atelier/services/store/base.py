@@ -192,6 +192,26 @@ class StoreBase(ABC):
         """
         ...
 
+    # --- sessions.yaml ---
+
+    @abstractmethod
+    def read_sessions(self, flow_id: str) -> dict[str, dict[str, str]]:
+        """Return the named agent sessions saved for ``flow_id`` (empty if missing).
+
+        :param flow_id: flow identifier
+        :returns: mapping of session name to ``{"id", "harness"}``
+        """
+        ...
+
+    @abstractmethod
+    def write_sessions(self, flow_id: str, sessions: dict[str, dict[str, str]]) -> None:
+        """Persist the named agent sessions for ``flow_id``.
+
+        :param flow_id: flow identifier
+        :param sessions: mapping of session name to ``{"id", "harness"}``
+        """
+        ...
+
     # --- input.yaml ---
     @abstractmethod
     def read_input(self, flow_id: str) -> dict[str, Any]:

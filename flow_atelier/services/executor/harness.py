@@ -30,6 +30,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import acp
@@ -548,6 +549,13 @@ class _BufferingClient:
         self._updates_idle = asyncio.Event()
         # One handler at a time: notifications arrive as independent tasks.
         self._dispatch_lock = asyncio.Lock()
+        # The agent's id for the open session and whether it continued an
+        # earlier one. See :meth:`AcpHarnessExecutor._open_session`.
+        self.agent_session_id: str | None = None
+        self.session_continued = False
+        # True while a reloaded session replays its history: those updates
+        # are an earlier task's output, not this one's.
+        self.replaying = False
 
     async def _record(self, step: IntermediateStep) -> None:
         """Buffer ``step``, persist it, and mirror it to the sink.
@@ -637,7 +645,8 @@ class _BufferingClient:
             and event.message.get("method") == "session/update"
         ):
             self._updates_received += 1
-            self.session.append({"source": "worker", "update": event.message.get("params", {})})
+            if not self.replaying:
+                self.session.append({"source": "worker", "update": event.message.get("params", {})})
 
     async def await_pending_updates(
         self, timeout: float = UPDATE_DRAIN_TIMEOUT_SECONDS
@@ -693,8 +702,9 @@ class _BufferingClient:
         :param kwargs: additional ACP fields (unused).
         """
         try:
-            async with self._dispatch_lock:
-                await self._dispatch_update(update)
+            if not self.replaying:
+                async with self._dispatch_lock:
+                    await self._dispatch_update(update)
         finally:
             self._updates_handled += 1
             if self._updates_handled >= self._updates_received:
@@ -1204,7 +1214,8 @@ class AcpHarnessExecutor(ExecutorBase):
         try:
             result = await asyncio.wait_for(
                 self._drive_session(
-                    client, prompt_text, interactive, cwd, agent_stderr
+                    client, prompt_text, interactive, cwd, agent_stderr,
+                    context.resume_session,
                 ),
                 timeout=context.timeout,
             )
@@ -1231,6 +1242,8 @@ class AcpHarnessExecutor(ExecutorBase):
         # Interactive runs stream raw chunks; non-interactive runs stream
         # batched message blocks. Either way the output is already on screen.
         result.session = client.session
+        result.agent_session_id = client.agent_session_id
+        result.session_continued = client.session_continued
         if client.interaction_error is not None:
             result.exit_code = 1
             result.stderr = f"interaction failed: {client.interaction_error}"
@@ -1245,6 +1258,7 @@ class AcpHarnessExecutor(ExecutorBase):
         interactive: bool,
         cwd: str,
         agent_stderr: deque[str],
+        resume_session: str | None = None,
     ) -> ExecutionResult:
         """Spawn the agent, initialize a session, and run one or many turns.
 
@@ -1254,6 +1268,8 @@ class AcpHarnessExecutor(ExecutorBase):
         :param interactive: ``True`` to loop until the done marker arrives.
         :param cwd: working directory passed to the agent process.
         :param agent_stderr: bounded deque the agent's stderr is drained into.
+        :param resume_session: the agent's id of an earlier session to
+            continue, or ``None`` to open a new one.
         :returns: :class:`ExecutionResult` from single-turn or interactive run.
         """
         cmd, *args = self.launch_cmd
@@ -1284,8 +1300,8 @@ class AcpHarnessExecutor(ExecutorBase):
                 else None
             )
             try:
-                await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
-                sess = await conn.new_session(cwd=cwd)
+                init = await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
+                sess = await self._open_session(conn, init, cwd, client, resume_session)
                 if client.approve_all and not client.supervisor_run:
                     await self._maybe_switch_to_permissive_mode(conn, sess)
                 else:
@@ -1316,6 +1332,62 @@ class AcpHarnessExecutor(ExecutorBase):
                     drain.cancel()
                 if sys.platform == "win32":
                     _close_proc_transports(proc)
+
+    @staticmethod
+    async def _open_session(
+        conn, init, cwd: str, client: _BufferingClient, resume_session: str | None
+    ):
+        """Continue ``resume_session`` when the agent can, else open a new session.
+
+        ``session/resume`` is preferred: it restores the conversation without
+        replaying it. ``session/load`` replays the whole history as session
+        updates, which are an earlier task's output and are dropped here. An
+        agent that offers neither, or refuses this id (a session it has
+        pruned, or one made on another machine), gets a new session: the task
+        still runs, only without the earlier context, and the fallback is
+        logged.
+
+        :param conn: the active ACP connection.
+        :param init: the agent's ``initialize`` response, carrying capabilities.
+        :param cwd: absolute working directory for the session.
+        :param client: buffering client; records the session id and replay state.
+        :param resume_session: the agent's id of the session to continue, or
+            ``None`` to open a new one.
+        :returns: an object with ``session_id``, ``modes``, ``models`` and
+            ``config_options``, like a ``NewSessionResponse``.
+        """
+        if resume_session is not None:
+            caps = getattr(init, "agent_capabilities", None)
+            sessions = getattr(caps, "session_capabilities", None)
+            try:
+                if getattr(sessions, "resume", None) is not None:
+                    opened = await conn.resume_session(cwd=cwd, session_id=resume_session)
+                elif getattr(caps, "load_session", False):
+                    client.replaying = True
+                    try:
+                        opened = await conn.load_session(cwd=cwd, session_id=resume_session)
+                        await client.await_pending_updates()
+                    finally:
+                        client.replaying = False
+                else:
+                    raise RuntimeError("the agent cannot reload sessions")
+            except Exception as exc:  # noqa: BLE001 — any refusal means start fresh
+                logger.warning(
+                    "could not continue agent session %s (%s); starting a new one",
+                    resume_session, exc,
+                )
+            else:
+                client.agent_session_id = resume_session
+                client.session_continued = True
+                return SimpleNamespace(
+                    session_id=resume_session,
+                    modes=getattr(opened, "modes", None),
+                    models=getattr(opened, "models", None),
+                    config_options=getattr(opened, "config_options", None),
+                )
+        sess = await conn.new_session(cwd=cwd)
+        client.agent_session_id = sess.session_id
+        return sess
 
     @staticmethod
     async def _maybe_switch_to_permissive_mode(conn, sess) -> None:

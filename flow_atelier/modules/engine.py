@@ -161,7 +161,9 @@ def accepted_input_keys(conduit: Conduit) -> set[str]:
     """
     accepted = set(conduit.inputs)
     for t in conduit.tasks:
-        for template in (t.task, *(v for v in t.inputs.values() if isinstance(v, str))):
+        for template in (
+            t.task, t.session or "", *(v for v in t.inputs.values() if isinstance(v, str))
+        ):
             accepted |= {r.value for r in extract_template_refs(template) if r.kind == "input"}
     return accepted
 
@@ -284,7 +286,7 @@ def validate_conduit(conduit: Conduit) -> dict[str, list[Dependency]]:
             )
 
         allowed = reachable(t.name)
-        targets = [t.task]
+        targets = [t.task, *([t.session] if t.session else [])]
         if t.tool == ToolType.conduit:
             targets += [v for v in t.inputs.values() if isinstance(v, str)]
         for template in targets:
@@ -349,6 +351,8 @@ class Engine:
         self.store = store
         self.loop_history_limit = loop_history_limit
         self.loop_history_entry_chars = loop_history_entry_chars
+        # One turn at a time per named agent session, keyed by (scope, name).
+        self._session_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     # ------------------------------------------------------------------ public
 
@@ -369,6 +373,7 @@ class Engine:
         invoking_task: str | None = None,
         task_agents: Mapping[str, str] | None = None,
         workspaces: Workspaces | None = None,
+        session_scope: str | None = None,
     ) -> str:
         """Execute a conduit to completion, returning the flow id.
 
@@ -413,6 +418,11 @@ class Engine:
             used as those tasks' working directory. Every other task keeps
             ``working_dir``. Not forwarded to nested ``tool:conduit`` runs, for
             the same reason ``task_agents`` is not.
+        :param session_scope: flow id under which named agent sessions are
+            saved. ``None`` for a top-level run, which uses its own flow id;
+            forwarded to nested ``tool:conduit`` runs so a task in a child that
+            is run again and again can continue the session an earlier child
+            started.
         :returns: the new flow id on success
         :raises ConduitValidationError: DAG is invalid (cycle, unknown dep, bad regex)
         :raises ConduitCycleError: nested conduits form a cycle or exceed depth
@@ -467,6 +477,7 @@ class Engine:
         else:
             flow_id = self.store.create_flow(conduit.name, inputs, parent_flow_id, flow_id=flow_id)
         _current_flow_ctx.set(flow_id)
+        session_scope = session_scope or flow_id
         if on_flow_started is not None and resume_from is None:
             try:
                 on_flow_started(flow_id)
@@ -765,9 +776,9 @@ class Engine:
                     else task_dirs
                 )
 
-                def _resolve_task() -> str:
-                    text = resolve(
-                        t.task, runtime_inputs, outputs,
+                def _render(template: str) -> str:
+                    return resolve(
+                        template, runtime_inputs, outputs,
                         unavailable_tasks=unavailable, loop_history=loop_history,
                         loop_history_limit=self.loop_history_limit,
                         loop_history_entry_chars=self.loop_history_entry_chars,
@@ -775,6 +786,16 @@ class Engine:
                         task_tools=effective_tools,
                         task_workspaces=task_workspaces,
                     )
+
+                def _resolve_session() -> str | None:
+                    # Resolved like the prompt, so a name can follow an input
+                    # or an earlier output and start afresh when that changes.
+                    if t.session is None:
+                        return None
+                    return _render(t.session).strip() or None
+
+                def _resolve_task() -> str:
+                    text = _render(t.task)
                     # An agent reading a result must be told who produced it. A
                     # label written before this run chose its agents can say
                     # the wrong name; the correction is appended rather than
@@ -791,6 +812,7 @@ class Engine:
 
                 try:
                     resolved = _resolve_task()
+                    session_name = _resolve_session()
                 except SkipSignal as e:
                     mark_skipped(t.name, str(e))
                     return
@@ -842,12 +864,48 @@ class Engine:
                         working_dir=working_dir,
                         ancestor_conduits=(*ancestor_conduits, conduit.name),
                         invoking_task=t.name,
+                        session_scope=session_scope,
                     ),
                     loop_history=loop_history,
                     loop_history_limit=self.loop_history_limit,
                     loop_history_entry_chars=self.loop_history_entry_chars,
                     conduit_dir=conduit_dir,
                 )
+
+                async def _execute(prompt: str, name: str | None) -> ExecutionResult:
+                    """Run one attempt, in the task's named agent session if it has one.
+
+                    The session's id is saved after every attempt that opened
+                    one, even a failed or timed-out attempt, so a retry or a
+                    later task continues the conversation instead of starting
+                    cold. A session saved by a different agent is not offered:
+                    one agent cannot reload another's conversation.
+
+                    :param prompt: the resolved prompt for this attempt.
+                    :param name: the resolved session name, or ``None``.
+                    :returns: the executor's :class:`ExecutionResult`.
+                    """
+                    if name is None:
+                        return await executor.execute(t, prompt, ctx)
+                    harness = t.tool.split(":")[1]
+                    lock = self._session_locks.setdefault(
+                        (session_scope, name), asyncio.Lock()
+                    )
+                    async with lock:
+                        saved = self.store.read_sessions(session_scope).get(name)
+                        ctx.resume_session = (
+                            saved["id"]
+                            if saved and saved.get("harness") == harness
+                            else None
+                        )
+                        result = await executor.execute(t, prompt, ctx)
+                        if result.agent_session_id:
+                            sessions = self.store.read_sessions(session_scope)
+                            sessions[name] = {
+                                "id": result.agent_session_id, "harness": harness
+                            }
+                            self.store.write_sessions(session_scope, sessions)
+                        return result
 
                 def _make_step_sink(iteration: int):
                     """Build the per-iteration live step persistence hook.
@@ -900,6 +958,7 @@ class Engine:
                         if iteration > start_iteration:
                             try:
                                 resolved = _resolve_task()
+                                session_name = _resolve_session()
                             except (SkipSignal, TemplateError) as e:
                                 # Mid-loop the task has already produced
                                 # output, so a silent skip would lie: fail.
@@ -928,7 +987,7 @@ class Engine:
                                 # win the race against them. HITL is exempt: a
                                 # human stepping away is not a timeout.
                                 result = await asyncio.wait_for(
-                                    executor.execute(t, resolved, ctx),
+                                    _execute(resolved, session_name),
                                     timeout=(
                                         None
                                         if is_hitl
@@ -956,6 +1015,12 @@ class Engine:
                                 if max_attempts > 1
                                 else {}
                             )
+                            if session_name is not None:
+                                attempt_extra = {
+                                    **attempt_extra,
+                                    "session": session_name,
+                                    "session_continued": result.session_continued,
+                                }
                             await self.store.append_log(
                                 flow_id,
                                 LogEntry(
@@ -1270,6 +1335,7 @@ class Engine:
         working_dir: Path | None = None,
         ancestor_conduits: tuple[str, ...] = (),
         invoking_task: str | None = None,
+        session_scope: str | None = None,
     ):
         """Build the nested-conduit runner passed to executors via FlowContext.
 
@@ -1284,6 +1350,8 @@ class Engine:
             bound per-task so the executor-facing callback signature stays
             ``(conduit_name, child_inputs, parent_flow_id)``. Used to record and
             match the child against the right parent step on resume.
+        :param session_scope: flow id under which named agent sessions are
+            saved, forwarded so children share the top-level run's sessions.
         :returns: an async callable ``(conduit_name, child_inputs, parent_flow_id)``
             that loads and runs the named child conduit.
         """
@@ -1314,6 +1382,7 @@ class Engine:
                     working_dir=working_dir,
                     ancestor_conduits=ancestor_conduits,
                     invoking_task=invoking_task,
+                    session_scope=session_scope,
                 )
 
             return await self.run(
@@ -1327,6 +1396,7 @@ class Engine:
                 working_dir=working_dir,
                 ancestor_conduits=ancestor_conduits,
                 invoking_task=invoking_task,
+                session_scope=session_scope,
             )
 
         return _run_nested

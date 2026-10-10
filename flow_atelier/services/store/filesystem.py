@@ -28,7 +28,12 @@ from typing import Any
 
 import yaml
 
-from flow_atelier.schemas.conduit import CONDUIT_NAME_RE, Conduit
+from flow_atelier.schemas.conduit import (
+    CONDUIT_NAME_RE,
+    Conduit,
+    inline_child_conduit,
+    parse_inline_conduit_name,
+)
 from flow_atelier.schemas.flow import new_flow_id, parse_flow_id
 from flow_atelier.schemas.log import LogEntry, StepRecord
 from flow_atelier.schemas.progress import Progress
@@ -116,7 +121,7 @@ class FilesystemStore(StoreBase):
             conduit, _, _ = parse_flow_id(flow_id)
         except ValueError:
             return False
-        return bool(CONDUIT_NAME_RE.match(conduit))
+        return bool(CONDUIT_NAME_RE.match(conduit) or parse_inline_conduit_name(conduit))
 
     def _conduit_dir(self, name: str) -> Path:
         """Return the project-level directory for conduit ``name``.
@@ -206,6 +211,16 @@ class FilesystemStore(StoreBase):
 
         :param name: conduit name
         """
+        inline = parse_inline_conduit_name(name)
+        if inline is not None:
+            parent_name, task_name = inline
+            parent = self.read_conduit(parent_name)
+            task = next((t for t in parent.tasks if t.name == task_name), None)
+            if task is None or task.tasks is None:
+                raise FileNotFoundError(
+                    f"inline body not found: {parent_name}.{task_name}"
+                )
+            return inline_child_conduit(parent, task)
         project_path = self._conduit_yaml(name)
         global_path = self._global_conduit_yaml(name)
         if project_path.exists():
@@ -297,6 +312,10 @@ class FilesystemStore(StoreBase):
         :param name: conduit name
         :raises FileNotFoundError: if not found in either store
         """
+        inline = parse_inline_conduit_name(name)
+        if inline is not None:
+            self.read_conduit(name)
+            return self.conduit_dir(inline[0])
         project_dir = self._conduit_dir(name)
         if self._conduit_yaml(name).exists():
             return project_dir

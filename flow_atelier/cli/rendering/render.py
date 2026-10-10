@@ -453,13 +453,22 @@ def render_task_event(event: TaskEvent, console: Console) -> None:
         return
 
     if event.success:
-        border_style = "green"
-        title = Text(f"✓ {title_core}", style="bold green")
+        condition_unmet = event.loop_condition_met is False
+        border_style = "yellow" if condition_unmet else "green"
+        title = Text(
+            f"{'⚠' if condition_unmet else '✓'} {title_core}"
+            + (
+                " · condition not met" if condition_unmet else
+                " · condition met" if event.loop_condition_met is True else ""
+            ),
+            style="bold yellow" if condition_unmet else "bold green",
+        )
         body_source = event.output
         # Compact single-line path: successful task with nothing to show.
         if not body_source.strip():
             console.print(
-                f"[green]✓[/green] [bold]{event.task}[/bold] "
+                f"[{'yellow' if condition_unmet else 'green'}]"
+                f"{'⚠' if condition_unmet else '✓'}[/] [bold]{event.task}[/bold] "
                 f"[dim]\\[{event.tool}]{iter_suffix}[/dim]  "
                 f"[dim]{subtitle}  (no output)[/dim]"
             )
@@ -470,7 +479,8 @@ def render_task_event(event: TaskEvent, console: Console) -> None:
         # compact single-line summary instead.
         if event.live_streamed:
             console.print(
-                f"[green]✓[/green] [bold]{event.task}[/bold] "
+                f"[{'yellow' if condition_unmet else 'green'}]"
+                f"{'⚠' if condition_unmet else '✓'}[/] [bold]{event.task}[/bold] "
                 f"[dim]\\[{event.tool}]{iter_suffix}[/dim]  "
                 f"[dim]{subtitle}  (streamed live above)[/dim]"
             )
@@ -547,7 +557,10 @@ def render_run_footer(events: list[TaskEvent], console: Console) -> None:
     """
     if not events:
         return
-    counts: Counter[TaskStatus] = Counter(e.status for e in events)
+    counts: Counter[TaskStatus] = Counter(
+        e.status for e in events if e.loop_condition_met is not False
+    )
+    unmet = sum(e.loop_condition_met is False for e in events)
     total_dur = sum(e.duration_seconds for e in events)
     parts: list[str] = []
     for status, glyph, style in _TASK_STATUS_GLYPHS:
@@ -555,6 +568,8 @@ def render_run_footer(events: list[TaskEvent], console: Console) -> None:
         if n == 0:
             continue
         parts.append(f"[{style}]{glyph}{n}[/{style}]")
+    if unmet:
+        parts.append(f"[yellow]⚠{unmet} condition not met[/yellow]")
     summary = "  ".join(parts) if parts else "—"
     console.print(
         f"[dim]{summary}  ·  total {_format_duration_seconds(total_dur)}[/dim]"
@@ -672,13 +687,13 @@ def format_conduit_error(exc: Exception) -> str:
     return " ".join(str(exc).split())
 
 
-def _render_planned_task(task: PlannedTask, console: Console) -> None:
+def _render_planned_task(task: PlannedTask, console: Console, indent: str = "") -> None:
     """Render one task line plus its edges, loop badge and gate note.
 
     :param task: the planned task to render.
     :param console: Rich console to write to.
     """
-    head = Text("  ")
+    head = Text(f"{indent}  ")
     head.append(task.name, style="bold")
     head.append(f"  [{task.tool}]", style="dim")
     if task.recipe_tool:
@@ -694,47 +709,52 @@ def _render_planned_task(task: PlannedTask, console: Console) -> None:
     console.print(head)
 
     for e in task.plain_edges:
-        line = Text("      → ", style="dim")
+        line = Text(f"{indent}      → ", style="dim")
         line.append(e.task)
         console.print(line)
     for e in task.conditional_edges:
-        line = Text("      ⇢ ", style="yellow")
+        line = Text(f"{indent}      ⇢ ", style="yellow")
         line.append(e.task)
         marker = "not_match" if e.negate else "match"
         line.append(f"  ?{marker}({e.pattern})", style="yellow")
         console.print(line)
 
     if task.is_gate and task.prunes:
-        note = Text("      ", style="dim")
+        note = Text(f"{indent}      ", style="dim")
         note.append(
             f"⚠ if this output misses, it prunes {len(task.prunes)} task(s): "
             f"{', '.join(task.prunes)}",
             style="dim yellow",
         )
         console.print(note)
+    if task.exhaustion_warning:
+        console.print(f"{indent}      [yellow]⚠ {escape(task.exhaustion_warning)}[/yellow]")
+    if task.child is not None:
+        render_plan(task.child, console, indent=f"{indent}    ")
 
 
-def render_plan(plan: ExecutionPlan, console: Console) -> None:
+def render_plan(plan: ExecutionPlan, console: Console, indent: str = "") -> None:
     """Render a static :class:`ExecutionPlan` as grouped wave blocks.
 
     :param plan: the execution plan to render.
     :param console: Rich console to write to.
     """
     console.print(
-        f"[bold]{plan.conduit_name}[/bold]  "
+        f"{indent}[bold]{plan.conduit_name}[/bold]  "
         f"[dim]max_concurrency={plan.max_concurrency}[/dim]"
     )
-    console.print(
-        "[dim italic]static structural view — wave levels are longest-path "
-        "layering, not a runtime trace; real parallelism is also bounded by "
-        "max_concurrency and conditional skips.[/dim italic]"
-    )
+    if not indent:
+        console.print(
+            "[dim italic]static structural view — wave levels are longest-path "
+            "layering, not a runtime trace; real parallelism is also bounded by "
+            "max_concurrency and conditional skips.[/dim italic]"
+        )
     if plan.isolation is not None:
         _render_isolation(plan.isolation, console)
     for i, wave in enumerate(plan.waves):
-        console.print(f"\n[bold]Wave {i}[/bold]")
+        console.print(f"{indent}[bold]Wave {i}[/bold]")
         for task in wave:
-            _render_planned_task(task, console)
+            _render_planned_task(task, console, indent)
 
 
 def _render_isolation(isolation, console: Console) -> None:

@@ -172,9 +172,54 @@ agent assignments, one unchanged file.
 
 ## What a selection can and cannot do
 
-* It names **top-level tasks of the recipe you are running**. A task of the
-  same name inside a nested `tool:conduit` is not affected — that child is read
-  from the store on its own.
+A loop body can live in the same `conduit.yaml` as the rest of the graph:
+
+```yaml
+name: ship
+description: fix until tests pass, then review
+inputs:
+  goal: what to build
+tasks:
+  - fix_until_green:
+      description: fix and test each attempt
+      tool: tool:conduit
+      repeat: 4
+      until: output.match(TESTS PASSED)
+      on_exhaust: fail
+      inputs:
+        goal: "{{inputs.goal}}"
+        feedback: "{{loop.previous}}"
+      tasks:
+        - fix:
+            description: edit the code
+            tool: harness:codex
+            task: "Fix {{inputs.goal}}. Previous result: {{inputs.feedback}}"
+        - test:
+            description: run tests
+            tool: tool:bash
+            depends_on: [fix]
+            task: make test
+  - review:
+      description: review the passing result
+      tool: harness:claude-code
+      depends_on: [fix_until_green]
+      task: "Review: {{fix_until_green.output}}"
+```
+
+Save it as `.atelier/conduits/ship/conduit.yaml`, then run `atelier check
+ship`, `atelier plan ship --agent fix_until_green.fix=codex:MODEL`, and
+`atelier run ship --input goal='add login' --agent
+fix_until_green.fix=codex:MODEL`. The inner `fix` task is selected with the
+same dotted path as a separately installed child. The body sees the calling
+task's `inputs:` values, not all parent inputs or task outputs. To reuse a
+body across workflows, move it into a named conduit and set `task: <name>`
+instead of `tasks:` on the call.
+
+* A plain name selects a **top-level task**. To select an agent inside a
+  `tool:conduit` call, use its calling task followed by the child's agent
+  task, such as `--agent fix_until_green.fix=codex`. Continue the dotted path
+  through more calls when needed. This applies to that call only, even if
+  another parent task invokes the same child recipe.
 * It re-points **agent tasks only**. A `tool:bash`, `tool:hitl` or
   `tool:conduit` step is refused, with its name, rather than converted; change
   those by editing the conduit.
@@ -183,6 +228,17 @@ agent assignments, one unchanged file.
   `--agent step_2=codex`, `--agent step_2=codex:gpt-5.1`,
   `--agent step_2=codex:gpt-5.1:high`. `atelier harness check codex` lists the
   models that agent offers.
+* `atelier plan ship --agent fix_until_green.fix=codex:gpt-5.1:high` shows
+  the loop body's `fix` and `test` tasks below `fix_until_green`, with the
+  effective agent and recipe default. `atelier check ship --recursive --probe
+  --agent fix_until_green.fix=codex:gpt-5.1:high` checks that choice without
+  sending a prompt. `atelier run ship --agent fix_until_green.fix=codex:gpt-5.1:high`
+  uses it on every loop iteration. The parent status records the dotted choice;
+  each child run records the agent it used. `run --resume <parent-flow-id>`
+  reuses the choice, and `run --again <parent-flow-id>` makes a fresh run with it.
+  A resume can change an agent on a failed or pending task before any successful
+  loop iteration has recorded history. If an iteration has already succeeded,
+  use `--again` to change the loop body's agent for a fresh run.
 * The readiness gate probes what you chose, not what the recipe says, on a
   fresh run, a `--resume` and an `--again` alike. Replacing an agent you cannot
   run is enough to start the run; naming a replacement you cannot run stops it

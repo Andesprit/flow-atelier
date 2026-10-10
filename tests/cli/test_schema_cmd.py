@@ -293,9 +293,9 @@ def test_the_task_fields_come_from_the_model(workdir):
     assert set(schema["properties"]) == {
         f.alias or name for name, f in Conduit.model_fields.items()
     }
-    # The key supplies the name, so only that requirement is relaxed.
-    assert defs["TaskDefinition"]["required"] == ["name", "description", "task", "tool"]
-    assert defs["WrappedTaskBody"]["required"] == ["description", "task", "tool"]
+    # The key supplies the name; an inline body supplies tasks instead of task.
+    assert defs["TaskDefinition"]["required"] == ["name", "description", "tool"]
+    assert defs["WrappedTaskBody"]["required"] == ["description", "tool"]
 
 
 def test_the_readme_walkthrough_works_end_to_end(workdir):

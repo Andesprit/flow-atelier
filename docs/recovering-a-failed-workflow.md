@@ -129,6 +129,24 @@ atelier diagnose latest || exit 1
 
 The second report now says *completed*, with nothing to recover.
 
+## Loops that finish without meeting their condition
+
+By default, reaching `repeat` without meeting `until` or `while` completes
+the task. Dependents can then run on its last output. `atelier check` and
+`atelier plan` warn about this when the loop has dependents. After the run,
+`atelier status <flow>` and `atelier diagnose <flow>` show the unmet condition
+and which dependents ran. To stop the workflow in this case, add
+`on_exhaust: fail` to the looping task in its `conduit.yaml`; to allow more
+attempts, raise its `repeat` count. A completed run needs a new run after
+editing the recipe.
+
+When an agent fails inside a repeated child conduit, diagnose the parent flow.
+Its failure summary names the child task, agent, and loop iteration. The
+recovery command is `atelier run --resume <parent-flow-id>`; use
+`--agent <loop-task>.<child-task>=<harness>` with that command to swap a failing
+agent for the unfinished work. The child's raw traceback remains available in
+`atelier logs <child-flow-id> --show all`.
+
 ## What diagnose will not tell you
 
 - **Which tasks a resume will run.** It reports what completed and what did

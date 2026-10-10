@@ -22,11 +22,20 @@ class FlowStatus(str, Enum):
     stopped = "stopped"
 
 
+class LoopOutcome(BaseModel):
+    """The condition and downstream impact saved when a loop gives up."""
+
+    condition: str
+    met: bool
+    dependents: list[str] = Field(default_factory=list)
+
+
 class TaskProgress(BaseModel):
     status: TaskStatus = TaskStatus.pending
     iteration: int = 1
     of: int = 1
     reason: str | None = None
+    loop_outcome: LoopOutcome | None = None
 
 
 class Workspaces(BaseModel):

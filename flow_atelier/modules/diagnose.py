@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +23,8 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError
 
 from flow_atelier.modules.liveness import is_crashed, is_runner_alive
+from flow_atelier.modules.loop_report import LoopPass, loop_passes, unmet_loop_messages
+from flow_atelier.modules.nested_failure import NestedFailure, latest_nested_failure
 from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.log import LogEntry
@@ -203,6 +206,9 @@ class DiagnoseReport(BaseModel):
     running: list[TaskReport] = Field(default_factory=list)
     kept: list[TaskReport] = Field(default_factory=list)
     children: list[ChildPointer] = Field(default_factory=list)
+    nested_failures: list[NestedFailure] = Field(default_factory=list)
+    loop_warnings: list[str] = Field(default_factory=list)
+    loop_passes: list[LoopPass] = Field(default_factory=list)
     unavailable: list[str] = Field(default_factory=list)
     next_steps: list[NextStep] = Field(default_factory=list)
 
@@ -581,6 +587,9 @@ def _next_steps(
     unfinished: int,
     recipe: RecipeNote,
     chosen: Mapping[str, str],
+    nested_failures: list[NestedFailure],
+    loop_warnings: list[str],
+    unmet_loop_tasks: list[str],
 ) -> list[NextStep]:
     """Build the suggested commands, keyed off what was actually observed.
 
@@ -661,6 +670,21 @@ def _next_steps(
                             ),
                         )
                     )
+            for nested in nested_failures:
+                if nested.tool.startswith("harness:"):
+                    steps.append(
+                        NextStep(
+                            what=(
+                                f"if {nested.tool} cannot continue, choose another "
+                                f"agent for {nested.selector} and resume the parent run"
+                            ),
+                            command=(
+                                f"atelier run --resume {quoted} --agent "
+                                f"{nested.selector}=<harness>"
+                            ),
+                            side_effects="continues unfinished parent tasks with that agent",
+                        )
+                    )
         else:
             steps.append(
                 NextStep(
@@ -716,12 +740,26 @@ def _next_steps(
             )
         )
     else:
-        steps.append(
-            NextStep(
-                what="this run finished; there is nothing to recover",
-                command=None,
+        if loop_warnings:
+            steps.append(
+                NextStep(
+                    what=(
+                        "the loop condition was not met. Set on_exhaust: fail on "
+                        f"{', '.join(unmet_loop_tasks)} in its conduit.yaml to stop "
+                        "future runs before dependents; or raise repeat if more "
+                        "attempts are appropriate. Then start a new run"
+                    ),
+                    command=f"atelier run --again {quoted}",
+                    side_effects="starts a new flow under the edited recipe",
+                )
             )
-        )
+        else:
+            steps.append(
+                NextStep(
+                    what="this run finished; there is nothing to recover",
+                    command=None,
+                )
+            )
     return steps
 
 
@@ -818,6 +856,30 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
             "per-task records — the run saved none, so it died before its first task"
         )
     failures = [r for r in reports if r.status == TaskStatus.failed.value]
+    nested_failures = []
+    for failure in failures:
+        if failure.ran_on.value != "tool:conduit":
+            continue
+        parent_log = next(
+            (entry for entry in reversed(entries) if entry.task == failure.task), None
+        )
+        nested = latest_nested_failure(
+            atelier.store, flow_id, failure.task,
+            since=parent_log.started_at if parent_log is not None else None,
+        )
+        if nested is None:
+            continue
+        if parent_log is not None:
+            nested = replace(
+                nested, iteration=parent_log.iteration, of=parent_log.of
+            )
+        nested_failures.append(nested)
+    loop_warnings = unmet_loop_messages(progress)
+    recorded_passes = loop_passes(atelier.store, flow_id, progress, entries)
+    unmet_loop_tasks = [
+        name for name, task in progress.tasks.items()
+        if task.loop_outcome is not None and not task.loop_outcome.met
+    ]
     kept = [r for r in reports if r.status == TaskStatus.completed.value]
     running = [r for r in reports if r.status == TaskStatus.running.value]
     cancelled = [r for r in reports if r.status == TaskStatus.cancelled.value]
@@ -883,6 +945,9 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
         running=running,
         kept=kept,
         children=children,
+        nested_failures=nested_failures,
+        loop_warnings=loop_warnings,
+        loop_passes=recorded_passes,
         unavailable=unavailable,
         next_steps=_next_steps(
             flow_id,
@@ -892,6 +957,9 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
             _unfinished_count(progress, conduit, reports),
             recipe,
             progress.task_agents,
+            nested_failures,
+            loop_warnings,
+            unmet_loop_tasks,
         ),
     )
 

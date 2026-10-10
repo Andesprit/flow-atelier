@@ -45,7 +45,7 @@ def conduit_json_schema() -> dict[str, Any]:
     body["required"] = [f for f in body["required"] if f != "name"]
     defs["WrappedTaskBody"] = body
 
-    schema["properties"]["tasks"]["items"] = {
+    task_item = {
         "anyOf": [
             {"$ref": "#/$defs/TaskDefinition"},
             {
@@ -58,6 +58,23 @@ def conduit_json_schema() -> dict[str, Any]:
             },
         ]
     }
+    schema["properties"]["tasks"]["items"] = task_item
+    # The same shorthand is accepted within a task's inline body. `task:` is
+    # optional for authored inline bodies; the loader supplies the private
+    # target. A normalized `show --json` definition can contain both fields.
+    for definition in (defs["TaskDefinition"], defs["WrappedTaskBody"]):
+        definition["required"] = [f for f in definition["required"] if f != "task"]
+        definition["anyOf"] = [
+            {"required": ["task"]},
+            {"properties": {"tasks": {"type": "array", "minItems": 1}},
+             "required": ["tasks"]},
+        ]
+        definition["properties"]["tasks"] = {
+            "anyOf": [
+                {"type": "array", "minItems": 1, "items": task_item},
+                {"type": "null"},
+            ],
+        }
 
     schema["properties"]["inputs"]["additionalProperties"] = {
         "anyOf": [

@@ -11,11 +11,19 @@ export interface TaskNodeData extends Record<string, unknown> {
   task: string;
   description: string;
   repeat?: number;
+  until?: string | null;
+  while?: string | null;
+  onExhaust?: "complete" | "fail";
   conditional?: "match" | "not_match";
 }
 
 export function TaskNode({ data, selected }: NodeProps) {
   const d = data as TaskNodeData;
+  const loopKind = d.until != null ? "until" : d.while != null ? "while" : null;
+  const predicate = d.until ?? d.while;
+  const match = predicate?.match(/^output\.(?:not_)?match\((.*)\)$/);
+  const label = loopKind ? `↻${d.repeat} ${loopKind} ${match?.[1] ?? predicate}` : `↻${d.repeat}`;
+  const warns = loopKind != null && d.onExhaust !== "fail";
   return (
     <div
       data-testid="task-node"
@@ -26,9 +34,14 @@ export function TaskNode({ data, selected }: NodeProps) {
       )}
     >
       {d.repeat != null && d.repeat > 1 && (
-        <div className="absolute -top-4 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-full border border-ok/60 bg-ok/10 px-2 py-0.5">
-          <Repeat className="size-3 text-ok" />
-          <span className="font-mono text-micro text-ok">×{d.repeat}</span>
+        <div
+          className={cn("absolute -top-4 left-1/2 -translate-x-1/2 flex max-w-[220px] items-center gap-1 rounded-full border bg-card px-2 py-0.5", warns ? "border-warning/60 text-warning" : "border-ok/60 text-ok")}
+          title={warns ? "Condition may remain unmet; dependent tasks will run on the last result. Set on_exhaust: fail to stop the run." : predicate ?? undefined}
+          aria-label={warns ? `${label}. Dependents will run on the last result if the condition is never met.` : label}
+        >
+          <Repeat className="size-3 shrink-0" aria-hidden />
+          <span className="truncate font-mono text-micro">{label}</span>
+          {warns && <span aria-hidden="true">!</span>}
         </div>
       )}
       <div className="px-3 py-2">

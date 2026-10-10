@@ -110,7 +110,8 @@ def test_the_json_check_carries_the_field_and_the_file_to_repair(workdir):
     assert result.exit_code == 1
     assert set(rows[0]) == {"name", "source", "path", "ok", "error", "required_inputs"}
     assert rows[0]["ok"] is False
-    assert "tasks[1].depend_on" in rows[0]["error"]
+    assert "conduit.yaml:12 typo_demo.consume" in rows[0]["error"]
+    assert "Did you mean depends_on?" in rows[0]["error"]
     assert rows[0]["path"] == str(path.absolute())
 
 
@@ -249,7 +250,7 @@ def test_the_readme_example_fails_exactly_as_the_readme_says(workdir):
     assert result.exit_code == 1
     documented = (
         "typo_demo [project] — FAIL: "
-        "tasks[1].depend_on: Extra inputs are not permitted"
+        "conduit.yaml:12 typo_demo.consume: unknown key 'depend_on'"
     )
     assert documented in _README.read_text(encoding="utf-8")
     assert documented in " ".join(result.stdout.split())

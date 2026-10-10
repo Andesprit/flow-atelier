@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import typer
+import yaml
 from pydantic import ValidationError
 from rich.markup import escape
 
@@ -20,9 +21,16 @@ from flow_atelier.cli._shared import (
     err_console,
     parse_agents_option,
 )
+from flow_atelier.cli.commands.recipe_diagnostics import (
+    RecipeSource,
+    semantic_error,
+    unforwarded_inputs,
+    validation_errors,
+)
 from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import format_conduit_error
 from flow_atelier.core.atelier import Atelier
+from flow_atelier.modules.binding import child_bindings
 from flow_atelier.modules.conditions import ConditionalDependency, parse_dependency
 from flow_atelier.modules.engine import (
     MAX_NESTED_CONDUIT_DEPTH,
@@ -31,7 +39,13 @@ from flow_atelier.modules.engine import (
     resolve_executor,
     validate_conduit,
 )
-from flow_atelier.schemas.conduit import Conduit, TaskDefinition, ToolType
+from flow_atelier.modules.plan import exhaustion_warnings
+from flow_atelier.schemas.conduit import (
+    Conduit,
+    TaskDefinition,
+    ToolType,
+    parse_inline_conduit_name,
+)
 from flow_atelier.services.executor.harness import PROBE_TIMEOUT_SECONDS, ProbeResult
 
 # Errors the per-conduit job can legitimately produce; a programming error
@@ -56,6 +70,16 @@ _PROBE_COST = (
 
 class _NestedProblem(Exception):
     """A failure found below the root, already formatted with its call chain."""
+
+
+def _recipe_source(path: str | None, name: str) -> RecipeSource | None:
+    """Read source positions when a real, parseable recipe file is available."""
+    if path is None:
+        return None
+    try:
+        return RecipeSource(path, name)
+    except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError):
+        return None
 
 
 def _diagnostic(e: Exception, where: str) -> str:
@@ -134,6 +158,9 @@ def _team_of(conduit: Conduit, hops: list[tuple[str, str]]) -> list[_TeamTask]:
         :param name: the task's own name.
         :returns: the qualified path.
         """
+        inline = parse_inline_conduit_name(conduit.name)
+        if inline is not None:
+            return f"{inline[0]}.{inline[1]}.{name}"
         here = f"{conduit.name}.{name}"
         return _chain(hops, here) if hops else here
 
@@ -174,7 +201,6 @@ def _load_child(
         path = str((atelier.store.conduit_dir(name) / "conduit.yaml").absolute())
         child = atelier.store.read_conduit(name)
         validate_conduit(child)
-        problems = atelier.tool_readiness(child)
     except FileNotFoundError as e:
         # Name the caller and the missing name; there is no source file to
         # point at, and guessing where it "should" live would be a fiction.
@@ -182,14 +208,13 @@ def _load_child(
     except _EXPECTED as e:
         where = f" ({path})" if path else ""
         raise _NestedProblem(f"{chain}{where} — {_diagnostic(e, path or name)}") from e
-    if problems:
-        raise _NestedProblem(f"{chain} ({path}) — {'; '.join(problems)}")
     cache[name] = (child, path)
     return child, path
 
 
 def _check_bindings(
-    child: Conduit, path: str, task: TaskDefinition, chain: str
+    child: Conduit, path: str, task: TaskDefinition, chain: str,
+    source: RecipeSource | None,
 ) -> None:
     """Check what a calling task forwards against the child's own inputs.
 
@@ -215,6 +240,7 @@ def _check_bindings(
         check_unknown_inputs(child, task.inputs, subject=f"task {task.name!r}")
     except ValueError as e:
         raise _NestedProblem(f"{chain} ({path}) — {e}") from e
+    missing_references = unforwarded_inputs(child, task, source) if source else []
     missing = sorted(
         key
         for key, spec in child.inputs.items()
@@ -225,7 +251,10 @@ def _check_bindings(
             f"{chain} ({path}) — task {task.name!r} supplies no value for "
             f"required inputs: {missing}; add them under the task's own "
             f"'inputs:' map, which is all a called conduit receives"
+            + ("\n" + "\n".join(missing_references) if missing_references else "")
         )
+    if missing_references:
+        raise _NestedProblem("\n".join(missing_references))
 
 
 def _walk_calls(
@@ -237,6 +266,8 @@ def _walk_calls(
     cache: dict[str, tuple[Conduit, str]],
     seen: set[tuple[str, int]],
     team: list[_TeamTask] | None = None,
+    agents: Mapping[str, str] | None = None,
+    source: RecipeSource | None = None,
 ) -> None:
     """Follow ``conduit``'s ``tool:conduit`` calls depth-first, in order.
 
@@ -244,11 +275,9 @@ def _walk_calls(
     might skip it, and a templated target is refused rather than guessed.
 
     ``seen`` is keyed by ``(name, level)``, not by name alone, so a child
-    shared by a short and a long path is still walked on the long one — the
-    cache must never hide a chain that would break the engine's depth guard.
-    A repeated call is not a cycle; only the live ancestry is. Input
-    bindings belong to the *call*, not to the child, so they are checked on
-    every edge, before ``seen`` can skip the descent a second time.
+    shared by a short and a long path is still walked on the long one. With
+    nested choices, each call is walked separately to retain path-specific
+    agents. A repeated call is not a cycle; only the live ancestry is.
 
     :param atelier: configured :class:`Atelier` providing the store.
     :param conduit: an already-validated conduit whose calls to follow.
@@ -282,14 +311,26 @@ def _walk_calls(
                 f"{chain} — nested conduit depth exceeded {MAX_NESTED_CONDUIT_DEPTH}"
             )
         child, path = _load_child(atelier, target, chain, cache)
-        _check_bindings(child, path, task, chain)
-        if (target, level + 1) in seen:
+        selected = child_bindings(agents or {}, task.name)
+        child = atelier.bind_agents(child, selected)
+        problems = atelier.tool_readiness(child)
+        if problems:
+            raise _NestedProblem(f"{chain} ({path}) — {'; '.join(problems)}")
+        child_source = source if parse_inline_conduit_name(target) else _recipe_source(path, target)
+        _check_bindings(child, path, task, chain, source)
+        # Preserve the existing one-probe-per-child presentation when no
+        # nested choice exists. With path choices, each call has its own agent
+        # assignment and must contribute its own probe row.
+        if (target, level + 1) in seen and not any(
+            "." in key for key in (agents or {})
+        ):
             continue
         seen.add((target, level + 1))
         if team is not None:
             team.extend(_team_of(child, here))
         _walk_calls(
-            atelier, child, level + 1, ancestors | {target}, here, cache, seen, team
+            atelier, child, level + 1, ancestors | {target}, here, cache, seen, team,
+            selected, child_source,
         )
 
 
@@ -331,23 +372,31 @@ def _check_one(
     path: str | None = None
     error: str | None = None
     required: list[str] | None = None
+    warnings: list[str] = []
+    recipe_source: RecipeSource | None = None
     try:
         path = str((atelier.store.conduit_dir(name) / "conduit.yaml").absolute())
         conduit = atelier.store.read_conduit(name)
-        validate_conduit(conduit)
+        parsed = validate_conduit(conduit)
+        warnings = list(exhaustion_warnings(conduit, parsed).values())
         # A selection that no longer fits the recipe, or names an agent this
         # machine has nothing registered for, is a failed row like any other.
         effective = atelier.bind_agents(conduit, agents) if agents else conduit
         problems = atelier.tool_readiness(effective)
         if problems:
-            error = "; ".join(problems)
+            recipe_source = _recipe_source(path, name)
+            error = "\n".join(
+                semantic_error(problem, recipe_source, list(atelier.executors))
+                if recipe_source else problem for problem in problems
+            )
         else:
             if team is not None:
                 team.extend(_team_of(effective, []))
             if recursive:
+                recipe_source = _recipe_source(path, name)
                 _walk_calls(
                     atelier, effective, 0, frozenset({name}), [],
-                    {} if cache is None else cache, set(), team,
+                    {} if cache is None else cache, set(), team, agents, recipe_source,
                 )
             # Child inputs are the parent's business at runtime, not extra
             # `--input` keys: the root's own declarations are what a caller
@@ -356,10 +405,20 @@ def _check_one(
                 key for key, spec in conduit.inputs.items() if spec.default is None
             )
     except _NestedProblem as e:
-        error = str(e)
+        if "~inline~" in str(e) and "references unknown task" in str(e):
+            recipe_source = recipe_source or _recipe_source(path, name)
+            error = (semantic_error(str(e), recipe_source) if recipe_source else str(e))
+        else:
+            error = str(e)
+    except ValidationError as e:
+        recipe_source = recipe_source or _recipe_source(path, name)
+        error = ("\n".join(validation_errors(e, recipe_source))
+                 if recipe_source else _diagnostic(e, path or name))
     except _EXPECTED as e:
-        error = _diagnostic(e, path or name)
-    return {
+        recipe_source = recipe_source or _recipe_source(path, name)
+        error = (semantic_error(_diagnostic(e, path or name), recipe_source)
+                 if recipe_source else _diagnostic(e, path or name))
+    row = {
         "name": name,
         "source": source,
         "path": path,
@@ -367,6 +426,9 @@ def _check_one(
         "error": error,
         "required_inputs": required,
     }
+    if warnings:
+        row["warnings"] = warnings
+    return row
 
 
 def _probe_plan(team: list[_TeamTask]) -> dict[str, list[_TeamTask]]:
@@ -560,8 +622,8 @@ def check_cmd(
         [],
         "--agent",
         help=(
-            "task=harness: check that task against that agent instead of the "
-            "one the recipe names (repeatable). The same mapping you would "
+            "task=harness or call.task=harness: check a root or nested agent "
+            "task (repeatable). The same mapping you would "
             "pass to `atelier run`; nothing is saved."
         ),
     ),
@@ -606,13 +668,10 @@ def check_cmd(
     session is a real request to the provider. What passing proves is startup:
     not prompt-time authentication, quota, model access or output quality.
 
-    `--agent <task>=<harness>` checks a top-level task against another agent —
-    the same mapping `atelier run` takes, so what you check is what you then
-    run. It is applied in memory: the conduit file and the saved runs are
-    untouched, and nothing is remembered for next time. Top-level only, so a
-    same-named task inside a called workflow keeps its own recipe's agent. On
-    its own it stays static; with `--probe` the replacements are what get
-    started.
+    `--agent <task>=<harness>` checks a root task; a dotted selector such as
+    `loop.fix=codex` checks only that child call's task. The same mapping goes
+    to `atelier run`. It is applied in memory, and with `--probe` the chosen
+    agents are started without receiving prompts.
 
     :param conduit_name: a single conduit to check; when omitted, all
         project and global conduits are checked.
@@ -679,6 +738,8 @@ def check_cmd(
             console.print(f"{label} — [red]FAIL: {escape(row['error'])}[/red]")
             return
         console.print(f"{label} — [green]OK[/green]")
+        for warning in row.get("warnings", []):
+            console.print(f"    [yellow]⚠ {escape(warning)}[/yellow]")
         if row["required_inputs"]:
             keys = ", ".join(escape(k) for k in row["required_inputs"])
             console.print(f"    [dim]requires --input: {keys}[/dim]")

@@ -24,6 +24,7 @@ from flow_atelier.cli._shared import (
     parse_worktrees_option,
     seconds_since_activity,
 )
+from flow_atelier.cli.commands.recipe_diagnostics import RecipeSource, validation_errors
 from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import (
     _render_orchestration_msg,
@@ -36,9 +37,15 @@ from flow_atelier.cli.rendering.render import (
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.binding import BindingError
-from flow_atelier.modules.engine import accepted_input_keys
+from flow_atelier.modules.engine import accepted_input_keys, current_nested_path
+from flow_atelier.modules.loop_report import unmet_loop_messages
+from flow_atelier.modules.nested_failure import brief_failure_reason
 from flow_atelier.modules.workspace import WorkspaceError, check_selectors
-from flow_atelier.schemas.conduit import Conduit
+from flow_atelier.schemas.conduit import (
+    Conduit,
+    display_conduit_name,
+    parse_inline_conduit_name,
+)
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.log import TaskEvent
 from flow_atelier.schemas.progress import TaskStatus
@@ -63,14 +70,15 @@ class _RunningTasks:
         self._started: dict[str, float] = {}
         self.count = 0
 
-    def start(self, task_name: str) -> int:
+    def start(self, task_name: str, *, counted: bool = True) -> int:
         """Record ``task_name`` as running and return its 1-based position.
 
         :param task_name: name of the task entering the running state.
         :returns: how many tasks have started so far this run.
         """
         self._started[task_name] = time.monotonic()
-        self.count += 1
+        if counted:
+            self.count += 1
         return self.count
 
     def finish(self, event: TaskEvent) -> None:
@@ -79,7 +87,9 @@ class _RunningTasks:
         :param event: the task event just emitted.
         """
         still_looping = (
-            event.status == TaskStatus.completed and event.iteration < event.of
+            event.status == TaskStatus.completed
+            and event.iteration < event.of
+            and event.loop_condition_met is not True
         )
         if not still_looping:
             self._started.pop(event.task, None)
@@ -154,6 +164,13 @@ def drive_flow(
     running = _RunningTasks()
     page_base = AtelierSettings().serve_url.rstrip("/")
 
+    def _task_label(name: str) -> str:
+        parents = [
+            f"{task} {iteration}/{of}" if of > 1 else task
+            for task, iteration, of in current_nested_path()
+        ]
+        return " > ".join((*parents, name))
+
     def _announce_page(fid: str) -> None:
         # soft_wrap keeps the URL on one line when the output is piped to a
         # log, where Rich would otherwise wrap at 80 columns.
@@ -163,14 +180,29 @@ def drive_flow(
         )
 
     def _on_event(event: TaskEvent) -> None:
-        collected.append(event)
-        running.finish(event)
+        if (
+            event.flow_id != captured["id"]
+            and "Traceback (most recent call last)" in event.stderr
+        ):
+            event = event.model_copy(update={"stderr": brief_failure_reason(event.stderr)})
+        displayed = event.model_copy(update={"task": _task_label(event.task)})
+        # The footer counts this flow's own tasks, as the [i/total] banner does;
+        # a nested body's tasks are already inside their calling task's result.
+        if not current_nested_path():
+            collected.append(displayed)
+        running.finish(displayed)
         mark_activity()
-        render_task_event(event, console)
+        render_task_event(displayed, console)
 
     def _on_started(fid: str) -> None:
         if flow_id is None:
-            console.print(_render_orchestration_msg(f"starting flow {fid}"))
+            name, _, _ = parse_flow_id(fid)
+            if current_nested_path():
+                console.print(_render_orchestration_msg(
+                    f"starting {display_conduit_name(name)}"
+                ))
+            else:
+                console.print(_render_orchestration_msg(f"starting flow {fid}"))
         # The engine also reports each nested tool:conduit run it starts. The
         # flow this command drives is the first one (or the resumed one), and
         # its page links to the nested runs.
@@ -179,10 +211,14 @@ def drive_flow(
             _announce_page(fid)
 
     def _on_task_starting(task_name: str, tool: str) -> None:
-        index = running.start(task_name)
+        nested = bool(current_nested_path())
+        label = _task_label(task_name)
+        index = running.start(label, counted=not nested)
         mark_activity()
         console.print()
-        console.print(render_task_start(task_name, tool, index, total_tasks, verb=verb))
+        console.print(render_task_start(
+            label, tool, index, 0 if nested else total_tasks, verb=verb,
+        ))
 
     # The engine does not announce a resumed flow, so name its page here.
     if flow_id is not None:
@@ -218,6 +254,8 @@ def drive_flow(
                 console.print(f"[dim]→ atelier run --resume {captured['id']}[/dim]")
         raise typer.Exit(code=1)
     render_run_footer(collected, console)
+    for warning in unmet_loop_messages(Atelier().get_status(result)):
+        console.print(f"[yellow]⚠ {escape(warning)}[/yellow]")
     console.print(f"[green]flow_id:[/green] {result}")
     return result
 
@@ -233,7 +271,13 @@ def _load_conduit(atelier: Atelier, name: str) -> Conduit | None:
         return atelier.store.read_conduit(name)
     except FileNotFoundError:
         return None
-    except (yaml.YAMLError, ValidationError, ValueError) as exc:
+    except ValidationError as exc:
+        path = atelier.store.conduit_dir(name) / "conduit.yaml"
+        message = "\n".join(validation_errors(exc, RecipeSource(str(path), name)))
+        console.print(f"[red]invalid conduit:[/red] {escape(message)}")
+        console.print(f"[dim]→ fix conduits/{name}/conduit.yaml[/dim]")
+        raise typer.Exit(code=1)
+    except (yaml.YAMLError, ValueError) as exc:
         console.print(f"[red]invalid conduit:[/red] {escape(format_conduit_error(exc))}")
         console.print(f"[dim]→ fix conduits/{name}/conduit.yaml[/dim]")
         raise typer.Exit(code=1)
@@ -303,7 +347,7 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
         "Start a new flow for the named conduit. "
         "Use --input key=value to pass inputs, or --input-file key=path to "
         "pass a text file's contents as one input. "
-        "Use --agent task=harness to run one agent task on another agent. "
+        "Use --agent task=harness or call.task=harness to choose agents. "
         "Use --worktree task to give that task its own Git checkout. "
         "Use --resume <flow_id> to pick up a failed or crashed run. "
         "Use --again <flow_id> to start a fresh run reusing a past flow's inputs."
@@ -331,8 +375,8 @@ def run_cmd(
         [],
         "--agent",
         help=(
-            "task=harness input: run that top-level agent task on that agent "
-            "for this run only (repeatable). The conduit file is never "
+            "task=harness or call.task=harness: choose an agent here or in a "
+            "static child conduit for this run (repeatable). The files are never "
             "changed; with --resume or --again the run's saved choices are "
             "reused and these override them."
         ),
@@ -373,8 +417,8 @@ def run_cmd(
     :param inputs_raw: list of ``key=value`` input strings collected from ``--input``.
     :param input_files_raw: list of ``key=path`` strings collected from
         ``--input-file``; each file's text becomes that key's value.
-    :param agents_raw: list of ``task=harness`` strings collected from
-        ``--agent``; each re-points one top-level agent task for this run.
+    :param agents_raw: list of ``task=harness`` or dotted child selections
+        collected from ``--agent`` for this run.
     :param worktrees_raw: list of task names collected from ``--worktree``;
         each gets its own Git checkout for this run.
     :param show_steps: when true, stream intermediate thinking and tool activity live.
@@ -470,6 +514,15 @@ def run_cmd(
         )
         raise typer.Exit(code=2)
 
+    if inline := parse_inline_conduit_name(conduit_name):
+        console.print(
+            f"[red]error:[/red] {escape(conduit_name)} is the internal name of "
+            f"the inline body of {escape(inline[0])}.{escape(inline[1])}, not a "
+            "conduit you can run"
+        )
+        console.print(f"[dim]→ atelier run {escape(inline[0])}[/dim]")
+        raise typer.Exit(code=2)
+
     inputs = _parse_inputs(inputs_raw)
     inputs.update(_parse_input_files(input_files_raw, inputs))
     conduit = _load_conduit(atelier, conduit_name)
@@ -484,6 +537,7 @@ def run_cmd(
     # replacement is the thing that stops the run.
     try:
         effective = atelier.bind_agents(conduit, agents)
+        atelier.require_agent_ready(agents)
         # Before the readiness probe and before any input prompt: a selector
         # the recipe cannot honour should cost nothing at all.
         check_selectors(effective, worktrees)

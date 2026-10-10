@@ -8,6 +8,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { MemoryRouter } from "react-router-dom";
 import { DRAFT_CONDUIT_STORAGE_KEY } from "@/constants/dashboard";
 import type { Conduit, CreateConduitRequest } from "@/types/conduit";
+import { toast } from "sonner";
 
 const ORIGINAL = "printf 'original\\n'";
 const CHANGED = "printf 'changed\\n'";
@@ -290,5 +291,27 @@ describe("Designer recovery", () => {
     });
     expect(updateConduit).toHaveBeenCalledTimes(2);
     expect(localStorage.getItem(DRAFT_CONDUIT_STORAGE_KEY)).toBeNull();
+  });
+
+  it("shows the API predicate error in the designer and keeps the draft", async () => {
+    saved.tasks[0].repeat = 2;
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "" as never);
+    updateConduit.mockRejectedValueOnce(new Error("API error 422: predicate must start with 'output.match('") );
+    try {
+      await mountDesigner();
+      openSaved();
+      selectTask();
+      fireEvent.change(screen.getByRole("combobox", { name: "stop when" }), { target: { value: "until" } });
+      fireEvent.change(screen.getByRole("textbox", { name: "output condition" }), { target: { value: "not a predicate" } });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("designer-save"));
+      });
+      expect(updateConduit.mock.calls[0]?.[0].tasks[0]?.until).toBe("not a predicate");
+      expect(error).toHaveBeenCalledWith(expect.stringContaining("predicate must start"));
+      expect(localStorage.getItem(DRAFT_CONDUIT_STORAGE_KEY)).not.toBeNull();
+    } finally {
+      delete saved.tasks[0].repeat;
+      error.mockRestore();
+    }
   });
 });

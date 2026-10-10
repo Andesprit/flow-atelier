@@ -1,7 +1,7 @@
 """Per-task agent selection — one recipe, a different agent per run.
 
-`--agent TASK=HARNESS` re-points one top-level harness task at another agent
-for a single run. The installed ``conduit.yaml`` is never touched: the mapping
+`--agent TASK=HARNESS` selects a root harness task; dotted paths select one
+inside a statically named child call. The installed ``conduit.yaml`` is never touched: the mapping
 is applied to the in-memory :class:`Conduit`, and the effective choices are
 recorded on that run's ``progress.json`` so a later ``--resume`` or ``--again``
 can reuse them without the user retyping anything.
@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 
-from flow_atelier.schemas.conduit import Conduit
+from flow_atelier.schemas.conduit import MAX_NESTED_CONDUIT_DEPTH, Conduit
 from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 from flow_atelier.schemas.progress import Progress, TaskStatus
 
@@ -78,7 +78,7 @@ def parse_agent_bindings(
 
     :param raw: the option values as typed, in order.
     :param label: the option name, for the diagnostics.
-    :returns: mapping of top-level task name to harness tool.
+    :returns: mapping of task path to harness tool.
     :raises BindingError: a value is malformed or repeats a task.
     """
     out: dict[str, str] = {}
@@ -172,6 +172,90 @@ def bind_conduit(
         for t in conduit.tasks
     ]
     return conduit.model_copy(update={"tasks": tasks})
+
+
+def child_bindings(bindings: Mapping[str, str], call: str) -> dict[str, str]:
+    """Return selections below one calling task, relative to its child."""
+    prefix = f"{call}."
+    return {key[len(prefix):]: value for key, value in bindings.items()
+            if key.startswith(prefix)}
+
+
+def valid_agent_selectors(
+    conduit: Conduit, load_child: Callable[[str], Conduit],
+    *, prefix: str = "", ancestors: frozenset[str] = frozenset(),
+) -> list[str]:
+    """List statically addressable harness tasks below a recipe."""
+    if conduit.name in ancestors or len(ancestors) >= MAX_NESTED_CONDUIT_DEPTH:
+        return []
+    ancestors = ancestors | {conduit.name}
+    found: list[str] = []
+    for task in conduit.tasks:
+        path = f"{prefix}{task.name}"
+        if task.tool.startswith("harness:"):
+            found.append(path)
+        elif task.tool == "tool:conduit" and "{{" not in task.task:
+            try:
+                child = load_child(task.task.strip())
+            except (FileNotFoundError, ValueError):
+                continue
+            found.extend(valid_agent_selectors(
+                child, load_child, prefix=f"{path}.", ancestors=ancestors,
+            ))
+    return found
+
+
+def bind_agent_paths(
+    conduit: Conduit, bindings: Mapping[str, str],
+    load_child: Callable[[str], Conduit], *, origin: str = "--agent",
+) -> Conduit:
+    """Validate all selectors and apply the root choices in memory.
+
+    Child choices are applied by the nested runner to each invocation. Loading
+    here establishes that every path is static and valid before a run starts.
+    """
+    if not bindings:
+        return conduit
+    choices = valid_agent_selectors(conduit, load_child)
+    hint = f"; valid agent selectors: {choices}" if choices else "; no static agent selectors found"
+    direct: dict[str, str] = {}
+    for path, tool in bindings.items():
+        parts = path.split(".")
+        if any(not re.fullmatch(r"[A-Za-z0-9_]+", part) for part in parts):
+            raise BindingError(f"{origin}: malformed task path {path!r}{hint}", code=1)
+        current = conduit
+        for call in parts[:-1]:
+            task = next((t for t in current.tasks if t.name == call), None)
+            if task is None or task.tool != "tool:conduit":
+                raise BindingError(
+                    f"{origin}: {path!r} has no conduit call at {call!r}{hint}", code=1
+                )
+            if "{{" in task.task:
+                raise BindingError(
+                    f"{origin}: {path!r} enters dynamic conduit target "
+                    f"{task.task!r}; use a static child name{hint}", code=1,
+                )
+            try:
+                current = load_child(task.task.strip())
+            except (FileNotFoundError, ValueError) as exc:
+                raise BindingError(
+                    f"{origin}: cannot load child {task.task.strip()!r} "
+                    f"for {path!r}: {exc}{hint}", code=1,
+                ) from exc
+        if len(parts) == 1 and not any(t.name == path for t in current.tasks):
+            nested = [choice for choice in choices if choice.endswith(f".{path}")]
+            if nested:
+                raise BindingError(
+                    f"{origin}: {path!r} is inside a called conduit; use a "
+                    f"dotted selector such as {nested[0]!r}{hint}", code=1,
+                )
+        try:
+            bind_conduit(current, {parts[-1]: tool}, origin=origin)
+        except BindingError as exc:
+            raise BindingError(f"{exc}{hint}", code=exc.code) from exc
+        if len(parts) == 1:
+            direct[path] = tool
+    return bind_conduit(conduit, direct, origin=origin)
 
 
 # A composed recipe quotes an upstream result under a marker naming who

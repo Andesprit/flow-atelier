@@ -82,6 +82,16 @@ describe("runtime API token", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("turns a validation error body into readable messages", async () => {
+    const body = JSON.stringify({
+      detail: [{ loc: ["body", "tasks", 0, "until"], msg: "predicate must start with 'output.match('" }],
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 422 })));
+    await expect(
+      fetchJson("http://x/conduits/ship", undefined, { method: "PATCH" }),
+    ).rejects.toThrow(/^API error 422: predicate must start with 'output.match\('$/);
+  });
+
   it("lets the 401 stand when the user dismisses the prompt", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("nope", { status: 401 }));
     vi.stubGlobal("fetch", fetchMock);

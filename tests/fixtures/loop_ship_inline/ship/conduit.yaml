@@ -1,0 +1,45 @@
+name: ship
+description: plan, loop fix until green, parallel review, synthesize
+inputs:
+  goal: what to build
+tasks:
+  - plan:
+      description: planner writes a plan
+      tool: harness:planner
+      task: "Plan how to: {{inputs.goal}}"
+  - fix_until_green:
+      description: repeat fix+test until tests pass
+      tool: tool:conduit
+      depends_on: [plan]
+      repeat: 4
+      until: output.match(TESTS PASSED)
+      inputs:
+        goal: "{{plan.output}}"
+        feedback: "{{loop.previous}}"
+      tasks:
+        - fix:
+            description: coder edits the code
+            tool: harness:coder
+            task: "Goal: {{inputs.goal}}. Last test run: {{inputs.feedback}}. Fix the code."
+        - test:
+            description: run the tests
+            tool: tool:bash
+            depends_on: [fix]
+            task: |
+              n=$(cat .attempts 2>/dev/null || echo 0); n=$((n+1)); echo $n > .attempts
+              if [ $n -ge 2 ]; then echo "TESTS PASSED"; else echo "TESTS FAILED: 1 failing"; fi
+  - review_security:
+      description: security review
+      tool: harness:reviewer
+      depends_on: [fix_until_green]
+      task: "Security review of: {{fix_until_green.output}}"
+  - review_style:
+      description: style review
+      tool: harness:reviewer
+      depends_on: [fix_until_green]
+      task: "Style review of: {{fix_until_green.output}}"
+  - verdict:
+      description: combine reviews
+      tool: harness:lead
+      depends_on: [review_security, review_style]
+      task: "Combine: {{review_security.output}} / {{review_style.output}}"

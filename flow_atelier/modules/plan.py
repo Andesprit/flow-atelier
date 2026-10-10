@@ -16,7 +16,7 @@ from flow_atelier.modules.conditions import (
     PlainDependency,
     sink_task_names,
 )
-from flow_atelier.schemas.conduit import Conduit
+from flow_atelier.schemas.conduit import Conduit, parse_inline_conduit_name
 
 
 @dataclass(frozen=True)
@@ -46,12 +46,14 @@ class PlannedTask:
     conditional_edges: list[PlannedEdge] = field(default_factory=list)
     is_loop: bool = False
     loop_text: str | None = None
+    exhaustion_warning: str | None = None
     is_sink: bool = False
     is_gate: bool = False
     prunes: list[str] = field(default_factory=list)
     # True when ``--worktree`` selected this task, so a run would give it its
     # own Git checkout instead of the shared working directory.
     isolated: bool = False
+    child: ExecutionPlan | None = None
 
 
 @dataclass
@@ -99,11 +101,47 @@ def _loop_text(task) -> str | None:
     return " ".join(parts)
 
 
+def transitive_dependents(parsed: dict[str, list], name: str) -> list[str]:
+    """Return every task downstream of ``name`` through any chain, in recipe order."""
+    found: set[str] = set()
+    frontier = [name]
+    while frontier:
+        current = frontier.pop()
+        for task, deps in parsed.items():
+            if task not in found and any(dep.task == current for dep in deps):
+                found.add(task)
+                frontier.append(task)
+    return [task for task in parsed if task in found]
+
+
+def exhaustion_warnings(conduit: Conduit, parsed: dict[str, list]) -> dict[str, str]:
+    """Flag conditional loops whose default completion forwards an unmet result."""
+    warnings = {}
+    for task in conduit.tasks:
+        if not (task.until or task.while_) or task.on_exhaust != "complete":
+            continue
+        dependents = transitive_dependents(parsed, task.name)
+        if dependents:
+            condition = f"until: {task.until}" if task.until else f"while: {task.while_}"
+            stop = (
+                f"while {task.while_} stays true" if task.while_ else
+                f"without meeting {condition}"
+            )
+            warnings[task.name] = (
+                f"{task.name} uses default on_exhaust: complete and may finish "
+                f"after {task.repeat} iterations {stop}; "
+                f"dependent tasks {', '.join(dependents)} then run on "
+                f"its last output. Set on_exhaust: fail on {task.name} to stop the run."
+            )
+    return warnings
+
+
 def build_plan(
     conduit: Conduit,
     parsed: dict[str, list],
     recipe: Conduit | None = None,
     isolation: PlanIsolation | None = None,
+    children: dict[str, ExecutionPlan] | None = None,
 ) -> ExecutionPlan:
     """Build a static :class:`ExecutionPlan` from a validated conduit.
 
@@ -123,6 +161,7 @@ def build_plan(
     """
     isolated = set(isolation.tasks) if isolation is not None else set()
     installed = {t.name: t.tool for t in recipe.tasks} if recipe is not None else {}
+    loop_warnings = exhaustion_warnings(conduit, parsed)
     # Longest-path layering: level = 0 for roots, else 1 + max(dep levels).
     # Iterative post-order (parsed is already validated acyclic) so a deep
     # single-chain conduit cannot blow the recursion limit.
@@ -201,10 +240,12 @@ def build_plan(
             conditional_edges=conditional_edges,
             is_loop=t.repeat > 1,
             loop_text=_loop_text(t),
+            exhaustion_warning=loop_warnings.get(t.name),
             is_sink=t.name in sinks,
             is_gate=is_gate,
             prunes=prune_set(t.name) if is_gate else [],
             isolated=t.name in isolated,
+            child=(children or {}).get(t.name),
         )
 
     max_level = max(level.values()) if level else 0
@@ -212,8 +253,9 @@ def build_plan(
     for t in conduit.tasks:  # preserve definition order within each wave
         waves[level[t.name]].append(planned[t.name])
 
+    inline = parse_inline_conduit_name(conduit.name)
     return ExecutionPlan(
-        conduit_name=conduit.name,
+        conduit_name=f"{inline[0]}.{inline[1]}" if inline else conduit.name,
         max_concurrency=conduit.max_concurrency,
         waves=waves,
         sinks=[t.name for t in conduit.tasks if t.name in sinks],

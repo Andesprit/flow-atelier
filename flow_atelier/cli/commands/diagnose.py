@@ -21,6 +21,9 @@ from flow_atelier.modules.diagnose import (
     TaskReport,
     build_report,
 )
+from flow_atelier.modules.loop_report import loop_pass_lines
+from flow_atelier.schemas.conduit import display_conduit_name
+from flow_atelier.schemas.flow import parse_flow_id
 
 _STATE_STYLE = {
     "failed": "red",
@@ -144,10 +147,11 @@ def _render(report: DiagnoseReport) -> None:
     :param report: the built report.
     """
     state = report.observed.state
+    display_name = display_conduit_name(report.conduit)
     style = _STATE_STYLE.get(state, "white")
     console.print(
         f"[bold]flow[/bold] {report.flow_id}  "
-        f"[dim]conduit[/dim] {escape(report.conduit)}\n"
+        f"[dim]conduit[/dim] {escape(display_name)}\n"
         f"saved status=[{style}]{escape(report.saved.status)}[/{style}]  "
         f"observed=[{style}]{escape(state)}[/{style}] ({report.observed.certainty})  "
         f"duration={_format_duration_seconds(report.saved.duration_seconds)}"
@@ -162,6 +166,17 @@ def _render(report: DiagnoseReport) -> None:
         )
     if not report.snapshot.consistent:
         console.print(f"[yellow]{escape(report.snapshot.note)}[/yellow]")
+    for warning in report.loop_warnings:
+        console.print(f"[yellow]⚠ {escape(warning)}[/yellow]")
+    if report.loop_passes:
+        console.print("\n[bold]loop passes[/bold]")
+        for line in loop_pass_lines(report.loop_passes):
+            console.print(f"  {escape(line)}")
+
+    if report.nested_failures:
+        console.print("\n[bold red]failing nested work[/bold red]")
+        for nested in report.nested_failures:
+            console.print(f"  {escape(nested.summary)}")
 
     if report.failures:
         console.print("\n[bold red]what failed[/bold red]")
@@ -250,15 +265,28 @@ def _render(report: DiagnoseReport) -> None:
         )
 
     if report.children:
-        console.print("\n[bold]nested flows this run started[/bold]")
-        for child in report.children:
-            called_by = f" (task {escape(child.invoking_task)})" if child.invoking_task else ""
+        pass_children = {item.child_flow_id for item in report.loop_passes}
+        other_children = [child for child in report.children
+                          if child.flow_id not in pass_children]
+        if other_children:
+            console.print("\n[bold]nested flows this run started[/bold]")
+        for child in other_children:
+            child_name, _, _ = parse_flow_id(child.flow_id)
+            called_by = (
+                f" (task {escape(child.invoking_task)})"
+                if child.invoking_task else ""
+            )
             status = escape(child.status) if child.status else "unknown"
-            console.print(f"  {child.flow_id}{called_by}  status={status}")
-        console.print(
-            "[dim]diagnose each one on its own id for its own detail; this report "
-            "does not aggregate them[/dim]"
-        )
+            console.print(
+                f"  {escape(display_conduit_name(child_name))}"
+                f"{called_by}  status={status}"
+            )
+            console.print(f"    [dim]→ atelier diagnose {child.flow_id}[/dim]", soft_wrap=True)
+        if other_children:
+            console.print(
+                "[dim]diagnose each child id for full detail; this report does not "
+                "aggregate their full history[/dim]"
+            )
 
     console.print(f"\n[bold]the recipe now[/bold]  {escape(report.recipe.note)}")
     if report.recipe.added_tasks:

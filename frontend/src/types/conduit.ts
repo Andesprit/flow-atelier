@@ -39,7 +39,12 @@ export interface ConduitTask {
   conditions?: Record<string, TaskCondition>;
   interactive?: boolean;
   repeat?: number;
+  until?: string | null;
+  while?: string | null;
+  onExhaust?: "complete" | "fail";
   inputs?: Record<string, string>;
+  /** Inline body of a tool:conduit task. */
+  tasks?: ConduitTask[] | null;
   position?: { x: number; y: number };
 }
 

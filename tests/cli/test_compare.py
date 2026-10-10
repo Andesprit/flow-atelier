@@ -105,7 +105,8 @@ tasks:
     assert different.returncode != 0
     assert "different conduits" in different.stdout
 
-    recipe = project.recipe("ship").decode()
+    # `atelier create` writes the platform's line endings, and this edit matches "\n".
+    recipe = project.recipe("ship").decode().replace("\r\n", "\n")
     project.install("ship", recipe.replace(
         "  - verdict:\n",
         "  - new_step:\n      description: added later\n"

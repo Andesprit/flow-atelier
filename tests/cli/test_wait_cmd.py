@@ -686,7 +686,7 @@ def test_wait_joins_a_real_run_and_feeds_its_results_to_the_next_command(real_pr
         assert joined.stdout == f"{flow_id}\n"
         assert runner.wait(timeout=60) == 0
 
-        # The exact expression the README documents, run by a real shell.
+        # The exact expression the guide documents, run by a real shell.
         chained = run_expression(
             'flow_id=$(atelier wait latest --timeout 60) && '
             'atelier outputs "$flow_id" --json',

@@ -107,7 +107,7 @@ agent said and exits non-zero.
 
 A subscription limit reached mid-run does not fail the job. The task waits
 for the reset and tries the same turn again; see
-[When an agent runs out of usage](../README.md#when-an-agent-runs-out-of-usage).
+[When an agent runs out of usage](guide.md#when-an-agent-runs-out-of-usage).
 Set the job's `--task-timeout` long enough to cover a wait, or the
 container is stopped while the run is waiting.
 

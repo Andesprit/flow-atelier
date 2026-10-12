@@ -23,11 +23,19 @@ first use — the same thing that happens when the user types the command in
 a shell — so those are used as published. A ``binary`` entry names an
 archive to download per platform; we never download or extract it, so the
 spec becomes "run the CLI the user installed", found on PATH.
+
+``npx`` pays about a second per launch to resolve a package it has already
+cached. ``atelier harness install`` puts the same pinned package in a
+directory of its own (:func:`install_agent`), and every later launch runs
+its executable directly. A registry update that pins a new version falls
+back to ``npx`` until that version is installed too.
 """
 from __future__ import annotations
 
 import json
+import os
 import platform
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -40,6 +48,9 @@ REGISTRY_URL = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.
 # an installed package.
 SNAPSHOT_PATH = Path(__file__).with_name("acp_registry.json")
 SNAPSHOT_FILENAME = "acp_registry.json"
+
+# Under the global atelier dir: one directory per installed npx package.
+INSTALL_DIRNAME = "agents"
 
 # npx and uvx fetch the agent themselves on first use, so they work with no
 # prior install; a binary distribution only runs if the user already put the
@@ -65,7 +76,9 @@ class LaunchSpec:
     :param description: one-line description from the registry.
     :param argv: the command to spawn.
     :param env: extra environment variables the agent needs.
-    :param kind: which distribution this came from (npx/uvx/binary).
+    :param kind: which distribution this came from (npx/uvx/binary), or
+        ``installed`` for an npx package ``atelier harness install`` set up.
+    :param package: the pinned npm or PyPI package, empty for a binary.
     """
 
     id: str
@@ -75,6 +88,7 @@ class LaunchSpec:
     argv: tuple[str, ...]
     env: dict[str, str]
     kind: str
+    package: str = ""
 
 
 def platform_key() -> str:
@@ -113,11 +127,15 @@ def _binary_argv(entry: dict[str, Any]) -> list[str]:
     return [cmd.rsplit("/", 1)[-1], *entry.get("args", [])]
 
 
-def _launch_spec(agent: dict[str, Any], plat: str) -> LaunchSpec | None:
+def _launch_spec(
+    agent: dict[str, Any], plat: str, install_root: Path | None = None
+) -> LaunchSpec | None:
     """Resolve one registry entry to a :class:`LaunchSpec`, if launchable here.
 
     :param agent: a registry agent record.
     :param plat: the platform key to resolve binary distributions against.
+    :param install_root: where ``atelier harness install`` puts npx
+        packages; an installed copy of the pinned package runs directly.
     :returns: the spec, or ``None`` when the agent ships no distribution this
         platform can start (e.g. binary-only, with no build for this arch).
     """
@@ -140,8 +158,17 @@ def _launch_spec(agent: dict[str, Any], plat: str) -> LaunchSpec | None:
             package = entry.get("package")
             if not package:
                 continue
-            prefix = ["npx", "-y"] if kind == "npx" else ["uvx"]
-            argv = [*prefix, package, *entry.get("args", [])]
+            installed = (
+                installed_executable(install_root, package)
+                if kind == "npx" and install_root is not None
+                else None
+            )
+            if installed is not None:
+                argv = [str(installed), *entry.get("args", [])]
+                kind = "installed"
+            else:
+                prefix = ["npx", "-y"] if kind == "npx" else ["uvx"]
+                argv = [*prefix, package, *entry.get("args", [])]
         return LaunchSpec(
             id=agent["id"],
             name=agent.get("name", agent["id"]),
@@ -150,15 +177,19 @@ def _launch_spec(agent: dict[str, Any], plat: str) -> LaunchSpec | None:
             argv=tuple(argv),
             env=dict(entry.get("env") or {}),
             kind=kind,
+            package="" if kind == "binary" else package,
         )
     return None
 
 
-def load_registry(user_snapshot: Path | None = None) -> dict[str, LaunchSpec]:
+def load_registry(
+    user_snapshot: Path | None = None, install_root: Path | None = None
+) -> dict[str, LaunchSpec]:
     """Load the agent registry, newest snapshot first.
 
     :param user_snapshot: optional path to a synced snapshot that supersedes
         the bundled one when it exists and parses.
+    :param install_root: where ``atelier harness install`` puts npx packages.
     :returns: mapping of agent id -> :class:`LaunchSpec`, in registry order,
         excluding agents with nothing launchable on this platform.
     """
@@ -178,7 +209,7 @@ def load_registry(user_snapshot: Path | None = None) -> dict[str, LaunchSpec]:
     plat = platform_key()
     specs = {}
     for agent in raw.get("agents", []):
-        spec = _launch_spec(agent, plat)
+        spec = _launch_spec(agent, plat, install_root)
         if spec is not None:
             specs[spec.id] = spec
     return specs
@@ -250,3 +281,80 @@ def write_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
+
+
+def _package_name(package: str) -> str:
+    """Strip the version from an npm package spec.
+
+    :param package: a spec such as ``@scope/name@1.2.3`` or ``name@1.2.3``.
+    :returns: the bare package name, ``@scope/name`` or ``name``.
+    """
+    at = package.rfind("@")
+    return package[:at] if at > 0 else package
+
+
+def package_install_dir(install_root: Path, package: str) -> Path:
+    """Return the directory one pinned npx package installs into.
+
+    :param install_root: the root all installed agents live under.
+    :param package: the pinned npm package spec from the registry.
+    :returns: a directory named after the spec, so each version gets its own.
+    """
+    return install_root / package.replace("/", "+")
+
+
+def installed_executable(install_root: Path, package: str) -> Path | None:
+    """Find the executable an installed copy of ``package`` provides.
+
+    :param install_root: the root all installed agents live under.
+    :param package: the pinned npm package spec from the registry.
+    :returns: the executable's path, or ``None`` when this exact version is
+        not installed or its manifest names no executable.
+    """
+    modules = package_install_dir(install_root, package) / "node_modules"
+    manifest = modules / _package_name(package) / "package.json"
+    try:
+        bins = json.loads(manifest.read_text(encoding="utf-8")).get("bin")
+    except (OSError, ValueError):
+        return None
+    if isinstance(bins, str):
+        name = _package_name(package).rsplit("/", 1)[-1]
+    elif isinstance(bins, dict) and bins:
+        name = next(iter(bins))
+    else:
+        return None
+    # npm writes a .cmd shim beside each executable on Windows.
+    executable = modules / ".bin" / (f"{name}.cmd" if os.name == "nt" else name)
+    return executable if executable.is_file() else None
+
+
+def install_agent(install_root: Path, package: str) -> Path:
+    """Install one pinned npx package so launches can skip ``npx``.
+
+    Runs the same npm install ``npx`` performs on first use, into a
+    directory flow-atelier owns instead of npx's cache.
+
+    :param install_root: the root all installed agents live under.
+    :param package: the pinned npm package spec from the registry.
+    :returns: the installed executable.
+    :raises OSError: when npm is missing, fails, or installs no executable.
+    """
+    target = package_install_dir(install_root, package)
+    target.mkdir(parents=True, exist_ok=True)
+    npm = "npm.cmd" if os.name == "nt" else "npm"
+    try:
+        done = subprocess.run(  # noqa: S603 — argv, no shell
+            [npm, "install", "--no-save", "--no-audit", "--no-fund", "--prefix",
+             str(target), package],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise OSError("npm not found on PATH; install Node.js first") from exc
+    if done.returncode != 0:
+        raise OSError((done.stderr or done.stdout).strip() or f"npm exited {done.returncode}")
+    executable = installed_executable(install_root, package)
+    if executable is None:
+        raise OSError(f"{package} installed no executable")
+    return executable

@@ -147,3 +147,47 @@ def test_timing_no_entries(workdir):
     result = runner.invoke(app, ["timing", "20260101_dddddddd_hello"])
     assert result.exit_code == 1
     assert "no log entries" in result.output
+
+
+def test_timing_reports_wall_time_for_parallel_tasks(workdir):
+    """Two overlapping tasks sum to more task time than the run's wall time.
+
+    :param workdir: isolated working directory fixture.
+    """
+    a = {**_entry("a", 10.0), "finished_at": "2026-01-01T00:00:10Z"}
+    b = {**_entry("b", 10.0), "finished_at": "2026-01-01T00:00:10Z"}
+    _make_flow(workdir, "20260101_eeeeeeee_hello", [a, b])
+    result = CliRunner().invoke(app, ["timing", "20260101_eeeeeeee_hello", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["total_seconds"] == 20.0
+    assert payload["wall_seconds"] == 10.0
+
+
+def test_timing_splits_agent_startup(workdir):
+    """Agent iterations sum their startup and first-output times per task.
+
+    :param workdir: isolated working directory fixture.
+    """
+    timed = {"timings": {"startup_seconds": 1.5, "first_output_seconds": 2.0}}
+    _make_flow(
+        workdir,
+        "20260101_ffffffff_hello",
+        [
+            {**_entry("agent", 8.0, iteration=1, of=2), "extra": timed},
+            {**_entry("agent", 8.0, iteration=2, of=2), "extra": timed},
+            _entry("shell", 1.0),
+        ],
+    )
+    result = CliRunner().invoke(app, ["timing", "20260101_ffffffff_hello", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    agent = next(t for t in payload["tasks"] if t["task"] == "agent")
+    assert agent["startup_seconds"] == 3.0
+    assert agent["first_output_seconds"] == 4.0
+    assert payload["startup_seconds"] == 3.0
+    shell = next(t for t in payload["tasks"] if t["task"] == "shell")
+    assert shell["startup_seconds"] == 0.0
+
+    table = CliRunner().invoke(app, ["timing", "20260101_ffffffff_hello"])
+    assert "agent startup: 3.0s" in table.output

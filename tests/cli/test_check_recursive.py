@@ -4,7 +4,7 @@ The flag follows `tool:conduit` calls, so the unit of feedback becomes the
 whole call tree rather than the one file you named. These tests pin the graph
 behaviour (missing, invalid and unrunnable children, cycles, depth, shared
 children), the error boundary around every child, the fact that nothing is
-executed, and the README walkthrough as a real shell session.
+executed, and the guide walkthrough as a real shell session.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from flow_atelier.services.store.filesystem import FilesystemStore
 from tests._shell import record_path, run_script, write_shim
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_README = _REPO_ROOT / "README.md"
+_GUIDE = _REPO_ROOT / "docs" / "guide.md"
 _SECTION = "### Checking a workflow that calls other workflows"
 _BINDINGS = "#### The call's arguments, not only the child's name"
 _BASH_BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.MULTILINE | re.DOTALL)
@@ -886,15 +886,15 @@ def test_a_recursive_check_records_no_flow_and_touches_nothing(workdir):
     assert _flow_ids(workdir) == []
 
 
-# ------------------------------------------------------------ README as a test
+# ------------------------------------------------------------ guide as a test
 
 
 def _readme_script() -> str:
-    """Return the README section's bash blocks, concatenated in order.
+    """Return the guide section's bash blocks, concatenated in order.
 
-    :returns: one shell script, with no error handling the README omits.
+    :returns: one shell script, with no error handling the guide omits.
     """
-    body = _README.read_text(encoding="utf-8").split(_SECTION, 1)[1]
+    body = _GUIDE.read_text(encoding="utf-8").split(_SECTION, 1)[1]
     body = body.split("\n### ", 1)[0]
     blocks = [m.group(1) for m in _BASH_BLOCK.finditer(body)]
     assert len(blocks) == 3, f"expected 3 bash blocks in the section, got {len(blocks)}"
@@ -933,14 +933,14 @@ def readme_env(tmp_path, request):
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
     env["WORKSPACE_MARKER"] = to_bash_path(marker)
     yield env, marker
-    # `mktemp -d` puts the workspace outside tmp_path, and the README never
+    # `mktemp -d` puts the workspace outside tmp_path, and the guide never
     # tells a reader to delete it, so the test is what cleans up.
     if marker.exists():
         shutil.rmtree(Path(marker.read_text().strip()).parent, ignore_errors=True)
 
 
 def _run_readme(env, tmp_path):
-    """Execute the README section as one shell script.
+    """Execute the guide section as one shell script.
 
     :param env: child environment from the fixture.
     :param tmp_path: pytest temp directory fixture.
@@ -995,7 +995,7 @@ def _binding_docs() -> tuple[dict[str, str], list[str]]:
 
     :returns: ``({conduit name: yaml}, [diagnostic, ...])`` exactly as published.
     """
-    body = _README.read_text(encoding="utf-8").split(_BINDINGS, 1)[1]
+    body = _GUIDE.read_text(encoding="utf-8").split(_BINDINGS, 1)[1]
     body = body.split("\n### ", 1)[0]
     blocks = [(m.group(1), m.group(2)) for m in _FENCE.finditer(body)]
     docs = [text for kind, text in blocks if kind == "yaml"]
@@ -1008,7 +1008,7 @@ def _binding_docs() -> tuple[dict[str, str], list[str]]:
 def test_the_readme_binding_example_is_what_the_checker_really_says(workdir):
     """The published YAML, verdicts and diagnostics, checked against the code.
 
-    The paths in the README are illustrative, so the comparison starts after
+    The paths in the guide are illustrative, so the comparison starts after
     the chain: every word the reader is told to expect has to be real.
     """
     docs, says = _binding_docs()

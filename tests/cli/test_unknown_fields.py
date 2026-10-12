@@ -223,21 +223,21 @@ def test_recursive_checking_names_the_unknown_field_in_a_child(workdir):
 
 # --- the published example ---------------------------------------------------
 
-_README = Path(__file__).resolve().parents[2] / "README.md"
+_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "guide.md"
 
 
 def _readme_typo_demo() -> str:
-    """Return the README's `typo_demo` YAML block, exactly as published.
+    """Return the guide's `typo_demo` YAML block, exactly as published.
 
     :returns: the block's text.
-    :raises AssertionError: if the README no longer carries it.
+    :raises AssertionError: if the guide no longer carries it.
     """
-    text = _README.read_text(encoding="utf-8")
+    text = _GUIDE.read_text(encoding="utf-8")
     for block in text.split("```yaml\n")[1:]:
         body = block.split("```")[0]
         if body.startswith("name: typo_demo\n"):
             return body
-    raise AssertionError("README no longer publishes the typo_demo example")
+    raise AssertionError("guide no longer publishes the typo_demo example")
 
 
 def test_the_readme_example_fails_exactly_as_the_readme_says(workdir):
@@ -252,7 +252,7 @@ def test_the_readme_example_fails_exactly_as_the_readme_says(workdir):
         "typo_demo [project] — FAIL: "
         "conduit.yaml:12 typo_demo.consume: unknown key 'depend_on'"
     )
-    assert documented in _README.read_text(encoding="utf-8")
+    assert documented in _GUIDE.read_text(encoding="utf-8")
     assert documented in " ".join(result.stdout.split())
 
 

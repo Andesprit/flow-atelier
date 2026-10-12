@@ -116,8 +116,8 @@ def _prompts(record_dir: Path) -> list[str]:
 
 def test_readme_points_at_a_guide_that_exists():
     """The discovery link beside the compose quickstart resolves to this file."""
-    readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    assert "(docs/multi-agent-workflow.md)" in readme
+    reference = (_REPO_ROOT / "docs" / "guide.md").read_text(encoding="utf-8")
+    assert "(multi-agent-workflow.md)" in reference
     assert _GUIDE.is_file()
 
 
@@ -185,19 +185,19 @@ def test_a_failed_prerequisite_stops_before_anything_runs(guide_env, tmp_path):
     assert _prompts(records["claude"]) == [] and _prompts(records["codex"]) == []
 
 
-# ------------------------------------- the README quickstart, as a real shell
+# ------------------------------------- the reference guide quickstart, as a real shell
 
-_README = _REPO_ROOT / "README.md"
-_README_SECTION = "### Your first multi-agent workflow: chain or panel"
+_REFERENCE = _REPO_ROOT / "docs" / "guide.md"
+_REFERENCE_SECTION = "### Your first multi-agent workflow: chain or panel"
 GLOBAL_RAN = "GLOBAL_RECIPE_RAN"
 
 
 def _readme_script() -> str:
-    """Return the README quickstart's bash block, exactly as published.
+    """Return the reference guide quickstart's bash block, exactly as published.
 
-    :returns: one shell script, with no error handling the README omits.
+    :returns: one shell script, with no error handling the reference guide omits.
     """
-    body = _README.read_text(encoding="utf-8").split(_README_SECTION, 1)[1]
+    body = _REFERENCE.read_text(encoding="utf-8").split(_REFERENCE_SECTION, 1)[1]
     body = body.split("\n### ", 1)[0]
     blocks = [m.group(1) for m in _BASH_BLOCK.finditer(body)]
     assert len(blocks) == 1, f"expected 1 bash block in the section, got {len(blocks)}"
@@ -211,7 +211,7 @@ def _global_triage(env: dict, marker: Path) -> None:
     """Install a usable global `triage` conduit under the quickstart's name.
 
     Its one task is called `step_2` and it declares a `brief` input, so every
-    command after `compose` in the README block would succeed against it.
+    command after `compose` in the reference guide block would succeed against it.
     Without the gating, that fallback is what masks the failure.
 
     :param env: the child environment, whose global dir receives the conduit.
@@ -245,7 +245,7 @@ def _run_readme(env: dict, tmp_path: Path):
     workspace = tmp_path / "quickstart demo"
     workspace.mkdir()
     return (
-        run_script(_readme_script(), tmp_path / "readme.sh", workspace, env, timeout=180),
+        run_script(_readme_script(), tmp_path / "reference.sh", workspace, env, timeout=180),
         workspace,
     )
 

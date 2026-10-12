@@ -122,8 +122,8 @@ def _prompts(record_dir: Path) -> list[str]:
 
 def test_the_readme_and_the_workflow_guide_point_at_this_one():
     """The discovery links resolve to this file."""
-    link = "(docs/reusing-a-workflow-with-other-agents.md)"
-    assert link in (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    link = "(reusing-a-workflow-with-other-agents.md)"
+    assert link in (_REPO_ROOT / "docs" / "guide.md").read_text(encoding="utf-8")
     assert "(reusing-a-workflow-with-other-agents.md)" in (
         _REPO_ROOT / "docs" / "multi-agent-workflow.md"
     ).read_text(encoding="utf-8")

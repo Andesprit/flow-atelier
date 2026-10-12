@@ -79,6 +79,16 @@ class TurnUsage(BaseModel):
     cost: float | None = None
 
 
+class UsageLimit(BaseModel):
+    """An agent refused a turn because the user's plan ran out of usage."""
+
+    resets_at: str | None = None
+    """When the limit resets, ISO 8601 UTC, or ``None`` when the agent did
+    not say."""
+    detail: str = ""
+    """The agent's own explanation."""
+
+
 class ExecutionResult(BaseModel):
     """Primary result of a single executor invocation."""
 
@@ -119,6 +129,9 @@ class ExecutionResult(BaseModel):
     session_continued: bool = False
     """Whether this invocation continued an earlier agent session instead of
     opening a new one."""
+    usage_limit: UsageLimit | None = None
+    """Set by harness executors when the agent's plan ran out of usage, so
+    the engine can wait for the reset instead of failing the task."""
     timings: dict[str, float] = Field(default_factory=dict)
     """Where a harness invocation spent its time: ``startup_seconds`` from
     spawn to a usable session, ``first_output_seconds`` from then to the

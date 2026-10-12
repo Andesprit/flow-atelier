@@ -25,7 +25,7 @@ import traceback
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -63,9 +63,12 @@ from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.interaction import InteractionPolicy
 from flow_atelier.schemas.log import (
     ExecutionResult,
+    IntermediateStep,
     LogEntry,
+    StepKind,
     StepRecord,
     TaskEvent,
+    UsageLimit,
 )
 from flow_atelier.schemas.progress import (
     FlowStatus,
@@ -95,6 +98,11 @@ class ConduitCycleError(ConduitValidationError):
 # Margin added to conduit.timeout for the engine's backstop wait_for, so
 # executors that self-enforce ctx.timeout always finish gracefully first.
 BACKSTOP_GRACE_SECONDS = 5
+
+# Waiting out an agent's usage limit: how long past the stated reset to
+# retry, and how long to wait when the agent did not say when it resets.
+USAGE_LIMIT_MARGIN_SECONDS = 60
+USAGE_LIMIT_UNKNOWN_RESET_SECONDS = 1800
 
 
 def _now() -> str:
@@ -360,6 +368,7 @@ class Engine:
         store: StoreBase,
         loop_history_limit: int = 10,
         loop_history_entry_chars: int = 40000,
+        usage_limit_max_wait: float = 21600,
     ) -> None:
         """Wire the engine with its executor registry and persistence store.
 
@@ -369,13 +378,89 @@ class Engine:
             newest kept; <= 0 means unlimited.
         :param loop_history_entry_chars: max characters per rendered
             ``{{loop.history}}`` entry; <= 0 means unlimited.
+        :param usage_limit_max_wait: seconds one task may spend waiting for
+            its agent's usage limit to reset before it fails; <= 0 fails at
+            once.
         """
         self.executors = executors
         self.store = store
         self.loop_history_limit = loop_history_limit
         self.loop_history_entry_chars = loop_history_entry_chars
+        self.usage_limit_max_wait = usage_limit_max_wait
         # One turn at a time per named agent session, keyed by (scope, name).
         self._session_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+    def _usage_limit_wait(
+        self, result: ExecutionResult, waited: float
+    ) -> float | None:
+        """Return how long to wait before retrying a turn refused for usage.
+
+        :param result: the failed attempt's result.
+        :param waited: seconds this task already spent waiting for limits.
+        :returns: seconds to sleep, or ``None`` when the failure is not a usage
+            limit or its reset is past the task's waiting budget.
+        """
+        limit = result.usage_limit
+        if limit is None:
+            return None
+        if limit.resets_at is None:
+            wait = float(USAGE_LIMIT_UNKNOWN_RESET_SECONDS)
+        else:
+            reset = datetime.fromisoformat(limit.resets_at)
+            wait = max(
+                (reset - datetime.now(UTC)).total_seconds(), 0.0
+            ) + USAGE_LIMIT_MARGIN_SECONDS
+        if waited + wait > self.usage_limit_max_wait:
+            return None
+        return wait
+
+    async def _wait_for_usage_limit(
+        self,
+        flow_id: str,
+        progress: Progress,
+        t: TaskDefinition,
+        iteration: int,
+        result: ExecutionResult,
+        wait: float,
+    ) -> None:
+        """Record and sleep through a usage-limit wait, then let the task retry.
+
+        The task stays running, with the wait as its progress reason, so
+        ``atelier status`` and the dashboard say why nothing is happening.
+        ``atelier stop`` cancels the sleep like any running task.
+
+        :param flow_id: the flow the task belongs to.
+        :param progress: the flow's progress record, persisted with the reason.
+        :param t: the waiting task.
+        :param iteration: the iteration being retried.
+        :param result: the attempt the agent refused.
+        :param wait: seconds to sleep.
+        """
+        until = datetime.now().astimezone() + timedelta(seconds=wait)
+        until_text = until.strftime("%Y-%m-%d %H:%M %Z")
+        reason = f"usage limit reached; waiting until {until_text} to retry"
+        task_progress = progress.tasks.get(t.name)
+        if task_progress is not None:
+            task_progress.reason = reason
+            self.store.write_progress(flow_id, progress)
+        detail = result.usage_limit.detail if result.usage_limit else ""
+        print(
+            f"[flow-atelier] {t.name}: {reason}" + (f" ({detail})" if detail else ""),
+            file=sys.stderr,
+            flush=True,
+        )
+        await self.store.append_step(
+            flow_id,
+            StepRecord(
+                task=t.name,
+                iteration=iteration,
+                step=IntermediateStep(kind=StepKind.stderr, text=reason),
+            ),
+        )
+        await asyncio.sleep(wait)
+        if task_progress is not None:
+            task_progress.reason = None
+            self.store.write_progress(flow_id, progress)
 
     # ------------------------------------------------------------------ public
 
@@ -1006,7 +1091,12 @@ class Engine:
                         # HITL is exempt: a human declining a prompt is not a
                         # transient failure, so it never auto-retries.
                         max_attempts = 1 if is_hitl else 1 + t.retries
-                        for attempt in range(1, max_attempts + 1):
+                        # Waiting out a usage limit repeats the attempt
+                        # without spending one of the task's retries.
+                        limit_waited = 0.0
+                        attempt = 0
+                        while attempt < max_attempts:
+                            attempt += 1
                             started = _now()
                             start_ts = datetime.now(UTC)
                             try:
@@ -1045,6 +1135,10 @@ class Engine:
                                         f"{type(exc).__name__}: {exc}"
                                     ),
                                     child_flow_id=nested.flow_id if nested else None,
+                                    usage_limit=(
+                                        UsageLimit.model_validate(nested.usage_limit)
+                                        if nested and nested.usage_limit else None
+                                    ),
                                 )
                             finished = _now()
                             duration = (
@@ -1084,6 +1178,9 @@ class Engine:
                                         {"child_flow_id": result.child_flow_id}
                                         if result.child_flow_id else {}
                                     ), **(
+                                        {"usage_limit": result.usage_limit.model_dump()}
+                                        if result.usage_limit else {}
+                                    ), **(
                                         {"timings": result.timings}
                                         if result.timings else {}
                                     ), **(
@@ -1101,6 +1198,20 @@ class Engine:
                             )
                             if result.success:
                                 break
+                            # A nested run fails at once and hands the limit
+                            # to the top-level run, whose wait no task
+                            # timeout bounds; its retry resumes this child.
+                            wait = (
+                                None if ancestor_conduits
+                                else self._usage_limit_wait(result, limit_waited)
+                            )
+                            if wait is not None:
+                                limit_waited += wait
+                                attempt -= 1
+                                await self._wait_for_usage_limit(
+                                    flow_id, progress, t, iteration, result, wait
+                                )
+                                continue
                             emit_event(t, iteration, result, duration)
                             if attempt < max_attempts:
                                 await asyncio.sleep(t.retry_backoff)
@@ -1109,6 +1220,8 @@ class Engine:
                                 f"exit={result.exit_code} "
                                 f"stderr={result.stderr.strip()[:200]}"
                             )
+                            if result.usage_limit is not None and not ancestor_conduits:
+                                reason = _usage_limit_reason(result, limit_waited)
                             mark_failed(t.name, reason)
                             if not failed:
                                 failed = True
@@ -1494,3 +1607,23 @@ class Engine:
                 _nested_path_ctx.reset(path_token)
 
         return _run_nested
+
+
+def _usage_limit_reason(result: ExecutionResult, waited: float) -> str:
+    """Explain a task that failed on a usage limit it could not wait out.
+
+    :param result: the refused attempt's result.
+    :param waited: seconds the task already spent waiting.
+    :returns: a one-line failure reason naming the reset time when known.
+    """
+    limit = result.usage_limit
+    resets = (
+        datetime.fromisoformat(limit.resets_at).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        if limit is not None and limit.resets_at
+        else "an unknown time"
+    )
+    waited_text = f" after waiting {round(waited / 60)} min" if waited else ""
+    return (
+        f"usage limit reached{waited_text}; it resets at {resets}, past "
+        "ATELIER_USAGE_LIMIT_MAX_WAIT. Resume with 'atelier run --resume' after the reset"
+    )

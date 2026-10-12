@@ -44,6 +44,16 @@ class AtelierSettings(BaseSettings):
             "unlimited."
         ),
     )
+    usage_limit_max_wait: int = Field(
+        default=21600,
+        description=(
+            "Seconds one task may wait for its agent's usage limit to reset "
+            "(env ATELIER_USAGE_LIMIT_MAX_WAIT). A turn refused for usage is "
+            "retried after the reset the agent states, or every 30 minutes "
+            "when it states none, without spending the task's retries. "
+            "0 fails the task at once."
+        ),
+    )
     claude_launch_cmd: list[str] = Field(
         default_factory=list,
         description=(

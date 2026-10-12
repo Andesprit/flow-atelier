@@ -30,6 +30,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -56,12 +57,18 @@ from flow_atelier.schemas.log import (
     IntermediateStep,
     StepKind,
     TurnUsage,
+    UsageLimit,
 )
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext
 from flow_atelier.services.executor.interaction import InteractionRouter
 from flow_atelier.services.executor.prompt_sink import (
     PromptSink,
     TerminalPromptSink,
+)
+from flow_atelier.services.executor.usage_limit import (
+    claude_reset,
+    is_usage_limit,
+    parse_reset,
 )
 
 logger = logging.getLogger(__name__)
@@ -530,6 +537,28 @@ def _usage_from_client(client: _BufferingClient) -> TurnUsage | None:
     )
 
 
+def _usage_limit(exc: Exception, client: _BufferingClient) -> UsageLimit | None:
+    """Describe the usage limit a failed turn hit, if that is why it failed.
+
+    :param exc: the exception the turn raised.
+    :param client: the buffering client, holding the agent's output and any
+        reset time it reported.
+    :returns: the limit and its reset time, or ``None`` for any other failure.
+    """
+    data = getattr(exc, "data", None)
+    detail = data.get("message", "") if isinstance(data, dict) else ""
+    error_text = " ".join(part for part in (str(exc), str(detail)) if part)
+    if not is_usage_limit(data, error_text):
+        return None
+    # Codex says when the limit resets only in the text it streams.
+    text = f"{error_text} {''.join(client.buffer)[-2000:]}"
+    resets_at = client.limit_resets_at or parse_reset(text, datetime.now().astimezone())
+    return UsageLimit(
+        resets_at=resets_at.astimezone(UTC).isoformat() if resets_at else None,
+        detail=(detail or str(exc)).strip(),
+    )
+
+
 def _timings(client: _BufferingClient, spawned_at: float) -> dict[str, float]:
     """Split a harness task's time into agent startup and wait for first output.
 
@@ -633,6 +662,8 @@ class _BufferingClient:
         # True while a reloaded session replays its history: those updates
         # are an earlier task's output, not this one's.
         self.replaying = False
+        # When the agent last reported its usage limit resets, if it did.
+        self.limit_resets_at: datetime | None = None
         # Monotonic clock readings: the agent's session became usable, and
         # its first update for this task arrived. See :func:`_timings`.
         self.ready_at: float | None = None
@@ -871,6 +902,9 @@ class _BufferingClient:
             # Cumulative session cost — keep the latest value seen, not a sum.
             if update.cost is not None:
                 self.cost = update.cost.amount
+            resets_at = claude_reset(update.field_meta)
+            if resets_at is not None:
+                self.limit_resets_at = resets_at
 
     async def request_permission(
         self, options, session_id: str, tool_call, **kwargs
@@ -1376,6 +1410,7 @@ class AcpHarnessExecutor(ExecutorBase):
                 output="".join(client.buffer),
                 steps=client.steps,
                 usage=_usage_from_client(client),
+                usage_limit=_usage_limit(exc, client),
             )
         # Interactive runs stream raw chunks; non-interactive runs stream
         # batched message blocks. Either way the output is already on screen.

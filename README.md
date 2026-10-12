@@ -1629,6 +1629,15 @@ envelope on `/ws/run-conduit` whose `inputs` carry a key the conduit
 neither declares nor references comes back as `flow_failed` naming the
 key and its closest match, instead of starting the flow.
 
+## Running unattended
+
+To run a conduit on a schedule in the cloud, with Claude Code and Codex
+logged in and no one at the keyboard, see
+[Running unattended on Cloud Run](docs/running-unattended.md). It covers
+storing each agent's login as a secret, an image with the adapters
+preinstalled, and a job that checks both logins with a test prompt before
+it starts.
+
 ## Security
 
 The API runs shell commands on the machine hosting it, so treat reaching it as

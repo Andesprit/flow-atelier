@@ -1440,7 +1440,7 @@ atelier diagnose <flow_id> [--json]                    # post-mortem: what faile
 atelier wait <flow_id> [--timeout 60]                  # block until it finishes; exit 0 only if it did
 atelier logs <flow_id> [--task <name>] [--follow] [--json]
 atelier outputs <flow_id> [--task <name>] [--json]    # read back a finished flow's results
-atelier timing <flow_id> [--json]                      # per-task duration, slowest first
+atelier timing <flow_id> [--json]                      # wall time, per-task duration and agent startup
 atelier list conduits
 atelier list flows [--conduit <name>]
 atelier list schedules [--json]

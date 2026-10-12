@@ -119,6 +119,10 @@ class ExecutionResult(BaseModel):
     session_continued: bool = False
     """Whether this invocation continued an earlier agent session instead of
     opening a new one."""
+    timings: dict[str, float] = Field(default_factory=dict)
+    """Where a harness invocation spent its time: ``startup_seconds`` from
+    spawn to a usable session, ``first_output_seconds`` from then to the
+    agent's first update. Empty for every other executor."""
 
     @property
     def success(self) -> bool:

@@ -26,6 +26,7 @@ import logging
 import os
 import shutil
 import sys
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -501,6 +502,25 @@ def _usage_limit(exc: Exception, client: _BufferingClient) -> UsageLimit | None:
     )
 
 
+def _timings(client: _BufferingClient, spawned_at: float) -> dict[str, float]:
+    """Split a harness task's time into agent startup and wait for first output.
+
+    :param client: the buffering client that drove the task.
+    :param spawned_at: monotonic clock reading taken just before the spawn.
+    :returns: ``startup_seconds`` (spawn through session ready) and
+        ``first_output_seconds`` (session ready through the agent's first
+        update), each present only when that point was reached.
+    """
+    timings: dict[str, float] = {}
+    if client.ready_at is not None:
+        timings["startup_seconds"] = round(client.ready_at - spawned_at, 3)
+        if client.first_update_at is not None:
+            timings["first_output_seconds"] = round(
+                client.first_update_at - client.ready_at, 3
+            )
+    return timings
+
+
 class _BufferingClient:
     """ACP :class:`acp.Client` that buffers agent output and routes user I/O.
 
@@ -587,6 +607,10 @@ class _BufferingClient:
         self.replaying = False
         # When the agent last reported its usage limit resets, if it did.
         self.limit_resets_at: datetime | None = None
+        # Monotonic clock readings: the agent's session became usable, and
+        # its first update for this task arrived. See :func:`_timings`.
+        self.ready_at: float | None = None
+        self.first_update_at: float | None = None
 
     async def _record(self, step: IntermediateStep) -> None:
         """Buffer ``step``, persist it, and mirror it to the sink.
@@ -734,6 +758,8 @@ class _BufferingClient:
         """
         try:
             if not self.replaying:
+                if self.ready_at is not None and self.first_update_at is None:
+                    self.first_update_at = time.monotonic()
                 async with self._dispatch_lock:
                     await self._dispatch_update(update)
         finally:
@@ -1245,6 +1271,7 @@ class AcpHarnessExecutor(ExecutorBase):
         client.router = InteractionRouter(task, context, self.sink, client.session, client._record)
         agent_stderr: deque[str] = deque(maxlen=AGENT_STDERR_LINES)
 
+        spawned_at = time.monotonic()
         try:
             result = await asyncio.wait_for(
                 self._drive_session(
@@ -1277,6 +1304,7 @@ class AcpHarnessExecutor(ExecutorBase):
         # Interactive runs stream raw chunks; non-interactive runs stream
         # batched message blocks. Either way the output is already on screen.
         result.session = client.session
+        result.timings = _timings(client, spawned_at)
         result.agent_session_id = client.agent_session_id
         result.session_continued = client.session_continued
         if client.interaction_error is not None:
@@ -1342,6 +1370,7 @@ class AcpHarnessExecutor(ExecutorBase):
                 else:
                     await self._ensure_prompting_mode(conn, sess)
                 await self._apply_selection(conn, sess)
+                client.ready_at = time.monotonic()
 
                 if client.supervisor_run:
                     # Startup/mode announcements are not the decision response.

@@ -1667,3 +1667,29 @@ async def test_an_ordinary_failure_reports_no_usage_limit() -> None:
 
     assert not result.success
     assert result.usage_limit is None
+
+
+async def test_a_turn_reports_agent_startup_and_wait_for_first_output() -> None:
+    """A finished turn splits its time into startup and wait for first output."""
+    executor = AcpHarnessExecutor(
+        launch_cmd=_fake_cmd({"turns": [{"chunks": ["done"], "stop": "end_turn"}]}),
+        sink=RecordingSink(),
+    )
+    result = await executor.execute(_task("hi"), "hi", _ctx())
+
+    assert result.success
+    assert set(result.timings) == {"startup_seconds", "first_output_seconds"}
+    assert result.timings["startup_seconds"] > 0
+    assert result.timings["first_output_seconds"] >= 0
+
+
+async def test_an_agent_that_dies_at_launch_reports_no_timings() -> None:
+    """An agent that never opens a session reports no startup time."""
+    executor = AcpHarnessExecutor(
+        launch_cmd=[sys.executable, "-c", "import sys; sys.exit(1)"],
+        sink=RecordingSink(),
+    )
+    result = await executor.execute(_task("hi"), "hi", _ctx(timeout=10))
+
+    assert not result.success
+    assert result.timings == {}

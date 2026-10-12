@@ -132,6 +132,10 @@ class ExecutionResult(BaseModel):
     usage_limit: UsageLimit | None = None
     """Set by harness executors when the agent's plan ran out of usage, so
     the engine can wait for the reset instead of failing the task."""
+    timings: dict[str, float] = Field(default_factory=dict)
+    """Where a harness invocation spent its time: ``startup_seconds`` from
+    spawn to a usable session, ``first_output_seconds`` from then to the
+    agent's first update. Empty for every other executor."""
 
     @property
     def success(self) -> bool:

@@ -2197,3 +2197,36 @@ async def test_a_nested_usage_limit_waits_at_the_top_and_resumes_the_child(
     # The resumed child skipped the task that had already completed.
     assert bash.calls == ["first"]
     assert len(store.list_child_flows(flow_id)) == 1
+
+
+class TimedExecutor(FakeExecutor):
+    """Succeed and report agent timings, the way a harness executor does."""
+
+    async def execute(self, task, resolved_command, context):
+        """Return a successful result carrying startup timings.
+
+        :param task: task definition being executed.
+        :param resolved_command: command string after template resolution.
+        :param context: flow context provided by the engine.
+        """
+        self.calls.append(task.name)
+        return ExecutionResult(
+            exit_code=0, output="ok", timings={"startup_seconds": 1.25}
+        )
+
+
+async def test_executor_timings_are_saved_with_the_log_entry(store):
+    """A result's timings land in the log entry's extra for `atelier timing`.
+
+    :param store: FilesystemStore fixture.
+    """
+    conduit = _conduit(
+        [
+            {"name": "a", "description": "d", "task": "x", "tool": "tool:bash",
+             "depends_on": []},
+        ]
+    )
+    engine = Engine({"tool:bash": TimedExecutor()}, store)
+    flow_id = await engine.run(conduit, {})
+    logs = [e for e in store.read_logs(flow_id) if e.task == "a"]
+    assert logs[0].extra == {"timings": {"startup_seconds": 1.25}}

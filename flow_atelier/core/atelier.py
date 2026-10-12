@@ -57,6 +57,7 @@ from flow_atelier.schemas.progress import (
     Workspaces,
 )
 from flow_atelier.services.executor.acp_registry import (
+    INSTALL_DIRNAME,
     LEGACY_HARNESS_ALIASES,
     SNAPSHOT_FILENAME,
     load_registry,
@@ -163,7 +164,10 @@ class Atelier:
                 env=env,
             )
 
-        self.registry = load_registry(self.settings.global_atelier_dir / SNAPSHOT_FILENAME)
+        self.registry = load_registry(
+            self.settings.global_atelier_dir / SNAPSHOT_FILENAME,
+            self.settings.global_atelier_dir / INSTALL_DIRNAME,
+        )
         for agent_id, spec in self.registry.items():
             self.executors[f"harness:{agent_id}"] = make(list(spec.argv), spec.env)
         for alias, target in LEGACY_HARNESS_ALIASES.items():

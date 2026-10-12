@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 from flow_atelier.services.executor.acp_registry import (
     SNAPSHOT_PATH,
@@ -250,3 +252,87 @@ class TestMalformedDistribution:
             )
         )
         assert "tool:bash" in atelier.executors
+
+
+def _fake_install(root, package: str, bin_field, exe: str) -> None:
+    """Lay out what `npm install --prefix` leaves for ``package``.
+
+    :param root: the install root.
+    :param package: pinned package spec, e.g. ``@scope/demo@1.2.3``.
+    :param bin_field: the manifest's ``bin`` value.
+    :param exe: the executable name npm links under ``node_modules/.bin``.
+    """
+    from flow_atelier.services.executor.acp_registry import package_install_dir
+
+    modules = package_install_dir(root, package) / "node_modules"
+    name = package[: package.rfind("@")]
+    (modules / name).mkdir(parents=True)
+    (modules / name / "package.json").write_text(json.dumps({"bin": bin_field}))
+    (modules / ".bin").mkdir()
+    shim = f"{exe}.cmd" if os.name == "nt" else exe
+    (modules / ".bin" / shim).write_text("#!/usr/bin/env node\n")
+
+
+class TestInstalledAdapters:
+    def test_an_installed_pinned_package_runs_without_npx(self, tmp_path) -> None:
+        """An installed copy of the exact pinned version launches directly."""
+        package = "@scope/demo-acp@1.2.3"
+        _fake_install(tmp_path, package, {"demo-acp": "dist/index.js"}, "demo-acp")
+        spec = _launch_spec(_agent({"npx": {"package": package, "args": ["--acp"]}}), PLAT, tmp_path)
+        assert spec.kind == "installed"
+        assert Path(spec.argv[0]).parent.name == ".bin"
+        assert Path(spec.argv[0]).stem == "demo-acp"
+        assert spec.argv[1:] == ("--acp",)
+        assert spec.package == package
+
+    def test_a_string_bin_is_named_after_the_package(self, tmp_path) -> None:
+        """A manifest with a single string ``bin`` links the unscoped name."""
+        package = "@scope/demo-acp@1.2.3"
+        _fake_install(tmp_path, package, "dist/index.js", "demo-acp")
+        spec = _launch_spec(_agent({"npx": {"package": package}}), PLAT, tmp_path)
+        assert spec.kind == "installed"
+
+    def test_another_installed_version_falls_back_to_npx(self, tmp_path) -> None:
+        """A registry that pins a newer version ignores the old install."""
+        _fake_install(tmp_path, "@scope/demo-acp@1.2.3", {"demo-acp": "x"}, "demo-acp")
+        spec = _launch_spec(
+            _agent({"npx": {"package": "@scope/demo-acp@1.3.0"}}), PLAT, tmp_path
+        )
+        assert spec.kind == "npx"
+        assert spec.argv[:2] == ("npx", "-y")
+
+    def test_install_reports_a_failing_npm(self, tmp_path, monkeypatch) -> None:
+        """A failed npm install raises with npm's own explanation."""
+        import subprocess
+
+        import pytest
+
+        from flow_atelier.services.executor.acp_registry import install_agent
+
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "E404 not found"),
+        )
+        with pytest.raises(OSError, match="E404"):
+            install_agent(tmp_path, "@scope/demo-acp@1.2.3")
+
+    def test_install_runs_npm_into_the_package_dir(self, tmp_path, monkeypatch) -> None:
+        """Install runs npm with ``--prefix`` and returns the linked executable."""
+        import subprocess
+
+        from flow_atelier.services.executor.acp_registry import install_agent
+
+        package = "@scope/demo-acp@1.2.3"
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            _fake_install(tmp_path, package, {"demo-acp": "x"}, "demo-acp")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        executable = install_agent(tmp_path, package)
+        assert executable.stem == "demo-acp"
+        assert calls[0][-1] == package
+        assert "--prefix" in calls[0]

@@ -1,8 +1,9 @@
 """`atelier harness` sub-app and `atelier list harnesses` — check, refresh and list ACP agents.
 
-Nothing here installs an agent or logs into one; that stays with the user
-and the agent's own CLI. These commands only report what is available and
-what is missing.
+Nothing here logs into an agent; that stays with the user and the agent's
+own CLI. ``install`` only puts an npx adapter the registry already pins
+where launches can run it without ``npx``; the rest report what is
+available and what is missing.
 """
 from __future__ import annotations
 
@@ -22,10 +23,13 @@ from flow_atelier.core.atelier import Atelier
 from flow_atelier.schemas.conduit import split_harness_tool
 from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 from flow_atelier.services.executor.acp_registry import (
+    INSTALL_DIRNAME,
     LEGACY_HARNESS_ALIASES,
     REGISTRY_URL,
     SNAPSHOT_FILENAME,
     fetch_registry,
+    install_agent,
+    load_registry,
     write_snapshot,
 )
 from flow_atelier.services.executor.harness import (
@@ -84,8 +88,9 @@ def harness_list_cmd(
     table.add_column("agent")
     table.add_column("version")
     # The full argv is in --json; here just name the agent's own
-    # distribution: npx/uvx fetch themselves on first run, binary means
-    # the user installed the CLI and we run it from PATH.
+    # distribution: npx/uvx fetch themselves on first run, installed runs
+    # the copy `atelier harness install` made, binary means the user
+    # installed the CLI and we run it from PATH.
     table.add_column("via")
     table.add_column("ready", overflow="fold")
     for row in rows:
@@ -255,3 +260,69 @@ def harness_sync_cmd() -> None:
     )
     if added:
         console.print(f"[dim]new: {escape(', '.join(added))}[/dim]")
+    root = atelier.settings.global_atelier_dir / INSTALL_DIRNAME
+    if root.is_dir():
+        # An agent installed at its old pin now falls back to npx.
+        installed_before = {
+            agent_id for agent_id, spec in atelier.registry.items() if spec.kind == "installed"
+        }
+        stale = sorted(
+            agent_id
+            for agent_id, spec in load_registry(destination, root).items()
+            if agent_id in installed_before and spec.kind != "installed"
+        )
+        if stale:
+            console.print(
+                f"[yellow]new versions pinned; run 'atelier harness install "
+                f"{escape(' '.join(stale))}' to keep skipping npx[/yellow]"
+            )
+
+
+@harness_app.command("install")
+def harness_install_cmd(
+    names: list[str] = typer.Argument(
+        ..., help="Harnesses to install, e.g. claude-code codex."
+    ),
+) -> None:
+    """Install npx adapters so each agent task starts without ``npx``.
+
+    ``npx`` spends about a second per launch resolving a package it already
+    cached. This installs the exact version the registry pins into the
+    global atelier dir; every later launch runs that copy directly. Re-run
+    it after ``atelier harness sync`` pins a newer version, or launches fall
+    back to ``npx``. Logging into the agent stays yours.
+
+    :param names: harness names, with or without the ``harness:`` prefix.
+    """
+    atelier = Atelier()
+    root = atelier.settings.global_atelier_dir / INSTALL_DIRNAME
+    failed = False
+    for raw in names:
+        name = raw.removeprefix("harness:")
+        spec = atelier.registry.get(name) or atelier.registry.get(
+            LEGACY_HARNESS_ALIASES.get(name, "")
+        )
+        if spec is None:
+            console.print(
+                f"[red]unknown harness:[/red] {escape(name)} — try 'atelier list harnesses'"
+            )
+            failed = True
+            continue
+        if spec.kind not in ("npx", "installed"):
+            console.print(
+                f"[yellow]skipped[/yellow] {escape(name)} — it runs via {escape(spec.kind)}, "
+                "not npx, so there is nothing to install"
+            )
+            continue
+        try:
+            executable = install_agent(root, spec.package)
+        except OSError as exc:
+            console.print(f"[red]install failed:[/red] {escape(name)} — {escape(str(exc))}")
+            failed = True
+            continue
+        console.print(
+            f"[green]installed[/green] {escape(name)} ({escape(spec.package)}) "
+            f"→ {escape(str(executable))}"
+        )
+    if failed:
+        raise typer.Exit(code=1)

@@ -1181,6 +1181,9 @@ class Engine:
                                         {"usage_limit": result.usage_limit.model_dump()}
                                         if result.usage_limit else {}
                                     ), **(
+                                        {"timings": result.timings}
+                                        if result.timings else {}
+                                    ), **(
                                         # Pass history must not report an
                                         # unknown condition for a plain repeat.
                                         {"no_loop_condition": True}

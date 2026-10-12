@@ -266,10 +266,22 @@ documents; the `via` column says how it starts:
 
 - `npx` / `uvx` — the agent's own package manager fetches it on first
 run, at the version the registry pins. Needs Node.js or uv on PATH.
+- `installed` — an `npx` agent you set up with `atelier harness install`.
 - `binary` — you install the agent's CLI, and flow-atelier runs it from
 PATH. `atelier list harnesses` names the missing binary when it isn't there.
 
 Either way, logging in is yours to do, with that agent's own CLI.
+
+`npx` spends about a second on every launch resolving a package it has
+already cached, and a conduit launches the agent once per task. Install
+the pinned version once and every launch runs it directly:
+
+```bash
+atelier harness install claude-code codex
+```
+
+After `atelier harness sync` pins a newer version, that agent goes back to
+`npx` until you run `atelier harness install` again; sync says which ones.
 
 #### Picking a model
 
@@ -1445,6 +1457,7 @@ atelier list conduits
 atelier list flows [--conduit <name>]
 atelier list schedules [--json]
 atelier list harnesses [--ready] [--json]
+atelier harness install <name>...                      # run npx agents without npx's per-launch cost
 atelier rm <flow_id> [--force] [--yes]                 # delete one flow run
 atelier prune [--conduit <name>] [--older-than <days>] [--keep <n>]   # bulk-delete old flows
 

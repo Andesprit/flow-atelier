@@ -4,9 +4,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import difflib
+import socket
 import sys
 import time
 from collections.abc import Awaitable, Callable
+from urllib.parse import urlsplit
 
 import typer
 import yaml
@@ -103,6 +105,21 @@ class _RunningTasks:
         return {name: now - started for name, started in self._started.items()}
 
 
+def _serving(url: str) -> bool:
+    """Say whether anything accepts connections at ``url``'s host and port.
+
+    :param url: the serve URL, such as ``http://127.0.0.1:8000``.
+    :returns: True when a TCP connection opens within a fifth of a second.
+    """
+    parts = urlsplit(url)
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        with socket.create_connection((parts.hostname or "127.0.0.1", port), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
 async def _with_heartbeat(coro, running: _RunningTasks):
     """Await ``coro`` while emitting a periodic "still working" line.
 
@@ -178,6 +195,10 @@ def drive_flow(
             _render_orchestration_msg(f"run page {page_base}/runs/{fid}"),
             soft_wrap=True,
         )
+        if not _serving(page_base):
+            console.print(_render_orchestration_msg(
+                "the page opens once `atelier serve` is running"
+            ))
 
     def _on_event(event: TaskEvent) -> None:
         if (

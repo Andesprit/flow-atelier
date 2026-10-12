@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import socket
 
 import pytest
 from typer.testing import CliRunner
@@ -101,3 +102,26 @@ def test_nested_run_names_only_the_top_flow(workdir):
     assert result.stdout.count("· run page ") == 1
     assert f"· run page http://127.0.0.1:8000/runs/{fid}\n" in result.stdout
     assert f"atelier run --resume {fid}" in result.stdout
+
+
+def test_page_hint_when_nothing_serves(workdir, monkeypatch):
+    """With no server at the serve URL, the run says how to open its page."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    monkeypatch.setenv("ATELIER_SERVE_URL", f"http://127.0.0.1:{port}")
+    result = CliRunner().invoke(app, ["run", NAME])
+    assert result.exit_code == 0, result.stdout
+    assert "the page opens once `atelier serve` is running" in result.stdout
+
+
+def test_no_page_hint_while_serving(workdir, monkeypatch):
+    """With a server listening at the serve URL, the page line stands alone."""
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        port = server.getsockname()[1]
+        monkeypatch.setenv("ATELIER_SERVE_URL", f"http://127.0.0.1:{port}")
+        result = CliRunner().invoke(app, ["run", NAME])
+    assert result.exit_code == 0, result.stdout
+    assert "atelier serve" not in result.stdout

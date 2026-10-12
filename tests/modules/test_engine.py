@@ -1,5 +1,6 @@
 """Engine unit tests using fake executors (no subprocesses)."""
 import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -11,7 +12,7 @@ from flow_atelier.modules.engine import (
     validate_conduit,
 )
 from flow_atelier.schemas.conduit import Conduit
-from flow_atelier.schemas.log import ExecutionResult
+from flow_atelier.schemas.log import ExecutionResult, UsageLimit
 from flow_atelier.schemas.progress import FlowStatus, TaskStatus
 from flow_atelier.services.executor.base import ExecutorBase
 from flow_atelier.services.executor.bash import to_bash_path
@@ -2068,3 +2069,131 @@ def test_negative_retry_backoff_rejected():
             [{"name": "a", "description": "d", "task": "x",
               "tool": "tool:bash", "retry_backoff": -1}]
         )
+
+
+# ---------------------------------------------------------------- usage limits
+
+
+class LimitedThenSucceed(FakeExecutor):
+    """Refuse the first ``limited`` calls for usage, then succeed."""
+
+    def __init__(self, limited: int, resets_at: str | None = None):
+        """Initialize with how many calls the agent refuses.
+
+        :param limited: number of leading calls refused for usage.
+        :param resets_at: the reset each refusal reports, ISO 8601.
+        """
+        super().__init__()
+        self.limited = limited
+        self.resets_at = resets_at
+
+    async def execute(self, task, resolved_command, context):
+        """Refuse for usage until ``limited`` is spent, then succeed.
+
+        :param task: task definition being executed.
+        :param resolved_command: command string after template resolution.
+        :param context: flow context provided by the engine.
+        """
+        self.calls.append(task.name)
+        if len(self.calls) <= self.limited:
+            return ExecutionResult(
+                exit_code=1,
+                stderr="RequestError: Internal error",
+                usage_limit=UsageLimit(resets_at=self.resets_at, detail="limit hit"),
+            )
+        return ExecutionResult(exit_code=0, output="ok")
+
+
+@pytest.fixture
+def no_margin(monkeypatch):
+    """Retry a refused turn the moment its stated reset passes.
+
+    :param monkeypatch: pytest monkeypatch fixture.
+    """
+    import flow_atelier.modules.engine as engine_module
+
+    monkeypatch.setattr(engine_module, "USAGE_LIMIT_MARGIN_SECONDS", 0)
+
+
+async def test_a_usage_limit_waits_for_the_reset_without_spending_retries(store, no_margin):
+    """A refused turn is retried after the reset even with no retries left.
+
+    :param store: FilesystemStore fixture.
+    :param no_margin: fixture dropping the post-reset margin.
+    """
+    conduit = _conduit(
+        [{"name": "a", "description": "d", "task": "x", "tool": "tool:bash",
+          "depends_on": []}]
+    )
+    fake = LimitedThenSucceed(limited=2, resets_at=datetime.now(UTC).isoformat())
+    engine = Engine({"tool:bash": fake}, store)
+    flow_id = await engine.run(conduit, {})
+
+    assert store.read_progress(flow_id).status == FlowStatus.completed
+    assert fake.calls == ["a", "a", "a"]
+    logs = [e for e in store.read_logs(flow_id) if e.task == "a"]
+    assert logs[0].extra["usage_limit"]["detail"] == "limit hit"
+    waits = [r.step.text for r in store.read_steps(flow_id)[0]]
+    assert len(waits) == 2
+    assert all("usage limit reached; waiting until" in w for w in waits)
+
+
+async def test_a_reset_past_the_waiting_budget_fails_the_task(store):
+    """A limit that resets after the budget fails with the reset time.
+
+    :param store: FilesystemStore fixture.
+    """
+    conduit = _conduit(
+        [{"name": "a", "description": "d", "task": "x", "tool": "tool:bash",
+          "depends_on": []}]
+    )
+    later = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
+    fake = LimitedThenSucceed(limited=1, resets_at=later)
+    engine = Engine({"tool:bash": fake}, store, usage_limit_max_wait=3600)
+    with pytest.raises(RuntimeError, match="usage limit reached"):
+        await engine.run(conduit, {})
+    assert fake.calls == ["a"]
+    reason = store.read_progress(store.list_flows()[0]).tasks["a"].reason
+    assert "ATELIER_USAGE_LIMIT_MAX_WAIT" in reason
+
+
+async def test_a_nested_usage_limit_waits_at_the_top_and_resumes_the_child(
+    store, no_margin
+):
+    """A child refused for usage fails; the parent waits and resumes it.
+
+    The child's own task timeout must not bound the wait, so the wait
+    happens in the top-level run, and its retry resumes the failed child
+    rather than starting a new one.
+
+    :param store: FilesystemStore fixture.
+    :param no_margin: fixture dropping the post-reset margin.
+    """
+    parent = _named_conduit(
+        "parent",
+        [{"name": "callchild", "description": "d", "task": "child",
+          "tool": "tool:conduit"}],
+    )
+    child = _named_conduit(
+        "child",
+        [
+            {"name": "first", "description": "d", "task": "x", "tool": "tool:bash"},
+            {"name": "agent", "description": "d", "task": "x", "tool": "harness:fake",
+             "depends_on": ["first"]},
+        ],
+    )
+    store.write_conduit(parent)
+    store.write_conduit(child)
+    bash = FakeExecutor()
+    agent = LimitedThenSucceed(limited=1, resets_at=datetime.now(UTC).isoformat())
+    engine = Engine(
+        {"tool:conduit": ConduitExecutor(), "tool:bash": bash, "harness:fake": agent},
+        store,
+    )
+    flow_id = await engine.run(parent, {})
+
+    assert store.read_progress(flow_id).status == FlowStatus.completed
+    assert agent.calls == ["agent", "agent"]
+    # The resumed child skipped the task that had already completed.
+    assert bash.calls == ["first"]
+    assert len(store.list_child_flows(flow_id)) == 1

@@ -1245,6 +1245,26 @@ that is *succeeding*.
 - `timeout: <seconds>` — override the per-task time limit for one task.
 When omitted, the conduit-level `timeout` applies.
 
+### When an agent runs out of usage
+
+A subscription agent that hits its 5-hour or weekly limit refuses the
+turn. The run does not fail. The task waits until the limit resets, then
+tries the same turn again, and the wait spends none of its `retries`.
+`atelier status` shows the task as running with the time it waits for,
+and `atelier stop` ends the wait like any running task.
+
+The reset time comes from the agent. Claude Code reports it directly;
+Codex and other agents say it in their error message ("try again in 2
+hours"). When the agent does not say, the task tries again every 30
+minutes. A loop body run as a nested conduit fails on the limit, and the
+top-level run waits and then resumes it where it stopped, so the nested
+task's own `timeout` never cuts a wait short.
+
+A task waits at most 6 hours in total. Set `ATELIER_USAGE_LIMIT_MAX_WAIT`
+to change that in seconds, or to `0` to fail at once. A limit that resets
+after the budget fails the task with the reset time, and
+`atelier run --resume` picks it up after the reset.
+
 ### Continuing an agent's conversation (`session`)
 
 Every agent task normally opens a new conversation, so the agent reads

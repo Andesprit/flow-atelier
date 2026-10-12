@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.progress import TaskStatus
@@ -17,6 +18,8 @@ class NestedFailure:
     iteration: int
     of: int
     reason: str
+    # The failed run's usage limit, so the top-level run can wait for it.
+    usage_limit: dict[str, Any] | None = None
 
     @property
     def selector(self) -> str:
@@ -103,5 +106,6 @@ def latest_nested_failure(
             flow_id=flow_id, calling_task=calling_task, task=task_name,
             tool=tool, iteration=entry.iteration if entry else task.iteration,
             of=entry.of if entry else task.of, reason=reason,
+            usage_limit=entry.extra.get("usage_limit") if entry else None,
         )
     return None

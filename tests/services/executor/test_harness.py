@@ -1614,3 +1614,56 @@ def test_effort_choice_leaves_an_unknown_uncategorized_id_unsupported() -> None:
         "brainpower", None, [SessionConfigSelectOption(value="high", name="H")]
     )
     assert _effort_choice([unknown]) is None
+
+
+async def test_a_turn_refused_for_usage_reports_the_limit_and_reset() -> None:
+    """A Claude-style refusal carries the reset its rate-limit report gave."""
+    script = {
+        "turns": [
+            {
+                "usage_limit": {
+                    "data": {"errorKind": "rate_limit"},
+                    "meta": {"_claude/rateLimit": {"status": "rejected", "resetsAt": 1791837000}},
+                }
+            }
+        ]
+    }
+    executor = AcpHarnessExecutor(launch_cmd=_fake_cmd(script), sink=RecordingSink())
+    result = await executor.execute(_task("hi"), "hi", _ctx())
+
+    assert not result.success
+    assert result.usage_limit is not None
+    assert result.usage_limit.resets_at == "2026-10-12T20:30:00+00:00"
+
+
+async def test_a_codex_refusal_reads_the_reset_from_its_message() -> None:
+    """Codex states the reset only in prose, which sets the reset time."""
+    script = {
+        "turns": [
+            {
+                "chunks": ["You've hit your usage limit. Try again in 2 hours."],
+                "usage_limit": {
+                    "data": {
+                        "codexErrorInfo": "usageLimitExceeded",
+                        "message": "You've hit your usage limit. Try again in 2 hours.",
+                    }
+                },
+            }
+        ]
+    }
+    executor = AcpHarnessExecutor(launch_cmd=_fake_cmd(script), sink=RecordingSink())
+    result = await executor.execute(_task("hi"), "hi", _ctx())
+
+    assert result.usage_limit is not None
+    assert result.usage_limit.resets_at is not None
+    assert "usage limit" in result.usage_limit.detail
+
+
+async def test_an_ordinary_failure_reports_no_usage_limit() -> None:
+    """An auth failure is a failure, not a limit to wait out."""
+    script = {"turns": [{"fail_auth": "login expired"}]}
+    executor = AcpHarnessExecutor(launch_cmd=_fake_cmd(script), sink=RecordingSink())
+    result = await executor.execute(_task("hi"), "hi", _ctx())
+
+    assert not result.success
+    assert result.usage_limit is None

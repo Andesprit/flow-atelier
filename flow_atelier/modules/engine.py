@@ -1084,6 +1084,9 @@ class Engine:
                                         {"child_flow_id": result.child_flow_id}
                                         if result.child_flow_id else {}
                                     ), **(
+                                        {"timings": result.timings}
+                                        if result.timings else {}
+                                    ), **(
                                         # Pass history must not report an
                                         # unknown condition for a plain repeat.
                                         {"no_loop_condition": True}

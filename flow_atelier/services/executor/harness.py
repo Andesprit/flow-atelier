@@ -118,6 +118,10 @@ UPDATE_DRAIN_TIMEOUT_SECONDS = 5.0
 # npx/uvx-distributed agent downloads the package before it says anything.
 PROBE_TIMEOUT_SECONDS = 90.0
 
+# What `atelier harness check --prompt` asks. Short, so the check costs a
+# handful of tokens, and answerable without any tool.
+PROBE_PROMPT = "Reply with the single word OK and nothing else."
+
 
 @dataclass
 class ProbeResult:
@@ -126,7 +130,8 @@ class ProbeResult:
     :param ok: whether the agent is reachable and completed the handshake.
     :param stage: how far the check got — ``path``, ``spawn``, ``initialize``,
         ``handshake`` (timed out), ``session``, ``selection`` (the session
-        opened but the named model or effort was refused), or ``ok``.
+        opened but the named model or effort was refused), ``prompt`` (the
+        agent refused the test prompt), or ``ok``.
     :param detail: one-line human explanation of ``stage``.
     :param agent: the agent's self-reported name and version, when it got
         far enough to send one.
@@ -143,6 +148,7 @@ class ProbeResult:
     :param current_effort: the effort that model would run on unnamed.
     :param stderr: tail of the agent's stderr, the usual place a failing
         agent explains itself.
+    :param reply: what the agent answered the test prompt, when one was sent.
     """
 
     ok: bool
@@ -158,6 +164,7 @@ class ProbeResult:
     efforts: list[str] = field(default_factory=list)
     current_effort: str = ""
     stderr: str = ""
+    reply: str = ""
 
     def guidance(self) -> list[str]:
         """Return what the user has to do about a failed check, in order.
@@ -186,6 +193,11 @@ class ProbeResult:
                 )
             lines.append("log in with the agent's own CLI, then re-run this check")
             return lines
+        if self.stage == "prompt":
+            return [
+                "the agent opened a session but refused a prompt: log in again "
+                "with the agent's own CLI, or check its plan's usage and model access"
+            ]
         if self.stage in ("initialize", "handshake"):
             return [
                 "the command started but did not speak ACP — check it is the "
@@ -304,21 +316,66 @@ def _effort_choice(options) -> _SelectChoice | None:
 
 
 class _ProbeClient:
-    """ACP client for a connection check: accepts everything, does nothing.
+    """ACP client for a connection check: keeps the agent's text, allows nothing.
 
-    A probe never sends a prompt, so the agent has no reason to call back.
-    Permission requests are denied rather than auto-approved: a check must
-    not authorize an agent to touch anything.
+    The agent's message text is kept so a check that sends a test prompt can
+    report the reply. Permission requests are denied rather than
+    auto-approved: a check must not authorize an agent to touch anything.
     """
 
-    async def session_update(self, *args: Any, **kwargs: Any) -> None:
-        """Ignore a session update.
+    def __init__(self) -> None:
+        """Start with no reply text."""
+        self.text: list[str] = []
+        # Updates seen on the wire vs. handled, as in _BufferingClient.
+        self._received = 0
+        self._handled = 0
+        self._idle = asyncio.Event()
 
-        :param args: ignored positional ACP arguments.
-        :param kwargs: ignored keyword ACP arguments.
+    def observe(self, event: StreamEvent) -> None:
+        """Count ``session/update`` notifications as they arrive off the wire.
+
+        :param event: the raw JSON-RPC message event from the connection.
         """
-        del args, kwargs
-        return None
+        if (
+            event.direction is StreamDirection.INCOMING
+            and event.message.get("method") == "session/update"
+        ):
+            self._received += 1
+
+    async def await_pending_updates(
+        self, timeout: float = UPDATE_DRAIN_TIMEOUT_SECONDS
+    ) -> None:
+        """Wait until every observed update has been handled.
+
+        See :meth:`_BufferingClient.await_pending_updates`: a prompt's reply
+        can resolve before the handlers of its last chunks have run.
+
+        :param timeout: seconds to wait before giving up.
+        """
+        while self._handled < self._received:
+            self._idle.clear()
+            try:
+                await asyncio.wait_for(self._idle.wait(), timeout)
+            except TimeoutError:
+                return
+
+    async def session_update(self, session_id: str, update, **kwargs: Any) -> None:
+        """Keep the text of an agent message chunk; ignore every other update.
+
+        :param session_id: id of the session emitting the update (unused).
+        :param update: the ACP update payload.
+        :param kwargs: additional ACP fields (unused).
+        """
+        del session_id, kwargs
+        try:
+            if isinstance(update, AgentMessageChunk):
+                text = getattr(update.content, "text", None)
+                if text:
+                    self.text.append(text)
+        finally:
+            self._handled += 1
+            if self._handled >= self._received:
+                self._idle.set()
 
     async def request_permission(
         self, *args: Any, **kwargs: Any
@@ -1046,19 +1103,28 @@ class AcpHarnessExecutor(ExecutorBase):
         return (True, "")
 
     async def probe(
-        self, cwd: str | None = None, timeout: float = PROBE_TIMEOUT_SECONDS
+        self,
+        cwd: str | None = None,
+        timeout: float = PROBE_TIMEOUT_SECONDS,
+        prompt: bool = False,
     ) -> ProbeResult:
         """Check that this harness's command starts and speaks ACP.
 
         Spawns the agent, completes the ``initialize`` handshake and opens a
-        session, then stops. No prompt is sent, so the check costs no tokens.
-        Opening the session is the point: it is the step that fails when the
-        user has not logged in to the agent's own CLI, which is precisely the
-        setup flow-atelier reports but never performs.
+        session, then stops. By default no prompt is sent, so the check costs
+        no tokens. Opening the session is the point: it is the step that fails
+        when the user has not logged in to the agent's own CLI, which is
+        precisely the setup flow-atelier reports but never performs.
+
+        Some failures only show when the agent sends a request to its model:
+        an expired token, a used-up plan, an adapter too old for the current
+        model. ``prompt`` sends :data:`PROBE_PROMPT` to catch those, at the
+        cost of a few tokens.
 
         :param cwd: working directory for the agent; defaults to the process cwd.
-        :param timeout: seconds to allow for the whole handshake. Generous by
+        :param timeout: seconds to allow for the whole check. Generous by
             default because an npx-distributed agent may be fetching itself.
+        :param prompt: also send a one-line test prompt and require a reply.
         :returns: a :class:`ProbeResult` describing how far the check got.
         """
         ready, reason = self.is_available()
@@ -1068,7 +1134,7 @@ class AcpHarnessExecutor(ExecutorBase):
         target = cwd or str(Path.cwd())
         try:
             result = await asyncio.wait_for(
-                self._probe(target, agent_stderr), timeout=timeout
+                self._probe(target, agent_stderr, prompt), timeout=timeout
             )
         except TimeoutError:
             result = ProbeResult(
@@ -1083,22 +1149,27 @@ class AcpHarnessExecutor(ExecutorBase):
         result.stderr = "\n".join(agent_stderr)
         return result
 
-    async def _probe(self, cwd: str, agent_stderr: deque[str]) -> ProbeResult:
+    async def _probe(
+        self, cwd: str, agent_stderr: deque[str], prompt: bool = False
+    ) -> ProbeResult:
         """Run the handshake half of :meth:`probe`.
 
         :param cwd: working directory for the agent process.
         :param agent_stderr: bounded deque the agent's stderr is drained into.
+        :param prompt: also send :data:`PROBE_PROMPT` and require a reply.
         :returns: a :class:`ProbeResult` for the handshake.
         """
         cmd, *args = self.launch_cmd
         cmd = _resolve_cmd(cmd)
+        client = _ProbeClient()
         async with acp.spawn_agent_process(
-            _ProbeClient(),
+            client,
             cmd,
             *args,
             cwd=cwd,
             env=self._spawn_env(),
             transport_kwargs={"limit": 8 * 1024 * 1024},
+            observers=[client.observe],
         ) as (conn, proc):
             drain = (
                 asyncio.create_task(_drain_agent_stderr(proc.stderr, agent_stderr))
@@ -1162,6 +1233,8 @@ class AcpHarnessExecutor(ExecutorBase):
                 if effort is not None:
                     partial.efforts = effort.available
                     partial.current_effort = effort.current
+                if prompt:
+                    await self._probe_prompt(conn, sess.session_id, client, partial)
                 return partial
             finally:
                 if drain is not None:
@@ -1172,6 +1245,44 @@ class AcpHarnessExecutor(ExecutorBase):
                     drain.cancel()
                 if sys.platform == "win32":
                     _close_proc_transports(proc)
+
+    @staticmethod
+    async def _probe_prompt(
+        conn, session_id: str, client: _ProbeClient, result: ProbeResult
+    ) -> None:
+        """Send the test prompt and record whether the agent answered.
+
+        :param conn: the active ACP connection.
+        :param session_id: the open session to prompt.
+        :param client: the probe client collecting the reply text.
+        :param result: the passing result so far, updated in place.
+        """
+        try:
+            resp = await conn.prompt(
+                prompt=[TextContentBlock(type="text", text=PROBE_PROMPT)],
+                session_id=session_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — any refusal is a result
+            data = getattr(exc, "data", None)
+            detail = data.get("message", "") if isinstance(data, dict) else ""
+            result.ok = False
+            result.stage = "prompt"
+            result.detail = (
+                f"opened a session, but refused a test prompt "
+                f"({type(exc).__name__}: {detail or exc})"
+            )
+            return
+        await client.await_pending_updates()
+        result.reply = "".join(client.text).strip()
+        if resp.stop_reason != "end_turn" or not result.reply:
+            result.ok = False
+            result.stage = "prompt"
+            result.detail = (
+                f"opened a session, but the test prompt stopped with "
+                f"reason={resp.stop_reason} and no reply"
+            )
+            return
+        result.detail = "reachable, ACP-compatible, and answered a test prompt"
 
     async def execute(
         self,

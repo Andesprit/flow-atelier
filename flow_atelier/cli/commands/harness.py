@@ -153,6 +153,8 @@ def _render_probe(tool: str, launch: list[str], result) -> None:
                 f"  [dim]auth methods advertised:[/dim] "
                 f"{escape(', '.join(result.auth_methods))}"
             )
+        if result.reply:
+            console.print(f"  [dim]reply:[/dim] {escape(result.reply[:200])}")
         return
 
     console.print(f"  [red]not usable[/red] — {escape(result.detail)}")
@@ -179,13 +181,23 @@ def harness_check_cmd(
         None, "--cmd", help="Check an arbitrary agent command instead of a name."
     ),
     timeout: float = typer.Option(
-        PROBE_TIMEOUT_SECONDS, "--timeout", help="Seconds to allow for the handshake."
+        PROBE_TIMEOUT_SECONDS, "--timeout", help="Seconds to allow for the check."
+    ),
+    prompt: bool = typer.Option(
+        False,
+        "--prompt",
+        help=(
+            "Also send a one-line test prompt, costing a few tokens. Catches an "
+            "expired login, a used-up plan or an outdated adapter."
+        ),
     ),
 ) -> None:
     """Check that an agent command is reachable and speaks ACP.
 
     Starts the agent, completes the ACP handshake and opens a session, then
-    stops — no prompt is sent, so the check costs no tokens. A ``:<model>``
+    stops — no prompt is sent, so the check costs no tokens. ``--prompt``
+    also sends a one-line test prompt and requires an answer, which proves
+    the login works for real requests before an unattended run. A ``:<model>``
     (or ``:<model>:<effort>``) suffix is resolved the same way a run resolves
     it, so what the check reports is what a task naming that tool would get.
     Installing the agent and logging into it stay entirely yours; this only
@@ -194,7 +206,8 @@ def harness_check_cmd(
     :param name: a registered harness name, optionally with a model and
         effort suffix.
     :param cmd: an arbitrary command to check instead of a registered name.
-    :param timeout: seconds to allow for the handshake.
+    :param timeout: seconds to allow for the check.
+    :param prompt: also send a one-line test prompt and require a reply.
     """
     if (name is None) == (cmd is None):
         console.print("[red]pass either a harness name or --cmd, not both[/red]")
@@ -228,7 +241,7 @@ def harness_check_cmd(
             executor = executor.with_model(model, effort)
         label = tool
 
-    result = asyncio.run(executor.probe(timeout=timeout))
+    result = asyncio.run(executor.probe(timeout=timeout, prompt=prompt))
     _render_probe(label, executor.launch_cmd, result)
     if not result.ok:
         raise typer.Exit(code=1)

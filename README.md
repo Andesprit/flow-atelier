@@ -396,6 +396,7 @@ read, run, and edit.
 
 ```bash
 atelier harness check claude-code   # confirms the agent starts and you're logged in
+atelier harness check claude-code --prompt   # also sends a one-line prompt (a few tokens)
 atelier create my-review --template code-review
 atelier check my-review             # validates it and confirms the harness is usable
 atelier plan my-review              # prints the two waves, runs nothing

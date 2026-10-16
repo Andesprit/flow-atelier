@@ -44,6 +44,41 @@ where they agree, where they disagree, and the single most useful next step.
 {{{{look_{second_key}.output}}}}
 """
 
+DRAFT_PROMPT = """\
+Goal: {{inputs.goal}}
+
+Read the code this goal touches, then reply with a short plan and the exact
+diff you would apply. If something is unclear, ask before you answer.
+
+Read only: do not edit files, install anything, or run commands that change state.
+"""
+
+REVIEW_PROMPT = """\
+Another agent proposed this change for the goal "{{inputs.goal}}":
+
+{{draft.output}}
+
+Check it against the code. List what must change, most important first,
+or reply LGTM if nothing must.
+
+Read only: do not edit files, install anything, or run commands that change state.
+"""
+
+REVISE_PROMPT = """\
+The reviewer replied:
+
+{{review.output}}
+
+Revise your proposal. Reply with the final plan and diff.
+
+Read only: do not edit files, install anything, or run commands that change state.
+"""
+
+SUPERVISOR_INSTRUCTIONS = """\
+Answer the worker's questions from the code and the project's conventions.
+Escalate to the human anything about product direction or scope.
+"""
+
 
 class _PromptDumper(yaml.SafeDumper):
     """Write multi-line prompts as block scalars so they stay easy to edit."""
@@ -110,11 +145,60 @@ def explain_conduit_yaml(harnesses: list[str]) -> str:
     return yaml.dump(doc, Dumper=_PromptDumper, sort_keys=False, width=100)
 
 
+def pair_conduit_yaml(harnesses: list[str]) -> str:
+    """Render the starter where agents answer, review and continue each other.
+
+    The first agent drafts and revises in one ``session``. The second agent
+    answers the first agent's questions as supervisor and reviews the draft.
+    One agent plays both parts.
+
+    :param harnesses: one or more harness names, most preferred first.
+    :returns: YAML text for ``conduit.yaml``.
+    """
+    worker = f"harness:{harnesses[0]}"
+    partner = f"harness:{harnesses[-1]}"
+    doc = {
+        "name": "pair",
+        "description": "One agent drafts a change, another answers its questions and reviews it",
+        "inputs": {"goal": {
+            "description": "What to change",
+            "default": "the smallest change that would most help a new contributor",
+        }},
+        "interaction": {
+            "questions": "hybrid",
+            "supervisor": {"tool": partner, "instructions": SUPERVISOR_INSTRUCTIONS},
+        },
+        "tasks": [
+            {"draft": {
+                "description": f"{harnesses[0]} proposes a change",
+                "task": DRAFT_PROMPT,
+                "tool": worker,
+                "session": "worker",
+                "depends_on": [],
+            }},
+            {"review": {
+                "description": f"{harnesses[-1]} reviews the proposal",
+                "task": REVIEW_PROMPT,
+                "tool": partner,
+                "depends_on": ["draft"],
+            }},
+            {"revise": {
+                "description": f"{harnesses[0]} revises, remembering its draft",
+                "task": REVISE_PROMPT,
+                "tool": worker,
+                "session": "worker",
+                "depends_on": ["review"],
+            }},
+        ],
+    }
+    return yaml.dump(doc, Dumper=_PromptDumper, sort_keys=False, width=100)
+
+
 @app.command(
     "init",
     help=(
         "Scaffold a local .atelier/ directory with a hello-world conduit, plus "
-        "an AI starter when an agent CLI such as claude or codex is installed."
+        "AI starters when an agent CLI such as claude or codex is installed."
     ),
 )
 def init_cmd() -> None:
@@ -122,6 +206,7 @@ def init_cmd() -> None:
     conduits = Path.cwd() / ".atelier" / "conduits"
     hello = conduits / "hello" / "conduit.yaml"
     explain = conduits / "explain" / "conduit.yaml"
+    pair = conduits / "pair" / "conduit.yaml"
     harnesses = installed_harnesses()
 
     written = []
@@ -133,6 +218,10 @@ def init_cmd() -> None:
         explain.parent.mkdir(parents=True, exist_ok=True)
         explain.write_text(explain_conduit_yaml(harnesses[:2]))
         written.append(explain)
+    if harnesses and not pair.exists():
+        pair.parent.mkdir(parents=True, exist_ok=True)
+        pair.write_text(pair_conduit_yaml(harnesses[:2]))
+        written.append(pair)
 
     if not written:
         console.print("[yellow]atelier is already set up in this project[/yellow]")
@@ -144,7 +233,9 @@ def init_cmd() -> None:
             f"found {agents}. Have {'them' if len(harnesses) > 1 else 'it'} "
             "explain this project:\n"
             "  [bold]atelier serve[/bold]        # in a second terminal, to watch live\n"
-            "  [bold]atelier run explain[/bold]"
+            "  [bold]atelier run explain[/bold]\n"
+            "then watch agents answer and review each other:\n"
+            "  [bold]atelier run pair[/bold]"
         )
     else:
         console.print(

@@ -227,7 +227,7 @@ overrides the registry (see `.env.example`).
 ## Quickstart
 
 ```bash
-atelier init                                # creates .atelier/conduits/hello/ (and explain/)
+atelier init                                # creates .atelier/conduits/hello/ (and explain/, pair/)
 atelier run hello --input name=world        # runs it
 atelier status latest                       # shows progress of the newest run
 atelier list flows --conduit hello          # lists previous runs
@@ -237,7 +237,9 @@ atelier list flows --conduit hello          # lists previous runs
 shell command, so this works end-to-end before you install any AI
 tool. When it finds an agent CLI on your `PATH` (`claude`, `codex`,
 `gemini`, `cursor-agent`, `opencode` or `copilot`), it also writes
-`explain`, where your agents read the current project and brief you.
+`explain`, where your agents read the current project and brief you,
+and `pair`, where one agent drafts a change while another answers its
+questions as [supervisor](interaction.md) and reviews the draft.
 Run `atelier init` again after installing an agent to add it.
 
 Ready for a real one? [Your first workflow: run it, break it, recover

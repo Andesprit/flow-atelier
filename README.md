@@ -21,11 +21,19 @@ cd your-project
 atelier init           # finds the agents you have installed and writes starters
 atelier serve          # in a second terminal: the live dashboard on :8000
 atelier run explain    # your agents read the project and brief you
+atelier run pair       # one agent drafts a change, another answers and reviews it
 ```
 
 With Claude Code and Codex both installed, `explain` has them read the project
 in parallel and then merges their answers into one brief. Without an agent,
 `atelier run hello --input name=world` shows the basics.
+
+`pair` shows agents working with each other. With both installed, Claude Code proposes a change,
+Codex answers Claude's questions and reviews the proposal, and Claude revises
+in the same conversation. It uses the conduit-wide
+[`interaction`](docs/interaction.md) policy and a shared
+[`session`](docs/guide.md#continuing-an-agents-conversation-session).
+Nothing is edited; you get the final plan and diff.
 Windows and PyPI installs are in the [guide](docs/guide.md#install).
 
 ## What people run with it

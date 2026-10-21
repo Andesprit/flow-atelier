@@ -8,6 +8,7 @@ from textwrap import shorten
 import typer
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 from flow_atelier.cli._shared import (
     _flow_duration_seconds,
@@ -40,7 +41,8 @@ def _print_list_table(table: Table) -> None:
         column.min_width = max(column.min_width or 0, len(str(column.header)))
     # Each column has two padding cells and a border, plus the opening border.
     minimum_width = sum(column.min_width for column in table.columns) + 3 * len(table.columns) + 1
-    console.print(table, width=max(console.width, minimum_width), soft_wrap=True)
+    table.width = max(console.width, minimum_width)
+    console.print(table, soft_wrap=True)
 
 
 @list_app.command("conduits")
@@ -205,16 +207,20 @@ def list_flows_cmd(
     for r in rows:
         progress = progresses[str(r["flow_id"])]
         if progress is None:
-            table.add_row(str(r["flow_id"]), str(r["conduit"]), "[red]?[/red]", "—", "—", "—")
-            continue
-        effective = display_status(progress)
-        status_style = _FLOW_STATUS_STYLE.get(effective, "white")
-        table.add_row(
-            str(r["flow_id"]),
-            str(r["conduit"]),
-            f"[{status_style}]{effective}[/{status_style}]",
-            _format_clock(progress.started_at),
-            _format_duration_seconds(_flow_duration_seconds(progress)),
-            _task_status_summary(progress),
-        )
+            cells = (str(r["flow_id"]), str(r["conduit"]), "[red]?[/red]", "—", "—", "—")
+        else:
+            effective = display_status(progress)
+            status_style = _FLOW_STATUS_STYLE.get(effective, "white")
+            cells = (
+                str(r["flow_id"]),
+                str(r["conduit"]),
+                f"[{status_style}]{effective}[/{status_style}]",
+                _format_clock(progress.started_at),
+                _format_duration_seconds(_flow_duration_seconds(progress)),
+                _task_status_summary(progress),
+            )
+        for column, cell in zip(table.columns, cells, strict=True):
+            rendered = Text.from_markup(cell) if isinstance(cell, str) else cell
+            column.min_width = max(column.min_width or 0, rendered.cell_len)
+        table.add_row(*cells)
     _print_list_table(table)

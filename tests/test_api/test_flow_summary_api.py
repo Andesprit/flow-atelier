@@ -232,6 +232,53 @@ async def test_a_run_that_moves_while_read_is_not_final_and_offers_no_command(
     )
 
 
+async def test_a_runner_taking_over_while_read_is_not_settled(
+    client, project, monkeypatch
+):
+    """A live runner replaces a dead one between diagnose's check and the
+    summary's: same statuses and rounds, but the advice no longer holds."""
+    import os
+    import socket
+
+    from flow_atelier.schemas.progress import Progress, TaskProgress, TaskStatus
+
+    c, atelier = client
+    flow_id = atelier.store.create_flow("two", {})
+    atelier.store.write_progress(
+        flow_id,
+        Progress(
+            tasks={"finish": TaskProgress(status=TaskStatus.running)},
+            current_tasks=["finish"],
+            started_at="2026-10-21T12:00:00Z",
+            runner_pid=1_000_000_000,
+            runner_host=socket.gethostname(),
+        ),
+    )
+    real = atelier.store.read_logs
+    calls = {"n": 0}
+
+    def take_over(fid):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            state = atelier.store.read_progress(fid)
+            state.runner_pid = os.getpid()
+            state.started_at = "2026-10-21T12:01:00Z"
+            atelier.store.write_progress(fid, state)
+        return real(fid)
+
+    monkeypatch.setattr(atelier.store, "read_logs", take_over)
+    mixed = (await c.get(f"/flows/{flow_id}/summary")).json()
+    settled = (await c.get(f"/flows/{flow_id}/summary")).json()
+
+    assert mixed["settled"] is False
+    assert not any(step["acts"] for step in mixed["next_steps"])
+    assert settled["settled"] is True
+    assert (settled["observed_state"], settled["observed_certainty"]) == (
+        "running", "proven"
+    )
+    assert not any("--resume" in cmd for cmd in _commands(settled))
+
+
 async def test_a_nested_run_routes_recovery_to_its_parent(client, project):
     c, atelier = client
     parent = await _run(atelier, project, "outer")

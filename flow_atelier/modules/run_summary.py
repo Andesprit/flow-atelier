@@ -20,13 +20,12 @@ from flow_atelier.schemas.progress import Progress, TaskStatus
 RESULT_MAX_CHARS = 2000
 
 
-def _shape(progress: Progress) -> tuple[Any, ...]:
-    """What has to stay the same for two readings to describe one state."""
-    return (
-        progress.status,
-        progress.finished_at,
-        {n: (t.status, t.iteration) for n, t in progress.tasks.items()},
-    )
+def _shape(progress: Progress) -> dict[str, Any]:
+    """The whole progress record: what has to stay the same for two readings
+    to describe one state. Not a chosen subset, because diagnose reads the
+    runner's pid, host and start time to decide what to advise.
+    """
+    return progress.model_dump()
 
 
 def _changes_things(command: str | None) -> bool:

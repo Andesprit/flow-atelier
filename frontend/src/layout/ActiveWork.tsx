@@ -32,8 +32,10 @@ function useActiveItems(): Item[] {
 const describe = (i: Item) =>
   `${i.conduitName || i.flowId} ${i.waiting ? "is waiting on you" : "is running"} (${i.origin})`;
 
+// Below sm it takes the wordmark's place (see TopBar) with a short label: the
+// three nav targets already fill a 390px bar.
 const chip =
-  "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-sm border px-2 font-mono text-mini uppercase tracking-[0.08em] focus-visible:outline-2 focus-visible:outline-primary sm:px-2.5";
+  "inline-flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-sm border px-2 font-mono text-mini uppercase tracking-[0.08em] focus-visible:outline-2 focus-visible:outline-primary max-sm:mr-auto sm:px-2.5";
 
 /**
  * Shown on every screen while work started in this tab is still going: the
@@ -46,7 +48,14 @@ export function ActiveWork() {
   if (items.length === 0) return null;
 
   const waiting = items.filter((i) => i.waiting).length;
-  const label = waiting ? `? ${waiting} waiting` : `● ${items.length} running`;
+  const text = (
+    <>
+      <span aria-hidden className="sm:hidden">{waiting ? `?${waiting}` : `●${items.length}`}</span>
+      <span aria-hidden className="hidden sm:inline">
+        {waiting ? `? ${waiting} waiting` : `● ${items.length} running`}
+      </span>
+    </>
+  );
   const tone = waiting ? "border-primary text-primary" : "border-border text-muted-foreground hover:text-foreground";
 
   if (items.length === 1) {
@@ -60,7 +69,7 @@ export function ActiveWork() {
         title={describe(only)}
         className={cn(chip, tone)}
       >
-        {label}
+        {text}
       </Link>
     );
   }
@@ -72,7 +81,7 @@ export function ActiveWork() {
         aria-label={`${items.length} runs going, ${waiting} waiting on you. Choose one to open its controls.`}
         className={cn(chip, tone, "cursor-pointer")}
       >
-        {label}
+        {text}
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 p-1">
         <ul aria-label="Runs going">

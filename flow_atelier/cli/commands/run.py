@@ -7,6 +7,7 @@ import difflib
 import http.client
 import json
 import sys
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from urllib.parse import quote, urlsplit
@@ -61,6 +62,22 @@ _HEARTBEAT_TICK_SECONDS = 1.0
 
 
 def _run_page_available(base: str, flow_id: str, token: str) -> bool:
+    """Bound the optional check even during DNS stalls or trickling HTTP responses."""
+    result = [False]
+
+    def probe() -> None:
+        result[0] = _probe_run_page(base, flow_id, token)
+
+    try:
+        worker = threading.Thread(target=probe, daemon=True)
+        worker.start()
+        worker.join(timeout=0.6)
+        return not worker.is_alive() and result[0]
+    except Exception:  # noqa: BLE001 — even thread exhaustion must not break a run
+        return False
+
+
+def _probe_run_page(base: str, flow_id: str, token: str) -> bool:
     """Check that the configured server can load this run, without following redirects."""
     connection = None
     try:

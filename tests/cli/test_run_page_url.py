@@ -6,6 +6,8 @@ import importlib
 import io
 import json
 import os
+import threading
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -185,7 +187,7 @@ def test_page_requires_matching_flow_json_without_redirects(monkeypatch, status,
     monkeypatch.setattr(http.client, "HTTPConnection", factory)
     run_module = importlib.import_module("flow_atelier.cli.commands.run")
     expected = status == 200 and b'"wanted"' in payload
-    assert run_module._run_page_available("http://localhost:9123/prefix/", "wanted", "fixture") == expected
+    assert run_module._probe_run_page("http://localhost:9123/prefix/", "wanted", "fixture") == expected
     connection.request.assert_called_once_with(
         "GET", "/prefix/flows/wanted", headers={"Authorization": "Bearer fixture"},
     )
@@ -200,3 +202,21 @@ def test_bad_serve_url_cannot_break_a_run(workdir, monkeypatch, url):
     result = CliRunner().invoke(app, ["run", NAME])
     assert result.exit_code == 0, result.stdout
     assert "atelier serve --port 0" in result.stdout
+
+
+def test_page_probe_has_total_deadline_even_if_connection_stalls(monkeypatch):
+    """Socket timeouts alone do not bound DNS resolution or trickling responses."""
+    release = threading.Event()
+    closed = threading.Event()
+    connection = Mock()
+    connection.connect.side_effect = lambda: release.wait(2)
+    connection.close.side_effect = closed.set
+    monkeypatch.setattr(http.client, "HTTPConnection", Mock(return_value=connection))
+    run_module = importlib.import_module("flow_atelier.cli.commands.run")
+    started = time.monotonic()
+    try:
+        assert not run_module._run_page_available("http://localhost:9123", "wanted", "")
+        assert time.monotonic() - started < 1.5
+    finally:
+        release.set()
+        assert closed.wait(5)

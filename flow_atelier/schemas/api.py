@@ -175,6 +175,84 @@ class TaskLogView(BaseModel):
     rounds: list[TaskLogRound] = Field(default_factory=list)
 
 
+class RunResult(BaseModel):
+    """One task's saved result, as the run page shows it.
+
+    ``state`` keeps apart what a reader would otherwise conflate: ``text`` a
+    saved result, ``empty`` a saved empty string, ``none`` a saved null (the
+    task recorded no result), ``missing`` no entry for the task at all.
+    ``text`` is credential-masked before it is bounded.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task: str
+    status: str
+    state: Literal["text", "empty", "none", "missing"]
+    text: str | None = None
+    chars: int = 0
+    truncated: bool = False
+
+
+class RunFailure(BaseModel):
+    """A failed task and the bounded, masked words that explain it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task: str
+    kind: str | None = None
+    exit_code: int | None = None
+    reason: str | None = None
+    channel: str | None = None
+    excerpt: str | None = None
+    truncated: bool = False
+
+
+class RunNextStep(BaseModel):
+    """One suggested command, from ``atelier diagnose``. Nothing runs it.
+
+    ``command`` is the bare command; ``copy_text`` is what to paste, with the
+    project folder (or store) selected so it reaches this run.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    what: str
+    command: str | None = None
+    copy_text: str | None = None
+    side_effects: str | None = None
+
+
+class RunSummary(BaseModel):
+    """Response shape for ``GET /flows/:flow_id/summary``: result and next step.
+
+    ``final`` is true only for a completed run whose files did not move while
+    this was read; otherwise ``results`` are what was saved so far.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    flow_id: str
+    status: str
+    observed_state: str
+    observed_certainty: str
+    observed_note: str
+    settled: bool
+    settled_note: str | None = None
+    final: bool
+    workspace: str | None = None
+    store: str
+    store_note: str | None = None
+    parent_flow_id: str | None = None
+    parent_task: str | None = None
+    results: list[RunResult] = Field(default_factory=list)
+    results_unavailable: str | None = None
+    full_results_command: str
+    failures: list[RunFailure] = Field(default_factory=list)
+    unavailable: list[str] = Field(default_factory=list)
+    next_steps: list[RunNextStep] = Field(default_factory=list)
+
+
 class TaskRoundPatch(BaseModel):
     """A round's current state and the lines it gained since the last update."""
 

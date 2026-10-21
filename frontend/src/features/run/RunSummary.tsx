@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { CopyButton } from "@/components/FlowDrawer";
+import { CopyButton } from "@/components/CopyButton";
 import type { RunResult, RunSummary as Summary } from "@/types/run";
 
 interface Props {

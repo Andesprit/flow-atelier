@@ -406,7 +406,7 @@ function StartedWith({
  * so a page served over http on a LAN address gets a toast instead of a silent
  * no-op; the text next to the button stays selectable for a manual copy.
  */
-function CopyButton({
+export function CopyButton({
   label,
   getText,
   testId,

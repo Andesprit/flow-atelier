@@ -76,3 +76,56 @@ export interface TaskLogUpdate {
   of: number;
   rounds: TaskRoundPatch[];
 }
+
+/** One task's saved result. `text` arrives credential-masked and bounded. */
+export interface RunResult {
+  task: string;
+  status: string;
+  /** text: saved text · empty: saved "" · none: saved null · missing: no entry */
+  state: "text" | "empty" | "none" | "missing";
+  text: string | null;
+  chars: number;
+  truncated: boolean;
+}
+
+export interface RunFailure {
+  task: string;
+  kind: string | null;
+  exitCode: number | null;
+  reason: string | null;
+  channel: string | null;
+  excerpt: string | null;
+  truncated: boolean;
+}
+
+/** A suggested command. The page only shows and copies it; nothing runs it. */
+export interface RunNextStep {
+  what: string;
+  command: string | null;
+  /** The command with its project folder (or store) selected, ready to paste. */
+  copyText: string | null;
+  sideEffects: string | null;
+}
+
+/** `GET /flows/:id/summary` — saved results and what to do next. */
+export interface RunSummary {
+  flowId: string;
+  status: string;
+  observedState: string;
+  observedCertainty: string;
+  observedNote: string;
+  settled: boolean;
+  settledNote: string | null;
+  final: boolean;
+  workspace: string | null;
+  store: string;
+  storeNote: string | null;
+  parentFlowId: string | null;
+  parentTask: string | null;
+  results: RunResult[];
+  resultsUnavailable: string | null;
+  fullResultsCommand: string;
+  failures: RunFailure[];
+  unavailable: string[];
+  nextSteps: RunNextStep[];
+}

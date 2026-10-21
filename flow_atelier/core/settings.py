@@ -106,8 +106,8 @@ class AtelierSettings(BaseSettings):
         default="http://127.0.0.1:8000",
         description=(
             "Where `atelier serve` answers (env ATELIER_SERVE_URL). Flow-running "
-            "commands print each run's page as <serve_url>/runs/<flow_id>; set "
-            "this when you serve on another host or port."
+            "commands print <serve_url>/runs/<flow_id> when this server can load "
+            "the run; set this when you serve on another host or port."
         ),
     )
 

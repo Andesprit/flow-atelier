@@ -4,9 +4,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import difflib
+import http.client
+import json
 import sys
 import time
 from collections.abc import Awaitable, Callable
+from urllib.parse import quote, urlsplit
 
 import typer
 import yaml
@@ -55,6 +58,36 @@ HEARTBEAT_SECONDS = 30.0
 
 # How often the heartbeat wakes to check for silence.
 _HEARTBEAT_TICK_SECONDS = 1.0
+
+
+def _run_page_available(base: str, flow_id: str, token: str) -> bool:
+    """Check that the configured server can load this run, without following redirects."""
+    connection = None
+    try:
+        url = urlsplit(base)
+        if url.scheme not in ("http", "https") or not url.hostname:
+            return False
+        transport = (
+            http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+        )
+        connection = transport(url.hostname, url.port, timeout=0.1)
+        connection.connect()
+        connection.sock.settimeout(0.5)
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        path = f"{url.path.rstrip('/')}/flows/{quote(flow_id, safe='')}"
+        connection.request("GET", path, headers=headers)
+        with connection.getresponse() as response:
+            if response.status != 200:
+                return False
+            # A non-Atelier server must not make this optional check consume unbounded data.
+            payload = json.loads(response.read(1024 * 1024))
+            return isinstance(payload, dict) and payload.get("flow_id") == flow_id
+    except Exception:  # noqa: BLE001 — an optional page must never break a run
+        return False
+    finally:
+        if connection is not None:
+            with contextlib.suppress(Exception):
+                connection.close()
 
 
 class _RunningTasks:
@@ -162,7 +195,8 @@ def drive_flow(
     collected: list[TaskEvent] = []
     captured: dict[str, str | None] = {"id": flow_id}
     running = _RunningTasks()
-    page_base = AtelierSettings().serve_url.rstrip("/")
+    settings = AtelierSettings()
+    page_base = settings.serve_url.rstrip("/")
 
     def _task_label(name: str) -> str:
         parents = [
@@ -172,10 +206,18 @@ def drive_flow(
         return " > ".join((*parents, name))
 
     def _announce_page(fid: str) -> None:
+        if _run_page_available(page_base, fid, settings.api_token):
+            message = f"run page {page_base}/runs/{fid}"
+        else:
+            message = (
+                f"run page: no atelier serve for this project at {page_base}; "
+                "start one here with: atelier serve --port 0; "
+                f"open /runs/{fid} at its printed address"
+            )
         # soft_wrap keeps the URL on one line when the output is piped to a
         # log, where Rich would otherwise wrap at 80 columns.
         console.print(
-            _render_orchestration_msg(f"run page {page_base}/runs/{fid}"),
+            _render_orchestration_msg(message),
             soft_wrap=True,
         )
 

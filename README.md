@@ -1148,6 +1148,14 @@ task that was skipped or hasn't completed skips the referencing task.
 neither declares nor references, so a mistyped key fails before the run
 starts.
 
+A declared input without a default is required. In a terminal, `atelier
+run` asks for each one you left out. Without a terminal (a script, an
+agent, CI) it exits 2 before the run starts, lists every missing input
+with its description and prints only the flags to add, such as
+`--input 'destination=<value>'`. Replace each `<value>` and append the
+flags to the command you just ran; your other inputs and options stay as
+you wrote them. The message never repeats the values you supplied.
+
 ### Conditional dependencies
 
 ```

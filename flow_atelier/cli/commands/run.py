@@ -6,6 +6,7 @@ import contextlib
 import difflib
 import http.client
 import json
+import shlex
 import sys
 import threading
 import time
@@ -382,9 +383,19 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
     if not missing:
         return
     if not sys.stdin.isatty():
+        # Flags only, never a whole command: a rebuilt command would drop the
+        # inputs and options already given, and echoing them could leak secrets.
         console.print(f"[red]missing required inputs:[/red] {escape(', '.join(missing))}")
-        flags = " ".join(f"--input {escape(k)}=<value>" for k in missing)
-        console.print(f"[dim]→ atelier run {escape(conduit.name)} {flags}[/dim]")
+        for key in missing:
+            description = conduit.inputs[key].description
+            console.print(f"  {escape(key)}" + (f" — {escape(description)}" if description else ""))
+        console.print(
+            "[dim]→ add these flags to the command you just ran, keeping its other "
+            "inputs and options; replace each <value> (or use --input-file key=path "
+            "for a file), then run it again:[/dim]"
+        )
+        flags = " ".join(f"--input {shlex.quote(f'{k}=<value>')}" for k in missing)
+        console.print(f"  {escape(flags)}", soft_wrap=True)
         raise typer.Exit(code=2)
 
     from flow_atelier.cli.rendering.multiline_input import multiline_input_sync

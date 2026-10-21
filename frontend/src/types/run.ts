@@ -105,6 +105,8 @@ export interface RunNextStep {
   /** The command with its project folder (or store) selected, ready to paste. */
   copyText: string | null;
   sideEffects: string | null;
+  /** Starts, resumes or stops work, rather than only reading. */
+  acts: boolean;
 }
 
 /** `GET /flows/:id/summary` — saved results and what to do next. */

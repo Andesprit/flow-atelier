@@ -112,7 +112,8 @@ async def test_a_failed_run_names_its_cause_and_a_resume_that_keeps_prepare(
     assert resume["copy_text"] == (
         f"cd {shlex.quote(str(project))} && atelier run --resume {flow_id}"
     )
-    assert resume["side_effects"]
+    assert resume["side_effects"] and resume["acts"] is True
+    assert body["next_steps"][0]["acts"] is False  # diagnose's own order is kept
 
     (project / "ready").touch()
     await atelier.resume_flow(flow_id, working_dir=project)

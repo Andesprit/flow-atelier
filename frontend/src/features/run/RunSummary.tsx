@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/CopyButton";
 import type { RunResult, RunSummary as Summary } from "@/types/run";
@@ -13,14 +14,17 @@ interface Props {
 const BOX = "rounded-md border border-border bg-card p-4";
 const PRE = "max-h-80 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/40 p-3 font-mono text-data";
 
-/** A command shown as text with a copy button; the page never runs it. */
-function Command({ text, testId }: { text: string; testId: string }) {
+/**
+ * A command shown as text with a copy button; the page never runs it. What is
+ * copied may differ from what is shown: it first changes to the project.
+ */
+function Command({ shown, copied, testId }: { shown: string; copied: string; testId: string }) {
   return (
     <div className="flex flex-wrap items-start gap-2">
       <code className="min-w-0 flex-1 break-all rounded bg-muted/40 px-2 py-1 font-mono text-data select-all">
-        {text}
+        {shown}
       </code>
-      <CopyButton label="copy" getText={() => text} testId={testId} />
+      <CopyButton label="copy" getText={() => copied} testId={testId} />
     </div>
   );
 }
@@ -70,7 +74,11 @@ export function RunSummary({ summary, error, loading, onRetry, onSelectTask }: P
     : summary.status === "running"
       ? "Saved so far (still running)"
       : "Saved so far";
-  const commands = summary.nextSteps;
+  // What to do first, then the ways to read more; each keeps diagnose's order.
+  const commands = [
+    ...summary.nextSteps.filter((s) => s.acts || !s.command),
+    ...summary.nextSteps.filter((s) => !s.acts && s.command),
+  ];
 
   return (
     <section className="flex flex-col gap-4" data-testid="run-summary" aria-label="Results and next step">
@@ -142,7 +150,11 @@ export function RunSummary({ summary, error, loading, onRetry, onSelectTask }: P
             <p className="mb-1 font-mono text-label text-muted-foreground">
               Shortened above. Print every result in full:
             </p>
-            <Command text={summary.fullResultsCommand} testId="copy-full-results" />
+            <Command
+              shown={summary.fullResultsCommand}
+              copied={summary.fullResultsCommand}
+              testId="copy-full-results"
+            />
           </div>
         )}
       </div>
@@ -153,16 +165,18 @@ export function RunSummary({ summary, error, loading, onRetry, onSelectTask }: P
           {summary.observedState === "running" && (
             <p className="mt-1 font-mono text-label text-muted-foreground">{summary.observedNote}</p>
           )}
-          <p className="mt-1 font-mono text-label text-muted-foreground">
+          <p className="mt-1 break-all font-mono text-label text-muted-foreground">
             {summary.workspace
-              ? `Copied commands first change to the project folder ${summary.workspace}.`
+              ? `Run these in the project folder ${summary.workspace}. Copy adds the cd for you.`
               : summary.storeNote}
           </p>
           <ol className="mt-2 flex flex-col gap-3">
             {commands.map((step, i) => (
               <li key={i} className="flex flex-col gap-1">
                 <p className="font-mono text-data">{step.what}</p>
-                {step.copyText && <Command text={step.copyText} testId={`copy-step-${i}`} />}
+                {step.command && step.copyText && (
+                  <Command shown={step.command} copied={step.copyText} testId={`copy-step-${i}`} />
+                )}
                 {step.sideEffects && (
                   <p className="font-mono text-label text-muted-foreground">
                     Effect: {step.sideEffects}
@@ -171,6 +185,14 @@ export function RunSummary({ summary, error, loading, onRetry, onSelectTask }: P
               </li>
             ))}
           </ol>
+          {summary.parentFlowId && (
+            <Link
+              to={`/runs/${encodeURIComponent(summary.parentFlowId)}`}
+              className="mt-3 inline-block font-mono text-data text-primary underline-offset-2 hover:underline"
+            >
+              Open the run that started this one
+            </Link>
+          )}
         </div>
       )}
 

@@ -221,6 +221,8 @@ class RunNextStep(BaseModel):
     command: str | None = None
     copy_text: str | None = None
     side_effects: str | None = None
+    #: the command starts, resumes or stops work, rather than only reading
+    acts: bool = False
 
 
 class RunSummary(BaseModel):

@@ -162,6 +162,7 @@ def build_summary(atelier: Any, flow_id: str) -> RunSummary:
                 command=step.command,
                 copy_text=prefix + step.command if step.command else None,
                 side_effects=step.side_effects,
+                acts=_changes_things(step.command),
             )
         )
     if parent_flow_id and settled and report.observed.state != "completed":

@@ -51,7 +51,8 @@ function view(flowId: string, status: string, finish: string): RunView {
   };
 }
 
-const RESUME = "cd '/work/my project' && atelier run --resume 20261021_c8545b37_two";
+const RESUME = "atelier run --resume 20261021_c8545b37_two";
+const RESUME_COPY = `cd '/work/my project' && ${RESUME}`;
 
 function summary(over: Partial<RunSummary>): RunSummary {
   return {
@@ -80,9 +81,17 @@ function summary(over: Partial<RunSummary>): RunSummary {
     nextSteps: [
       {
         what: "continue the run, keeping what already completed",
-        command: "atelier run --resume 20261021_c8545b37_two",
-        copyText: RESUME,
+        command: RESUME,
+        copyText: RESUME_COPY,
         sideEffects: "runs the tasks this run did not complete",
+        acts: true,
+      },
+      {
+        what: "read the whole run",
+        command: "atelier logs 20261021_c8545b37_two --show all",
+        copyText: "cd '/work/my project' && atelier logs 20261021_c8545b37_two --show all",
+        sideEffects: null,
+        acts: false,
       },
     ],
     ...over,
@@ -98,7 +107,7 @@ const COMPLETED = summary({
     { task: "prepare", status: "completed", state: "text", text: "PREPARED\n", chars: 9, truncated: false },
     { task: "finish", status: "completed", state: "text", text: "FINISHED\n", chars: 9, truncated: false },
   ],
-  nextSteps: [{ what: "this run finished; there is nothing to recover", command: null, copyText: null, sideEffects: null }],
+  nextSteps: [{ what: "this run finished; there is nothing to recover", command: null, copyText: null, sideEffects: null, acts: false }],
 });
 
 let navigate: (to: string) => void = () => {};
@@ -215,6 +224,35 @@ describe("run page results and next step", () => {
     expect(screen.getByText(/first 8 of 50000 characters/)).toBeTruthy();
     expect(screen.getByText(/atelier outputs 20261021_c8545b37_two/)).toBeTruthy();
     expect(screen.getByText("Saved an empty result.")).toBeTruthy();
+  });
+
+  it("lists the recovery first and copies it with the project folder", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderAt(`/runs/${FAILED_ID}`);
+    await screen.findByTestId("run-summary-loading");
+    await answer(0, summary({ nextSteps: [...summary({}).nextSteps].reverse() }));
+
+    expect(screen.getAllByRole("listitem")[0].textContent).toContain(RESUME);
+    await act(async () => fireEvent.click(screen.getByTestId("copy-step-0")));
+    expect(writeText).toHaveBeenCalledWith(RESUME_COPY);
+    expect(screen.getByTestId("copy-step-0").textContent).toBe("copied");
+  });
+
+  it("points a nested run's recovery at the run that started it", async () => {
+    renderAt(`/runs/${FAILED_ID}`);
+    await screen.findByTestId("run-summary-loading");
+    await answer(
+      0,
+      summary({
+        parentFlowId: "20261021_bcbcb018_outer",
+        parentTask: "call",
+        nextSteps: [{ what: "recover it from that run's page", command: null, copyText: null, sideEffects: null, acts: false }],
+      }),
+    );
+    expect(
+      screen.getByText("Open the run that started this one").getAttribute("href"),
+    ).toBe("/runs/20261021_bcbcb018_outer");
   });
 
   it("says so when copying is refused, without claiming it copied", async () => {

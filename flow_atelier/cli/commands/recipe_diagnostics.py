@@ -123,13 +123,23 @@ def _suggest(word: str, options: list[str]) -> str:
 def validation_errors(exc: ValidationError, source: RecipeSource) -> list[str]:
     """Render every Pydantic problem with a file line, task and concrete repair."""
     messages = []
-    for error in exc.errors():
+    errors = sorted(
+        exc.errors(),
+        key=lambda error: not (
+            error["type"] == "list_type" and error["loc"][-1:] == ("tasks",)
+        ),
+    )
+    for error in errors:
         loc = tuple(error.get("loc", ()))
         line, task_path, field = source.locate(loc)
         kind = error.get("type", "")
         raw = str(error.get("msg", ""))
         raw = raw.removeprefix("Value error, ")
-        if kind == "missing" and field == "description":
+        if kind == "list_type" and field == "tasks":
+            value = error.get("input")
+            name = next(iter(value), "<name>") if isinstance(value, dict) else "<name>"
+            message = f"tasks must be a list; write each task as '- {name}:' (with a dash)"
+        elif kind == "missing" and field == "description":
             message = "missing description; add description: <what this step does> here"
         elif kind == "extra_forbidden" and field:
             choices = (

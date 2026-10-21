@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from textwrap import shorten
 
 import typer
 from rich.markup import escape
@@ -24,6 +25,22 @@ from flow_atelier.core.atelier import Atelier
 from flow_atelier.modules.liveness import display_status, is_crashed
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.progress import Progress
+
+
+@list_app.callback()
+def list_default(ctx: typer.Context) -> None:
+    """Show available conduits when no list subcommand is given."""
+    if ctx.invoked_subcommand is None:
+        list_conduits_cmd(json_mode=False)
+
+
+def _print_list_table(table: Table) -> None:
+    """Allow wide identifiers without squeezing the other columns out of view."""
+    for column in table.columns:
+        column.min_width = max(column.min_width or 0, len(str(column.header)))
+    # Each column has two padding cells and a border, plus the opening border.
+    minimum_width = sum(column.min_width for column in table.columns) + 3 * len(table.columns) + 1
+    console.print(table, width=max(console.width, minimum_width), soft_wrap=True)
 
 
 @list_app.command("conduits")
@@ -78,7 +95,14 @@ def list_conduits_cmd(
     if not rows:
         console.print("[yellow]no conduits found[/yellow]")
         return
-    table = Table("name", "source", "description", "tasks", "inputs")
+    table = Table()
+    table.add_column(
+        "name", no_wrap=True, overflow="ignore", min_width=max(len(str(r["name"])) for r in rows),
+    )
+    table.add_column("source", no_wrap=True, min_width=7)
+    table.add_column("description", no_wrap=True, max_width=50)
+    table.add_column("tasks", no_wrap=True)
+    table.add_column("inputs", no_wrap=True)
     for r in rows:
         source_style = "cyan" if r["source"] == "project" else "magenta"
         if not r["readable"]:
@@ -86,7 +110,7 @@ def list_conduits_cmd(
             tasks_cell = "?"
             inputs_cell = "?"
         else:
-            description_cell = escape(str(r["description"]))
+            description_cell = escape(shorten(str(r["description"]), width=50, placeholder="…"))
             tasks_cell = str(r["tasks"])
             inputs_cell = str(r["inputs"])
         table.add_row(
@@ -96,7 +120,7 @@ def list_conduits_cmd(
             tasks_cell,
             inputs_cell,
         )
-    console.print(table)
+    _print_list_table(table)
 
 
 @list_app.command("flows")
@@ -168,9 +192,16 @@ def list_flows_cmd(
 
     table = Table()
     # flow_id must not be ellipsised: users need to copy it whole.
-    table.add_column("flow_id", overflow="fold", no_wrap=False)
-    for col in ("conduit", "status", "started", "duration", "tasks"):
-        table.add_column(col)
+    table.add_column(
+        "flow_id", overflow="ignore", no_wrap=True,
+        min_width=max(len(str(r["flow_id"])) for r in rows),
+    )
+    table.add_column(
+        "conduit", overflow="ignore", no_wrap=True,
+        min_width=max(len(str(r["conduit"])) for r in rows),
+    )
+    for col in ("status", "started", "duration", "tasks"):
+        table.add_column(col, no_wrap=True)
     for r in rows:
         progress = progresses[str(r["flow_id"])]
         if progress is None:
@@ -186,4 +217,4 @@ def list_flows_cmd(
             _format_duration_seconds(_flow_duration_seconds(progress)),
             _task_status_summary(progress),
         )
-    console.print(table)
+    _print_list_table(table)

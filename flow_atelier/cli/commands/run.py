@@ -594,6 +594,8 @@ def run_cmd(
     if problems:
         for problem in problems:
             console.print(f"[red]cannot run:[/red] {escape(problem)}")
+        if any("no executor registered for tool 'harness:" in problem for problem in problems):
+            console.print("→ run atelier harness list to see installed agents")
         raise typer.Exit(code=1)
 
     _collect_missing_inputs(conduit, inputs)

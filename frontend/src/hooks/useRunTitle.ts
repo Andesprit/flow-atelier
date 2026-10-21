@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { waitingFlowIds, type LiveRun } from "@/hooks/useConduit";
 
-/** The <title> in index.html; restored when the screen owning the runs unmounts. */
+/** The <title> in index.html; restored when the owner of the runs unmounts. */
 export const BASE_TITLE = "flow-atelier";
 
 const MARK: Record<LiveRun["status"], string> = {

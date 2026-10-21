@@ -34,6 +34,8 @@ interface Props {
   refreshKey?: number;
   /** Flow to reveal as soon as it starts, so a run is watchable immediately. */
   autoOpenFlowId?: string;
+  /** Changes when the same run is asked for again, so a closed drawer reopens. */
+  autoOpenKey?: string;
   /** Live runs from the current dashboard session. */
   liveRuns: LiveRun[];
   onRespondToHitl?: (flowId: string, answers: Record<string, string>) => void;
@@ -50,6 +52,7 @@ export function FlowHistory({
   onAddSchedule,
   refreshKey,
   autoOpenFlowId,
+  autoOpenKey,
   liveRuns,
   onRespondToHitl,
   onAnswerAgentInput,
@@ -70,13 +73,14 @@ export function FlowHistory({
   const [rowHeight, setRowHeight] = useState(0);
 
   // Reveal a freshly started run without stealing focus from a drawer the user
-  // already opened. Keyed on the id, so re-renders never re-open a closed one.
+  // already opened. Keyed on the id and request key, so re-renders never
+  // re-open a closed one.
   useEffect(() => {
     if (autoOpenFlowId) {
       setActiveTab("flows");
       setSelectedFlowId(autoOpenFlowId);
     }
-  }, [autoOpenFlowId]);
+  }, [autoOpenFlowId, autoOpenKey]);
 
   useEffect(() => {
     let ignore = false;

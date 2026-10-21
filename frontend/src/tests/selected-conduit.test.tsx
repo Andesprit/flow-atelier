@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import Dashboard from "@/features/dashboard/Dashboard";
+import { LiveRunsProvider } from "@/context/LiveRunsContext";
 import { SELECTED_CONDUIT_STORAGE_KEY as KEY } from "@/constants/dashboard";
 import type { Conduit } from "@/types/conduit";
 
@@ -39,7 +40,9 @@ vi.mock("@/services/conduits", () => ({
 // object, so rerendering a constant would not pick up the changed context.
 const ui = () => (
   <MemoryRouter>
-    <Dashboard />
+    <LiveRunsProvider>
+      <Dashboard />
+    </LiveRunsProvider>
   </MemoryRouter>
 );
 

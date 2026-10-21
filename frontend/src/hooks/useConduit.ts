@@ -1,4 +1,4 @@
-import { useReducer, useRef, useCallback, useEffect } from "react";
+import { useReducer, useRef, useCallback, useEffect, useMemo } from "react";
 import { RunConduitSocket } from "@/services/api/run-conduit";
 import type {
   ServerWsMessage,
@@ -431,8 +431,9 @@ export function useConduit(opts: UseConduitOptions = {}) {
 
   const pendingRef = useRef<PendingRun[]>([]);
 
-  // Close the live-run socket when the consumer unmounts so navigating between
-  // screens doesn't leave idle connections receiving messages in the background.
+  // Close the live-run socket when the owner unmounts. LiveRunsProvider owns
+  // the app's sessions above the routes, so that is the tab going away, never a
+  // move between screens; closing makes the server cancel this socket's runs.
   useEffect(() => {
     return () => {
       socketRef.current?.close();
@@ -440,14 +441,14 @@ export function useConduit(opts: UseConduitOptions = {}) {
     };
   }, []);
 
-  const liveRuns = Array.from(state.runs.values());
+  const liveRuns = useMemo(() => Array.from(state.runs.values()), [state.runs]);
 
   // Closing this socket makes the server cancel every run started on it
   // (routes/ws.py runs `broker.cancel_all()` on disconnect), and a tab that
   // closes, reloads or leaves the site closes the socket. So while a run is
   // in flight, ask first: the browser shows its own leave-page prompt when
-  // this event is cancelled. In-app navigation does not fire it; that path
-  // still kills the runs and is left alone here on purpose.
+  // this event is cancelled. In-app navigation does not fire it and needs no
+  // guard: the session outlives the screen (LiveRunsProvider).
   const running = liveRuns.some((r) => r.status === "running");
   useEffect(() => {
     if (!running) return;
@@ -655,5 +656,8 @@ export function useConduit(opts: UseConduitOptions = {}) {
     [],
   );
 
-  return { run, cancel, resume, answerHITL, answerAgentInput, liveRuns } as const;
+  return useMemo(
+    () => ({ run, cancel, resume, answerHITL, answerAgentInput, liveRuns }),
+    [run, cancel, resume, answerHITL, answerAgentInput, liveRuns],
+  );
 }

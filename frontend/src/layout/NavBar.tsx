@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 import { cn } from "@lib/cn";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotifyToggle } from "./NotifyToggle";
+import { ActiveWork } from "./ActiveWork";
 
 const NAV = [
   { to: "/dashboard", label: "dashboard" },
@@ -49,6 +50,7 @@ export function TopBar() {
           </NavLink>
         ))}
       </nav>
+      <ActiveWork />
       <NotifyToggle />
       <ThemeToggle />
     </header>

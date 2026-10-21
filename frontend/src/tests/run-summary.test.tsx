@@ -177,6 +177,51 @@ describe("run page results and next step", () => {
     expect(screen.queryByTestId("run-failures")).toBeNull();
   });
 
+  it("drops crashed-run advice when a new attempt starts on the same task", async () => {
+    const attempt = (startedAt: string): RunView => ({
+      ...view(FAILED_ID, "running", "running"),
+      startedAt,
+    });
+    onOpen = (feed) => feed.handlers.onFlow(attempt("2026-10-21T12:00:00Z"));
+    renderAt(`/runs/${FAILED_ID}`);
+    await screen.findByTestId("run-summary-loading");
+    await answer(
+      0,
+      summary({ status: "running", observedState: "crashed", failures: [] }),
+    );
+    expect(screen.getByText(RESUME)).toBeTruthy();
+
+    // Same status, tasks and finish time; only the attempt's start differs.
+    act(() => feeds[0].handlers.onFlow(attempt("2026-10-21T12:01:00Z")));
+    expect(screen.queryByText(RESUME)).toBeNull();
+    expect(asked).toHaveLength(2);
+
+    // A late second answer for the old attempt changes nothing.
+    await act(async () => asked[0].resolve(summary({ status: "running" })));
+    expect(screen.queryByText(RESUME)).toBeNull();
+
+    await answer(
+      1,
+      summary({
+        status: "running",
+        observedState: "running",
+        observedNote: "the runner is alive",
+        failures: [],
+        nextSteps: [
+          {
+            what: "do not resume: this run's runner is alive",
+            command: "atelier logs 20261021_c8545b37_two --follow",
+            copyText: "cd '/work/my project' && atelier logs 20261021_c8545b37_two --follow",
+            sideEffects: null,
+            acts: false,
+          },
+        ],
+      }),
+    );
+    expect(screen.getByText(/do not resume/)).toBeTruthy();
+    expect(screen.queryByText(/--resume/)).toBeNull();
+  });
+
   it("does not refetch for a log line", async () => {
     renderAt(`/runs/${FAILED_ID}`);
     await screen.findByTestId("run-summary-loading");

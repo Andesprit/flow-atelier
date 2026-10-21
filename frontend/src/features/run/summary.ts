@@ -3,12 +3,14 @@ import { fetchRunSummary } from "@/services/api/runs";
 import type { RunSummary, RunView } from "@/types/run";
 
 /**
- * What the summary must agree with: the run's status, finish time and each
- * task's status and round. A log line changes none of these, so following a
- * log never refetches; a resume, a failure or a finish always does.
+ * What the summary must agree with: the run's start time (a resume starts a
+ * new attempt, possibly back on the same task and round), status, finish time
+ * and each task's status and round. A log line changes none of these, so
+ * following a log never refetches; a resume, a failure or a finish always does.
  */
 export function summaryRevision(view: RunView): string {
   return JSON.stringify([
+    view.startedAt,
     view.status,
     view.finishedAt,
     view.tasks.map((t) => [t.name, t.status, t.iteration]),

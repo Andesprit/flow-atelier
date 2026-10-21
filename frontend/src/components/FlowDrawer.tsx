@@ -763,7 +763,7 @@ export function AgentInputSection({
 
 /* ── HITL form ────────────────────────────────────────────────────────────── */
 
-function HitlSection({
+export function HitlSection({
   hitl,
   responses,
   onRespond,
@@ -780,6 +780,16 @@ function HitlSection({
   const [values, setValues] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<string[]>([]);
 
+  // Start empty for a new question only. Submitting leaves the draft alone: a
+  // sent answer removes the question, and a refused one keeps what was typed.
+  const questionKey = hitl.key ?? hitl.taskName;
+  const [shownKey, setShownKey] = useState(questionKey);
+  if (shownKey !== questionKey) {
+    setShownKey(questionKey);
+    setValues({});
+    setErrors([]);
+  }
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed: Record<string, string> = {};
@@ -795,7 +805,6 @@ function HitlSection({
     }
     setErrors([]);
     onRespond?.(trimmed);
-    setValues({});
   };
 
   return (

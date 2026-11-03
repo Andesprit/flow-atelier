@@ -121,6 +121,8 @@ enterprise scheduling — flow-atelier deliberately does none of that.
 > **Note on scope.** flow-atelier runs shell commands and AI agents on the
 > machine it is installed on. It is a local developer tool, not a hosted
 > multi-user service. See [Security](#security) before exposing it on a network.
+> Agents run with full permissions by default, so they can edit files and run
+> commands. See [agent permissions](docs/guide.md#security) to limit them.
 
 
 

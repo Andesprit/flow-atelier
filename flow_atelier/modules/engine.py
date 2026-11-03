@@ -53,6 +53,7 @@ from flow_atelier.modules.workspace import workspace_note
 from flow_atelier.schemas.conduit import (
     CONDUIT_NAME_RE,
     MAX_NESTED_CONDUIT_DEPTH,
+    AgentPermissions,
     Conduit,
     TaskDefinition,
     ToolType,
@@ -104,6 +105,15 @@ BACKSTOP_GRACE_SECONDS = 5
 # retry, and how long to wait when the agent did not say when it resets.
 USAGE_LIMIT_MARGIN_SECONDS = 60
 USAGE_LIMIT_UNKNOWN_RESET_SECONDS = 1800
+
+# Printed once per run when an agent task starts with full permissions nobody
+# chose. Choosing any level, full included, silences it.
+PERMISSIONS_NOTICE = (
+    "[flow-atelier] note: agents run with full permissions (they can edit files "
+    "and run commands). Set permissions: edits or read-only on the task, or "
+    "ATELIER_AGENT_PERMISSIONS for every run, to limit them; see "
+    "https://github.com/Andesprit/flow-atelier/blob/main/docs/guide.md#security"
+)
 
 
 def _now() -> str:
@@ -387,6 +397,7 @@ class Engine:
         loop_history_limit: int = 10,
         loop_history_entry_chars: int = 40000,
         usage_limit_max_wait: float = 21600,
+        agent_permissions: AgentPermissions | None = None,
     ) -> None:
         """Wire the engine with its executor registry and persistence store.
 
@@ -399,14 +410,57 @@ class Engine:
         :param usage_limit_max_wait: seconds one task may spend waiting for
             its agent's usage limit to reset before it fails; <= 0 fails at
             once.
+        :param agent_permissions: what agent tasks may do when a task names
+            no ``permissions`` of its own; ``None`` when nobody chose, which
+            runs them with ``full`` permissions and prints
+            :data:`PERMISSIONS_NOTICE`.
         """
         self.executors = executors
         self.store = store
         self.loop_history_limit = loop_history_limit
         self.loop_history_entry_chars = loop_history_entry_chars
         self.usage_limit_max_wait = usage_limit_max_wait
+        self.agent_permissions = agent_permissions
         # One turn at a time per named agent session, keyed by (scope, name).
         self._session_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        # Top-level runs that already printed PERMISSIONS_NOTICE.
+        self._permissions_noticed: set[str] = set()
+
+    async def _notice_permissions(
+        self, t: TaskDefinition, conduit: Conduit, scope: str, flow_id: str, iteration: int
+    ) -> None:
+        """Say once per run that an agent runs with permissions nobody chose.
+
+        Not for a conduit whose ``interaction.permissions`` sends requests to
+        a person or a supervisor: they see each request before it is allowed.
+        The line goes to stderr and into the task's steps, so the run page
+        shows it too. ``atelier logs`` does not: it shows a finished try's
+        steps from its log entry, which the line is not part of.
+
+        :param t: the task about to run.
+        :param conduit: the conduit it belongs to.
+        :param scope: the top-level run's flow id, shared by its nested runs.
+        :param flow_id: the flow ``t`` runs in.
+        :param iteration: the iteration ``t`` starts at.
+        """
+        if (
+            not t.tool.startswith("harness:")
+            or t.permissions is not None
+            or self.agent_permissions is not None
+            or (conduit.interaction and conduit.interaction.permissions != "approve_all")
+            or scope in self._permissions_noticed
+        ):
+            return
+        self._permissions_noticed.add(scope)
+        print(PERMISSIONS_NOTICE, file=sys.stderr, flush=True)
+        await self.store.append_step(
+            flow_id,
+            StepRecord(
+                task=t.name,
+                iteration=iteration,
+                step=IntermediateStep(kind=StepKind.interaction, text=PERMISSIONS_NOTICE),
+            ),
+        )
 
     def _usage_limit_wait(
         self, result: ExecutionResult, waited: float
@@ -979,6 +1033,9 @@ class Engine:
                         failed = True
                         failure_error = ValueError(reason)
                     return
+                await self._notice_permissions(
+                    t, conduit, session_scope, flow_id, start_iteration
+                )
 
                 # An explicit per-task timeout supersedes the conduit-wide
                 # ceiling for this task only; None inherits conduit.timeout.
@@ -990,6 +1047,7 @@ class Engine:
                     flow_id=flow_id,
                     store=self.store,
                     inputs=runtime_inputs,
+                    agent_permissions=self.agent_permissions,
                     interaction=conduit.interaction or InteractionPolicy(),
                     interactive_harnesses=conduit.interaction is not None,
                     conduit_description=conduit.description,

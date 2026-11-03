@@ -1352,7 +1352,8 @@ same conversation travels over `/ws/run-conduit`: the agent's prose is
 streamed to the client as it is written, and the client sends the reply
 back on the same socket.
 
-Tool permission requests are automatically approved by default. Add a
+Tool permission requests are automatically approved by default. Set
+`permissions` to limit them (see [Security](#security)), or add a
 conduit-level `interaction` policy to choose human or supervisor decisions.
 
 Non-interactive tasks run one turn and stop.
@@ -1368,7 +1369,9 @@ atelier ask "Help me write a specification" --path /absolute/path/to/project
 `--path` is required and becomes Claude's working directory. Claude's
 questions are read from stdin just like any other interactive harness task.
 The resulting flow is still recorded under the `.atelier/flows/` directory
-from which you invoked `atelier`.
+from which you invoked `atelier`. The agent runs with full permissions unless
+`ATELIER_AGENT_PERMISSIONS` (in the environment or in `.env`) sets another
+level; see [Security](#security).
 
 #### Conduit-wide human and supervisor policies
 
@@ -1726,6 +1729,62 @@ the direct form.
 **Conduits are code.** See the warning under
 [Installing conduit packages](#installing-conduit-packages): running a conduit
 runs whatever shell commands it contains.
+
+**Agents run with full permissions by default.** An agent task can edit any
+file and run any command it wants. Atelier switches the agent to the most
+permissive mode it knows, such as Claude Code's `bypassPermissions`, and
+approves every permission request the agent sends. A prompt, or text the agent
+reads in the project, can lead it to do damage. Limit what it may do with
+`permissions`:
+
+| Value | What the agent may do without asking |
+| --- | --- |
+| `full` | Everything. This is the default. |
+| `edits` | Read and change files. Atelier picks an accept-edits mode when the agent has one, such as Claude Code's `acceptEdits`. Otherwise it picks a read-only mode that asks before each edit, such as Codex's `read-only`. It allows requests to read, search, edit, move or delete files, and rejects the rest, such as running a command or fetching a URL. |
+| `read-only` | Only read, as far as Atelier is asked (see below). Atelier picks a read-only mode such as Codex's `read-only`, else keeps the agent's own mode (leaving a bypass mode first), and rejects every request. |
+
+Set it on one task with `permissions:`, or for every agent task with
+`ATELIER_AGENT_PERMISSIONS` in the environment or in `.env`. The task field
+wins. `atelier plan` shows the level of each agent task. `atelier harness check`
+shows the mode runs will use at the `ATELIER_AGENT_PERMISSIONS` level.
+
+```yaml
+- review:
+    description: Review the change
+    task: Review the last commit and list what must be fixed.
+    tool: harness:codex
+    permissions: read-only
+```
+
+While neither is set, each run prints one line that says agents have full
+permissions, and keeps it with the first agent task's steps, so the run page
+shows it too. Setting either one, even to `full`, removes that line. A conduit
+whose `interaction.permissions` sends requests to a person or a supervisor does
+not print it.
+
+The levels are not a sandbox. Atelier only chooses the agent's mode and answers
+the requests the agent sends. An agent can still do what its own mode allows
+without asking. For example, Codex in its `read-only` mode still runs commands
+that only read, inside its own sandbox. An agent with none of these modes keeps
+the mode it starts in (Atelier only moves it out of a bypass mode), and that
+mode decides what it does unasked.
+
+The agent's own settings still apply at every level. Claude Code loads your
+user settings and the project's `.claude/settings.json` and
+`.claude/settings.local.json`. Tools that their allow rules pre-approve run
+without asking, and their hooks run shell commands by themselves. Neither
+reaches Atelier, so `edits` and `read-only` cannot stop them; other agents'
+own config files can do the same. A checkout you do not trust can ship such a
+file, so `read-only` does not make it safe to review: check its `.claude/`
+folder first, or run the agent in a container or a virtual machine.
+
+A conduit whose `interaction.permissions` sends requests to a person or a
+supervisor still applies the level first. With `edits` or `read-only` Atelier
+then takes a read-only mode when the agent has one, such as Codex's
+`read-only`, so the person is still asked about each edit; it never takes an
+accept-edits mode there. A request the level does not allow is rejected
+without asking anyone. Only the rest are asked. See
+[interaction policies](interaction.md).
 
 ## Folder layout
 

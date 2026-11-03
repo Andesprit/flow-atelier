@@ -136,6 +136,7 @@ class Atelier:
             loop_history_limit=self.settings.loop_history_limit,
             loop_history_entry_chars=self.settings.loop_history_entry_chars,
             usage_limit_max_wait=self.settings.usage_limit_max_wait,
+            agent_permissions=self.settings.agent_permissions,
         )
         self.schedule_store = ScheduleStore(self.settings.atelier_dir)
 

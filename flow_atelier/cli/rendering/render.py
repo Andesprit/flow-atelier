@@ -698,6 +698,8 @@ def _render_planned_task(task: PlannedTask, console: Console, indent: str = "") 
     head.append(f"  [{task.tool}]", style="dim")
     if task.recipe_tool:
         head.append(f"  ⇄ --agent (recipe: {task.recipe_tool})", style="cyan")
+    if task.permissions:
+        head.append(f"  permissions: {task.permissions}", style="dim")
     if task.isolated:
         head.append("  ⌂ --worktree (own checkout)", style="green")
     if task.is_loop and task.loop_text:

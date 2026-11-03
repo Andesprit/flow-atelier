@@ -148,6 +148,7 @@ class ProbeResult:
         — logging in is the user's job, done with the agent's own CLI.
     :param modes: session mode ids the agent offers.
     :param permissive_mode: the mode a real run would switch to, if any.
+    :param current_mode: the mode the agent starts a session in.
     :param models: model ids the agent offers, usable as
         ``harness:<name>:<model>``.
     :param current_model: the model the agent starts a session on.
@@ -167,6 +168,7 @@ class ProbeResult:
     auth_methods: list[str] = field(default_factory=list)
     modes: list[str] = field(default_factory=list)
     permissive_mode: str = ""
+    current_mode: str = ""
     models: list[str] = field(default_factory=list)
     current_model: str = ""
     efforts: list[str] = field(default_factory=list)
@@ -463,34 +465,99 @@ def _payload_snippet(value: Any) -> str:
         text = str(value)
     return text[:TOOL_PAYLOAD_CHARS]
 
-# Mode-id keyword tiers in descending permissiveness. Each ACP agent
-# advertises its own mode ids; we pick the most permissive one available so
-# the agent never has to ask for tool permission. Keyword matched against
-# ``id`` case-insensitively.
+# Mode-id keyword tiers in descending permissiveness, for tasks with ``full``
+# permissions. Each ACP agent advertises its own mode ids; we pick the most
+# permissive one available so the agent rarely has to ask for tool
+# permission. Keyword matched against ``id`` case-insensitively.
+#
+# The pinned adapters offer: claude-agent-acp 0.62.0 ``default``,
+# ``acceptEdits``, ``plan``, ``dontAsk``, ``auto`` when the model supports it
+# and, unless it runs as root, ``bypassPermissions``; codex-acp 1.1.7
+# ``read-only``, ``agent`` and ``agent-full-access``. No tier matches a
+# codex-acp mode, so Codex stays in its default ``agent`` mode (it edits the
+# workspace and asks before leaving its sandbox) and the auto-approve
+# backstop answers what it asks.
 PERMISSIVE_MODE_KEYWORDS: tuple[str, ...] = (
-    "bypass",      # claude-code-acp's bypassPermissions
+    "bypass",      # claude-agent-acp's bypassPermissions
     "yolo",
-    "danger",      # codex-acp's danger-full-access family
+    "danger",
     "full-auto",
     "full_auto",
-    "accept",      # claude-code-acp's acceptEdits (weaker, but still skips edit prompts)
-    "auto",
+    "accept",      # claude-agent-acp's acceptEdits (weaker, but still skips edit prompts)
+    "auto",        # claude-agent-acp's auto (a model classifier decides each prompt)
 )
 
+# The mode a safer level switches to, when the agent offers one. ``edits``
+# takes an accept-edits mode (claude-agent-acp's acceptEdits), else a
+# read-only mode: codex-acp's read-only asks before each edit and each command
+# that needs more than reading, so the edit is allowed and the command
+# rejected. ``read-only`` takes a read-only mode. Both leave codex-acp's
+# default mode, which edits files and runs commands without asking.
+LIMITED_MODE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "edits": ("edit", "read-only", "readonly"),
+    "read-only": ("read-only", "readonly"),
+}
 
-def _pick_permissive_mode(state: SessionModeState | None) -> str | None:
-    """Return the most permissive mode id from ``state``, or ``None``.
+# Mode ids a session moves to when it starts in one that skips permission
+# requests, so that a person, a supervisor or a safer level gets asked.
+PROMPTING_MODE_IDS: frozenset[str] = frozenset({"default", "normal", "ask", "code"})
 
-    Walks :data:`PERMISSIVE_MODE_KEYWORDS` and returns the first
-    available mode whose ``id`` contains a keyword (case-insensitive).
+# ACP tool-call kinds an ``edits`` task may be allowed: reading and changing
+# files. Every other request (execute, fetch, switch_mode, ...) is rejected.
+EDIT_TOOL_KINDS: frozenset[str] = frozenset({"read", "search", "edit", "delete", "move"})
+
+
+def limited_mode(available: list[str], current: str, level: str, routed: bool = False) -> str:
+    """Return the mode a run at a safer ``level`` uses; ``harness check`` asks too.
+
+    A mode :data:`LIMITED_MODE_KEYWORDS` names for the level wins. When a
+    person or a supervisor answers the requests, only a read-only mode is
+    taken: an accept-edits mode would stop them being asked about edits.
+    Without such a mode the session keeps ``current``, unless that mode skips
+    permission requests (an agent's own settings can start it in one); then it
+    moves to a mode that asks.
+
+    :param available: the mode ids the agent offers.
+    :param current: the mode id the session starts in.
+    :param level: ``edits`` or ``read-only``.
+    :param routed: a person or a supervisor answers the requests.
+    :returns: the mode id to use, ``current`` when no switch is needed.
+    :raises RuntimeError: when ``current`` skips permission requests and no
+        mode to switch to is offered.
+    """
+    for keyword in LIMITED_MODE_KEYWORDS["read-only" if routed else level]:
+        for mode in available:
+            if keyword in mode.lower():
+                return mode
+    if not any(word in current.lower() for word in PERMISSIVE_MODE_KEYWORDS):
+        return current
+    for mode in available:
+        if mode.lower() in PROMPTING_MODE_IDS:
+            return mode
+    raise RuntimeError(
+        f"permissions {level}: the agent starts in mode {current!r}, which skips "
+        "permission requests, and offers no mode to switch to"
+    )
+
+
+def _pick_permissive_mode(
+    state: SessionModeState | None,
+    keywords: tuple[str, ...] = PERMISSIVE_MODE_KEYWORDS,
+) -> str | None:
+    """Return the mode id from ``state`` that ``keywords`` want most, or ``None``.
+
+    Walks ``keywords`` and returns the first available mode whose ``id``
+    contains a keyword (case-insensitive). By default the keywords are
+    :data:`PERMISSIVE_MODE_KEYWORDS`, so the most permissive mode wins.
 
     :param state: ACP session mode state advertised by the agent, or ``None``.
-    :returns: the most permissive matching mode id, or ``None`` if no match.
+    :param keywords: keyword tiers to walk, most wanted first.
+    :returns: the first matching mode id, or ``None`` if no match.
     """
     if state is None or not state.available_modes:
         return None
     available = state.available_modes
-    for keyword in PERMISSIVE_MODE_KEYWORDS:
+    for keyword in keywords:
         for mode in available:
             if keyword in mode.id.lower():
                 return mode.id
@@ -629,6 +696,10 @@ class _BufferingClient:
         self.session: list[dict[str, Any]] = []
         self.router: InteractionRouter | None = None
         self.approve_all = True
+        # The task's permission level: ``full``, ``edits`` or ``read-only``.
+        self.permissions = "full"
+        # One line per request the level rejected, for a failed result's stderr.
+        self.rejections: list[str] = []
         self.supervisor_run = False
         self.interaction_error: Exception | None = None
         # Set when an agent message chunk carried only non-text content
@@ -911,6 +982,10 @@ class _BufferingClient:
     ) -> RequestPermissionResponse:
         """Route tool permissions, retaining automatic approval for legacy runs.
 
+        The task's :attr:`permissions` level comes first: a request it does
+        not allow is rejected without asking anyone, and only the rest reach
+        the interaction router or the automatic approval.
+
         :param options: list of permission options offered by the agent.
         :param session_id: id of the requesting session (unused).
         :param tool_call: the complete pending tool call.
@@ -924,6 +999,10 @@ class _BufferingClient:
         })
         if self.supervisor_run or self.interaction_error is not None:
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+        if self.permissions != "full" and not (
+            self.permissions == "edits" and tool_call.kind in EDIT_TOOL_KINDS
+        ):
+            return await self._reject(options, tool_call)
         if not self.approve_all:
             try:
                 if self.router is None:
@@ -958,6 +1037,40 @@ class _BufferingClient:
         if chosen is None:
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
         self.session.append({"source": "approve_all", "option_id": chosen.option_id})
+        return RequestPermissionResponse(
+            outcome=AllowedOutcome(outcome="selected", option_id=chosen.option_id)
+        )
+
+    async def _reject(self, options, tool_call) -> RequestPermissionResponse:
+        """Refuse a request the task's :attr:`permissions` level does not allow.
+
+        A reject option is selected rather than the turn cancelled, so the
+        agent hears "no" and carries on, the way it does when a person
+        refuses. The refusal is shown, so a task that could not run a command
+        says why.
+
+        :param options: permission options offered by the agent.
+        :param tool_call: the pending tool call being refused.
+        :returns: the selected reject option, or a cancelled
+            :class:`DeniedOutcome` when the agent offered none.
+        """
+        chosen = (
+            next((o for o in options if (o.kind or "") == "reject_once"), None)
+            or next((o for o in options if (o.kind or "").startswith("reject")), None)
+        )
+        self.session.append({
+            "source": "permissions", "level": self.permissions,
+            "option_id": chosen.option_id if chosen else None,
+        })
+        await self.await_pending_updates()
+        await self.flush_pending()
+        what = tool_call.title or tool_call.kind or "tool call"
+        line = f"permissions {self.permissions} rejected: {what}"
+        if line not in self.rejections:
+            self.rejections.append(line)
+        await self._record(IntermediateStep(kind=StepKind.interaction, text=line))
+        if chosen is None:
+            return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
         return RequestPermissionResponse(
             outcome=AllowedOutcome(outcome="selected", option_id=chosen.option_id)
         )
@@ -1268,6 +1381,7 @@ class AcpHarnessExecutor(ExecutorBase):
                 modes = getattr(sess, "modes", None)
                 partial.modes = [m.id for m in (modes.available_modes if modes else [])]
                 partial.permissive_mode = _pick_permissive_mode(modes) or ""
+                partial.current_mode = modes.current_mode_id if modes else ""
                 # Resolve model and effort exactly as a run would, so a check
                 # of `harness:<name>:<model>` reports the efforts *that* model
                 # offers, and a value the agent refuses is reported as the
@@ -1379,6 +1493,7 @@ class AcpHarnessExecutor(ExecutorBase):
 
         client.supervisor_run = context.supervisor_run
         client.approve_all = context.interaction.permissions == "approve_all"
+        client.permissions = task.permissions or context.agent_permissions or "full"
         client.router = InteractionRouter(task, context, self.sink, client.session, client._record)
         agent_stderr: deque[str] = deque(maxlen=AGENT_STDERR_LINES)
 
@@ -1421,6 +1536,9 @@ class AcpHarnessExecutor(ExecutorBase):
         if client.interaction_error is not None:
             result.exit_code = 1
             result.stderr = f"interaction failed: {client.interaction_error}"
+        if client.rejections and result.exit_code != 0:
+            note = "\n".join(client.rejections)
+            result.stderr = f"{result.stderr}\n{note}".strip() if result.stderr else note
         if client.streamed_message or interactive:
             result.live_streamed = True
         return _with_agent_stderr(result, agent_stderr)
@@ -1476,10 +1594,16 @@ class AcpHarnessExecutor(ExecutorBase):
             try:
                 init = await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
                 sess = await self._open_session(conn, init, cwd, client, resume_session)
-                if client.approve_all and not client.supervisor_run:
-                    await self._maybe_switch_to_permissive_mode(conn, sess)
-                else:
+                if client.supervisor_run:
                     await self._ensure_prompting_mode(conn, sess)
+                elif client.permissions != "full":
+                    await self._enter_limited_mode(
+                        conn, sess, client.permissions, routed=not client.approve_all
+                    )
+                elif not client.approve_all:
+                    await self._ensure_prompting_mode(conn, sess)
+                else:
+                    await self._maybe_switch_to_permissive_mode(conn, sess)
                 await self._apply_selection(conn, sess)
                 client.ready_at = time.monotonic()
 
@@ -1570,9 +1694,9 @@ class AcpHarnessExecutor(ExecutorBase):
 
         ACP session modes are the upstream "skip permissions" knob (see
         https://agentclientprotocol.com/protocol/session-modes). Each agent
-        advertises its own mode ids (e.g. claude-code-acp's
-        ``bypassPermissions``, codex-acp's ``danger-full-access``) under
-        ``new_session.modes``. We pick the most permissive one and switch
+        advertises its own mode ids (e.g. claude-agent-acp's
+        ``bypassPermissions``) under ``new_session.modes``; see
+        :data:`PERMISSIVE_MODE_KEYWORDS`. We pick the most permissive one and switch
         before the first prompt so the agent never has to call
         ``session/request_permission``. A bad mode switch is non-fatal —
         the auto-approve backstop in :meth:`_BufferingClient.request_permission`
@@ -1589,6 +1713,29 @@ class AcpHarnessExecutor(ExecutorBase):
             await conn.set_session_mode(mode_id=picked, session_id=sess.session_id)
         except Exception as exc:  # noqa: BLE001
             logger.debug("set_session_mode(%s) failed: %s", picked, exc)
+
+    @staticmethod
+    async def _enter_limited_mode(conn, sess, level: str, routed: bool = False) -> None:
+        """Switch to the mode :func:`limited_mode` picks for a safer ``level``.
+
+        Unlike the permissive switch this is not best-effort: a session left
+        in a mode that never asks would do what ``level`` forbids.
+
+        :param conn: the ACP connection used to issue ``set_session_mode``.
+        :param sess: the new-session response carrying advertised mode ids.
+        :param level: ``edits`` or ``read-only``.
+        :param routed: a person or a supervisor answers the requests.
+        :raises RuntimeError: when the session starts in a mode that skips
+            permission requests and offers none to switch to.
+        """
+        modes = getattr(sess, "modes", None)
+        if modes is None:
+            return
+        picked = limited_mode(
+            [m.id for m in modes.available_modes], modes.current_mode_id, level, routed
+        )
+        if picked != modes.current_mode_id:
+            await conn.set_session_mode(mode_id=picked, session_id=sess.session_id)
 
     async def _apply_selection(self, conn, sess) -> list:
         """Select :attr:`model`, then :attr:`effort`, or fail before any prompt.
@@ -1700,7 +1847,7 @@ class AcpHarnessExecutor(ExecutorBase):
         if not any(word in current for word in PERMISSIVE_MODE_KEYWORDS):
             return
         for mode in modes.available_modes:
-            if mode.id.lower() in {"default", "normal", "ask", "code"}:
+            if mode.id.lower() in PROMPTING_MODE_IDS:
                 await conn.set_session_mode(session_id=sess.session_id, mode_id=mode.id)
                 return
         raise RuntimeError("permission policy requires a non-bypass harness session mode")

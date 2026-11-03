@@ -122,8 +122,12 @@ def _build_nested_plan(
     *, parsed=None, isolation=None, ancestors: frozenset[str] = frozenset(),
 ):
     """Attach a separate static plan to each statically named child call."""
+    permissions = atelier.settings.agent_permissions
     if conduit.name in ancestors:
-        return build_plan(conduit, parsed or validate_conduit(conduit), recipe=recipe)
+        return build_plan(
+            conduit, parsed or validate_conduit(conduit), recipe=recipe,
+            agent_permissions=permissions,
+        )
     ancestors = ancestors | {conduit.name}
     children = {}
     for task in conduit.tasks:
@@ -140,7 +144,7 @@ def _build_nested_plan(
         )
     return build_plan(
         conduit, parsed or validate_conduit(conduit), recipe=recipe,
-        isolation=isolation, children=children,
+        isolation=isolation, children=children, agent_permissions=permissions,
     )
 
 

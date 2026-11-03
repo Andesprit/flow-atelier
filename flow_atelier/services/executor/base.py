@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from flow_atelier.schemas.conduit import TaskDefinition
+from flow_atelier.schemas.conduit import AgentPermissions, TaskDefinition
 from flow_atelier.schemas.interaction import InteractionPolicy
 from flow_atelier.schemas.log import ExecutionResult, IntermediateStep
 from flow_atelier.services.store.base import StoreBase
@@ -75,6 +75,11 @@ class FlowContext:
     """The agent's id of an earlier session this invocation should continue,
     set by the engine for a task that names a ``session``. ``None`` opens a
     new session."""
+
+    agent_permissions: AgentPermissions | None = None
+    """What agent tasks may do without asking when a task names no
+    ``permissions`` of its own (``ATELIER_AGENT_PERMISSIONS``). ``None`` when
+    unset, which runs them with ``full`` permissions."""
 
     interaction: InteractionPolicy = field(default_factory=InteractionPolicy)
     supervisor_executor: ExecutorBase | None = None

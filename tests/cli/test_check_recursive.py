@@ -521,6 +521,30 @@ def test_an_unsupplied_required_child_input_fails_before_anything_runs(workdir):
     assert "finding: '{{inputs.finding}}'" in rows[0]["error"]
 
 
+def test_a_shell_body_reading_an_unforwarded_input_variable_fails(workdir):
+    """"$INPUT_CONFIG_FILE" in a called shell step reads input config_file.
+
+    The key comes from the child's declarations, not from the variable's
+    spelling, and an undeclared variable may be the user's own.
+    """
+    _write(workdir, "root", _binds("root", "kid", "tone: calm"))
+    _write(
+        workdir,
+        "kid",
+        "name: kid\ndescription: d\ninputs:\n  tone:\n    description: d\n"
+        "  config_file:\n    description: d\n"
+        "tasks:\n  - name: a\n    description: a\n"
+        '    task: cat "$INPUT_CONFIG_FILE" "${INPUT_TONE_FILE}" "$INPUT_HOME_DIR"\n'
+        "    tool: tool:bash\n",
+    )
+    _, rows = _report(["root", "--recursive"], expect_exit=1)
+    error = rows[0]["error"]
+    assert "body reads $INPUT_CONFIG_FILE but this call does not forward config_file" in error
+    assert "add config_file: '{{inputs.config_file}}' under this task's inputs:" in error
+    assert "TONE" not in error, "a forwarded input read through its file is fine"
+    assert "HOME_DIR" not in error, "no call can forward an undeclared input"
+
+
 def test_a_parent_input_of_the_same_name_does_not_satisfy_the_child(workdir):
     """Inputs are forwarded per call, never inherited down the tree."""
     _write(

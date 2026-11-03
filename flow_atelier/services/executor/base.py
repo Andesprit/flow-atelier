@@ -65,6 +65,11 @@ class FlowContext:
     """Absolute install dir of the running conduit, backing ``{{conduit_dir}}``
     when an executor resolves its own templates (e.g. nested-conduit inputs).
     ``None`` when the conduit is not registered in the store."""
+    shell_env: dict[str, str] = field(default_factory=dict)
+    """The values this task's template could use, keyed by the environment
+    variable that carries them (``INPUT_<NAME>``, ``OUTPUT_<TASK>``,
+    ``LOOP_*``). Set by the engine for ``tool:bash`` steps, which export them
+    so a script reads a value without the shell parsing it as code."""
 
     resume_session: str | None = None
     """The agent's id of an earlier session this invocation should continue,

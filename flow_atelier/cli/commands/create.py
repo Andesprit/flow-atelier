@@ -33,7 +33,7 @@ def starter_conduit_yaml(name: str, description: str) -> str:
             {
                 "greet": {
                     "description": "greet someone",
-                    "task": "echo hello {{inputs.name}}",
+                    "task": 'echo "hello $INPUT_NAME"',
                     "tool": "tool:bash",
                     "depends_on": [],
                 }
@@ -79,7 +79,7 @@ _HELLO = {
         {
             "name": "greet",
             "description": "greet someone",
-            "task": "echo hello {{inputs.name}}",
+            "task": 'echo "hello $INPUT_NAME"',
             "tool": "tool:bash",
         }
     ],
@@ -177,7 +177,7 @@ _FIX_LOOP = {
                             "tool": "tool:bash",
                             "depends_on": ["fix"],
                             "task": (
-                                "if ( {{inputs.test_command}} ) 2>&1; then\n"
+                                "if ( eval \"${INPUT_TEST_COMMAND:?}\" ) 2>&1; then\n"
                                 "  printf 'TESTS PASSED\\n'\n"
                                 "else\n"
                                 "  printf 'TESTS FAILED\\n'\n"

@@ -47,6 +47,7 @@ from flow_atelier.modules.templating import (
     extract_task_refs,
     extract_template_refs,
     resolve,
+    shell_env,
 )
 from flow_atelier.modules.workspace import workspace_note
 from flow_atelier.schemas.conduit import (
@@ -353,6 +354,23 @@ def validate_conduit(conduit: Conduit) -> dict[str, list[Dependency]]:
                 ) from exc
 
     return parsed
+
+
+def _upstream_tasks(parsed: dict[str, list[Dependency]], name: str) -> set[str]:
+    """Return every task ``name`` depends on, directly or through others.
+
+    :param parsed: ``{task_name: [parsed deps]}`` from :func:`validate_conduit`.
+    :param name: the task whose dependency chain to collect.
+    :returns: the names of all its direct and transitive dependencies.
+    """
+    found: set[str] = set()
+    frontier = [name]
+    while frontier:
+        for dep in parsed[frontier.pop()]:
+            if dep.task not in found:
+                found.add(dep.task)
+                frontier.append(dep.task)
+    return found
 
 
 class Engine:
@@ -900,6 +918,22 @@ class Engine:
                         task_workspaces=task_workspaces,
                     )
 
+                def _shell_env(iteration: int) -> dict[str, str]:
+                    # What _render can substitute, as environment variables a
+                    # tool:bash script reads without the shell parsing them.
+                    # Outputs come from the depends_on chain only, the rule
+                    # validation holds {{<task>.output}} to: any other output
+                    # would be there or not by timing.
+                    upstream = _upstream_tasks(parsed_deps, t.name)
+                    return shell_env(
+                        runtime_inputs,
+                        {n: out for n, out in outputs.items() if n in upstream},
+                        unavailable_tasks=unavailable, loop_history=loop_history,
+                        loop_history_limit=self.loop_history_limit,
+                        loop_history_entry_chars=self.loop_history_entry_chars,
+                        iteration=iteration if t.repeat > 1 else None,
+                    )
+
                 def _resolve_session() -> str | None:
                     # Resolved like the prompt, so a name can follow an input
                     # or an earlier output and start afresh when that changes.
@@ -1069,6 +1103,8 @@ class Engine:
                         # Rebound per iteration so persisted steps carry the
                         # iteration they actually belong to.
                         ctx.on_step = _make_step_sink(iteration)
+                        if t.tool == ToolType.bash:
+                            ctx.shell_env = _shell_env(iteration)
                         if iteration > start_iteration:
                             try:
                                 resolved = _resolve_task()

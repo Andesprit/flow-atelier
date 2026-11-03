@@ -505,10 +505,11 @@ the source file; pass `--input-file` again to feed it a new version.
 `--resume` is refused with `--input-file`, because resuming continues a
 flow's saved inputs rather than starting a new run.
 
-File contents are ordinary input values: a conduit that drops an input
-into a `tool:bash` command interpolates it the same way it interpolates
-anything else. `--input-file` is a convenience for passing documents, not
-a sandbox and not secret storage.
+File contents are ordinary input values. A `tool:bash` step should read
+them from `"$INPUT_<NAME>"` or the file at `"$INPUT_<NAME>_FILE"`, not
+from `{{inputs.<name>}}` in the command (see
+[Values in shell steps](#values-in-shell-steps)). `--input-file` is a
+convenience for passing documents, not a sandbox and not secret storage.
 
 ### Writing a conduit with your editor's help
 
@@ -737,7 +738,7 @@ inputs:
 tasks:
   - name: write
     description: write the summary line
-    task: "echo summary of {{inputs.finding}}"
+    task: echo "summary of $INPUT_FINDING"
     tool: tool:bash
     depends_on: []
 YAML
@@ -773,7 +774,7 @@ inputs:
 tasks:
   - name: write
     description: write the summary line
-    task: "echo {{inputs.tone}} summary of {{inputs.finding}}"
+    task: echo "$INPUT_TONE summary of $INPUT_FINDING"
     tool: tool:bash
     depends_on: []
 ```
@@ -898,12 +899,14 @@ inputs:
 tasks:
   - greet:
       description: greet someone
-      task: "echo hello {{inputs.name}}"
+      task: echo "hello $INPUT_NAME"
       tool: tool:bash
       depends_on: []
 ```
 
-Run it with `atelier run hello --input name=world`.
+Run it with `atelier run hello --input name=world`. The shell reads the input
+from the `INPUT_NAME` environment variable; see
+[Values in shell steps](#values-in-shell-steps) for why.
 
 ### A bigger conduit (`deploy_pipeline`)
 
@@ -926,7 +929,7 @@ inputs:
 tasks:
   - clone_repo:
       description: Clone
-      task: "git clone -b {{inputs.branch}} {{inputs.repo_url}} /tmp/build"
+      task: 'git clone -b "$INPUT_BRANCH" "$INPUT_REPO_URL" /tmp/build'
       tool: tool:bash
       depends_on: []
 
@@ -1027,6 +1030,75 @@ task that was skipped or hasn't completed skips the referencing task.
 neither declares nor references, so a mistyped key fails before the run
 starts.
 
+#### Values in shell steps
+
+In a `tool:bash` step, read values from environment variables, not from
+`{{...}}`. Atelier puts a `{{...}}` value into the command text before bash
+reads it, so bash runs any `$(...)`, `;` or backtick in the value, even
+inside quotes. An input, a human answer or an agent's output can then run
+commands on your machine. Bash never runs what is inside a variable. Keep the
+variable in double quotes, so spaces and `*` in the value stay as they are:
+
+```yaml
+- greet:
+    description: greet someone
+    tool: tool:bash
+    task: echo "hello $INPUT_NAME"
+```
+
+Every shell step gets these variables on top of the normal environment:
+
+- `INPUT_<NAME>` for each input, the value of `{{inputs.<name>}}`.
+- `OUTPUT_<TASK>` for each finished task in the step's `depends_on` chain,
+  the value of `{{<task>.output}}`.
+- `LOOP_ITERATION` (1, 2, ...), `LOOP_PREVIOUS` and `LOOP_HISTORY` in a
+  looping task (`repeat > 1`), the values of `{{loop.*}}`.
+
+These replace any variable of the same name already in your environment;
+every other variable passes through as before. Up to 0.12 Atelier set none of
+them, so a step that read, say, `$INPUT_TOKEN` from your environment now gets
+the `token` input instead when the conduit has one. A variable holds the value
+exactly, so `$OUTPUT_<TASK>` keeps the newline that `echo` printed at the
+end: an unquoted `{{<task>.output}}` only seemed to drop it, because bash
+read that newline as the end of the command.
+
+A step inside a `tool:conduit` loop body does not loop itself, so it gets no
+`LOOP_*` and no `OUTPUT_<TASK>` of the enclosing conduit: forward them under
+the calling task's `inputs:` (`feedback: '{{loop.previous}}'`) and read
+`$INPUT_FEEDBACK`. A variable a step does not get is empty, and `atelier
+check` warns about it.
+
+The name is in upper case, and every character that is not a letter, a digit
+or `_` becomes `_`, so input `repo-url` is `$INPUT_REPO_URL`. If two names
+give the same variable, or one name's variable is the other's `_FILE` form
+(`report` and `report_file`), the name that comes first in sorted order keeps
+it, and the other value is only reachable through `{{...}}`. Declare each run
+input the step reads under `inputs:`, so `atelier run` accepts it. A
+`tool:hitl` answer needs no declaration: `$INPUT_<NAME>` holds it once the
+human answers, and declaring it makes the run ask for it before it starts, or
+stop when no one is at the terminal.
+
+Each value is also written to a file, and `<NAME>_FILE` holds its path, for
+example `cat "$INPUT_NAME_FILE"`. The plain variables of one step hold at most
+100,000 bytes in total, one budget shared by all its values, so the programs
+the step starts keep their room for arguments. Values the command names come
+first, then the others in name order. A value that does not fit, or that has
+a NUL byte or a broken character, gets only the file form and leaves
+`<NAME>` unset, so read the file when a value can be large, for example
+`< "$OUTPUT_<TASK>_FILE"`. When the command names a variable that is left unset
+this way, the step's error output starts with a line that says so. The files
+are removed when the step ends.
+
+A command up to 32,000 bytes runs as `bash -c`, as before. A bigger one runs
+from a temporary script file, so it no longer fails with "argument list too
+long"; there `$0` names that file, which is gone when the step ends. Use
+`"$BASH"`, not `$SHELL`, to start the running bash again.
+
+`{{...}}` still works in shell steps as before. `atelier check` warns when a
+shell step puts `{{inputs.*}}`, `{{<task>.output}}` or `{{loop.*}}` straight
+into its command, and names the variable to use instead. `{{conduit_dir}}`
+and `{{<task>.workspace}}` are paths you control, so they are fine to use.
+
 ### Conditional dependencies
 
 ```
@@ -1075,7 +1147,12 @@ the try's output, then its error text. For a shell step that is its stdout
 and stderr. For a `tool:conduit` body it is the output of the body task that
 failed (and its stderr, when that task is a shell step), then a line that
 names that task and its error. The exit code is then the body's as a whole,
-usually 1, not the code of the task that failed. After a failed try,
+usually 1, not the code of the task that failed. That text is raw: whatever
+the command or the agent printed. A shell step must read it as
+`"$LOOP_PREVIOUS"`, or as `"$INPUT_<NAME>"` when a loop body gets it
+forwarded, never through `{{loop.previous}}` in the command, where any `$(...)`
+or backtick in it would run (see [Values in shell steps](#values-in-shell-steps)).
+After a failed try,
 `{{loop.previous}}` holds that failure text, not the last good output, so a
 loop that carries state from try to try (a counter, say) should read it from
 `{{loop.history}}`, which keeps the earlier tries too (the last 10 by
@@ -1636,6 +1713,15 @@ leakage, not a guarantee: it will miss a secret that does not look like one.
 The recorded logs under `.atelier/flows/<id>/` keep the **unredacted** text, so
 treat that directory as sensitive and check what you are pasting before sharing
 a terminal transcript.
+
+**Values in shell steps.** A `{{...}}` in a `tool:bash` command becomes part
+of the command before bash reads it, quoted or not. An input from a schedule,
+the API or a human answer, or an agent's output, can then run commands. Read
+values from `"$INPUT_<NAME>"` and `"$OUTPUT_<TASK>"` instead, or from the
+file at `"$OUTPUT_<TASK>_FILE"` when a value can pass 100,000 bytes, since the
+plain variable is then unset (see
+[Values in shell steps](#values-in-shell-steps)); `atelier check` warns about
+the direct form.
 
 **Conduits are code.** See the warning under
 [Installing conduit packages](#installing-conduit-packages): running a conduit

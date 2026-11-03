@@ -688,3 +688,28 @@ async def test_find_child_to_resume_skips_a_child_the_loop_counted(store):
     # Once the loop counts the try it ran in, the next try starts fresh.
     await count(1)
     assert engine.find_child_to_resume(parent, "build", "loop") is None
+
+
+@pytest.mark.parametrize("body", [
+    'set -u; echo checking; echo "$NOT_DEFINED_VAR"',
+    "no_such_test_runner_q 2>&1; echo TESTS FAILED",
+])
+async def test_the_same_bash_error_twice_trips_stagnation(store, tmp_path, body):
+    """Errors bash prints itself read the same on every try, failed or not.
+
+    :param store: FilesystemStore fixture.
+    :param tmp_path: pytest temp directory fixture.
+    :param body: a failing try, or a passing try that prints a bash error.
+    """
+    from flow_atelier.services.executor.bash import BashExecutor
+
+    conduit = _conduit("t", [
+        {"name": "fix", "task": body, "tool": "tool:bash", "repeat": 5,
+         "until": "output.match(PASSED)", "stagnation_limit": 2},
+    ])
+    with pytest.raises(RuntimeError, match="stagnated: 2 identical"):
+        await Engine({"tool:bash": BashExecutor()}, store).run(
+            conduit, {}, working_dir=tmp_path
+        )
+    logs = store.read_logs(store.list_flows()[0])
+    assert [e.iteration for e in logs] == [1, 2]

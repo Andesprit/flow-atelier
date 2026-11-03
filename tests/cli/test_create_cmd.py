@@ -204,3 +204,34 @@ def test_create_matches_init_shape(workdir):
     assert created == initialized
     assert "- greet:" in created
     assert "retry_backoff" not in created
+
+
+def test_hello_starter_checks_without_warnings_and_greets_by_variable(workdir):
+    """The starter reads its input as "$INPUT_NAME", so check has nothing to warn."""
+    import json
+
+    assert CliRunner().invoke(app, ["create", "greeter"]).exit_code == 0
+    checked = CliRunner().invoke(app, ["check", "greeter", "--json"])
+    assert checked.exit_code == 0, checked.output
+    assert "warnings" not in json.loads(checked.stdout)[0]
+    assert "$INPUT_NAME" in _conduit(workdir, "greeter").tasks[0].task
+
+
+@pytest.mark.parametrize("template", ["hello", "code-review", "fix-loop"])
+def test_no_template_puts_a_value_straight_into_a_shell_command(workdir, template):
+    """Every built-in recipe reads values in shell steps from env vars."""
+    from flow_atelier.cli.commands.check import _shell_value_warnings
+
+    assert CliRunner().invoke(app, ["create", "s", "--template", template]).exit_code == 0
+    assert _shell_value_warnings(_conduit(workdir, "s")) == []
+
+
+def test_no_init_starter_puts_a_value_straight_into_a_shell_command():
+    """The `explain` starter `init` writes has nothing for check to warn about."""
+    from flow_atelier.cli.commands.check import _shell_value_warnings
+    from flow_atelier.cli.commands.init import explain_conduit_yaml
+
+    explain = Conduit.model_validate_json(
+        _yaml_to_json(explain_conduit_yaml(["claude-code", "codex"]))
+    )
+    assert _shell_value_warnings(explain) == []

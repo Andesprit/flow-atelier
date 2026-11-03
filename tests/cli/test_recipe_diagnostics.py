@@ -22,7 +22,6 @@ from tests.cli.test_agent_binding_workflow import Project
         ("tool_bash", "ship.plan", "tool:bash"),
         ("on_exhaust_value", "ship.fix_until_green", "on_exhaust: fail"),
         ("body_parent_ref", "ship.fix_until_green.fix", "{{inputs.plan}}"),
-        ("unforwarded_input", "ship.fix_until_green", "test_command:"),
         ("loop_previous_outside", "ship.plan", "repeat"),
         ("on_exhaust_without_until", "ship.fix_until_green", "until: output.match"),
         ("depends_on_task_typo", "ship.review_correctness", "review_maintainability"),
@@ -54,8 +53,6 @@ def test_starter_mistakes_point_to_line_task_and_fix(tmp_path, mistake, task, fi
         loop["on_exhaust"] = "error"
     elif mistake == "body_parent_ref":
         body["fix"]["task"] = "{{plan.output}}"
-    elif mistake == "unforwarded_input":
-        del loop["inputs"]["test_command"]
     elif mistake == "loop_previous_outside":
         tasks["plan"]["task"] = "{{loop.previous}}"
     elif mistake == "on_exhaust_without_until":
@@ -75,6 +72,32 @@ def test_starter_mistakes_point_to_line_task_and_fix(tmp_path, mistake, task, fi
     assert "Extra inputs are not permitted" not in message
     if mistake == "harness_typo":
         assert "atelier harness list" in message
+
+
+def test_an_unforwarded_input_variable_in_the_starter_body_is_a_warning(tmp_path):
+    """The body's $INPUT_TEST_COMMAND then comes from the environment, so warn.
+
+    A recipe from before shell steps got these variables may read it from
+    the environment on purpose, so check does not fail it.
+    """
+    project = Project(tmp_path)
+    assert project.cli("create", "ship", "--template", "fix-loop").returncode == 0
+    path = project.work / ".atelier/conduits/ship/conduit.yaml"
+    recipe = yaml.safe_load(path.read_text())
+    tasks = {next(iter(item)): next(iter(item.values())) for item in recipe["tasks"]}
+    del tasks["fix_until_green"]["inputs"]["test_command"]
+    path.write_text(yaml.safe_dump(recipe, sort_keys=False))
+
+    for args in (["check", "ship", "--json"], ["check", "ship", "--recursive", "--json"]):
+        checked = project.cli(*args)
+        assert checked.returncode == 0, checked.stdout + checked.stderr
+        warnings = json.loads(checked.stdout)[0]["warnings"]
+        assert any(
+            w.startswith("fix_until_green.test: $INPUT_TEST_COMMAND comes from the "
+                         "environment, not from input test_command")
+            and "add test_command: '{{inputs.test_command}}'" in w
+            for w in warnings
+        ), warnings
 
 
 def test_multiple_schema_errors_are_all_reported_in_original_json_shape(tmp_path):

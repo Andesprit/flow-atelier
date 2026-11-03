@@ -937,6 +937,7 @@ tasks:
       depends_on: [clone_repo]
       repeat: 3                          # try up to 3 times
       until: output.match(PASS)        # ...stopping early on success
+      on_exhaust: fail                 # stop the run if no try passed
 
   - code_review:
       description: AI review
@@ -982,8 +983,9 @@ Step by step:
 - `clone_repo` runs first because nothing depends on it.
 - `run_tests` and `code_review` both wait on `clone_repo`, then run
 in parallel.
-- `run_tests` retries up to 3 times, stopping as soon as the output
-contains `PASS`.
+- `run_tests` runs `make test` up to 3 times, stopping as soon as the
+output contains `PASS`. After 3 runs without `PASS` the pipeline stops, so
+nothing is deployed after red tests.
 - `code_review` asks Claude Code to review the code and end with
 either `VERDICT: APPROVE` or `VERDICT: REJECT`.
 - `approve` only runs if Claude approved (`...match(VERDICT:\s*APPROVE)`).
@@ -1012,8 +1014,10 @@ quoting an upstream result can name the agent that produced it. It follows a
 `--agent` selection, so the label stays true when a run replaces that agent.
 The named task must appear in `depends_on`.
 - `{{loop.previous}}` — this task's output from its previous loop
-iteration (empty before the first iteration completes). Only valid on
-a looping task (`repeat > 1`).
+iteration (empty before the first iteration completes). When that try
+failed, it starts with `[this try failed with exit code N]`, followed by
+the try's output and its error text. Only valid on a looping task
+(`repeat > 1`).
 - `{{loop.history}}` — every prior iteration of this task, rendered as
 numbered blocks. Only valid on a looping task (`repeat > 1`).
 
@@ -1054,6 +1058,41 @@ while: output.not_match(<regex>)   # loop while no output matches; break otherwi
 
 Set at most one of `until` / `while`. The first iteration always runs
 before the predicate is checked.
+
+`stagnation_limit: <n>` (n >= 2, needs `repeat > 1`) fails the task with
+`stagnated: n identical consecutive outputs` when n tries in a row leave the
+same text, which is what `{{loop.previous}}` shows for each try. It works with
+a plain `repeat` as well as with `until` / `while`, and it fails the task even
+with `on_exhaust: complete`, so its dependents do not run.
+
+A try that fails does not end a loop that has `until` or `while`. When a
+try still exits nonzero after its `retries`, `until` and `while` are not
+checked on it: the try counts toward `repeat`, and the next try starts. If
+the last try still fails, the task fails, whatever `on_exhaust` says. The
+next try sees what went wrong through
+`{{loop.previous}}`: a first line `[this try failed with exit code N]`, then
+the try's output, then its error text. For a shell step that is its stdout
+and stderr. For a `tool:conduit` body it is the output of the body task that
+failed (and its stderr, when that task is a shell step), then a line that
+names that task and its error. The exit code is then the body's as a whole,
+usually 1, not the code of the task that failed. After a failed try,
+`{{loop.previous}}` holds that failure text, not the last good output, so a
+loop that carries state from try to try (a counter, say) should read it from
+`{{loop.history}}`, which keeps the earlier tries too (the last 10 by
+default).
+
+Up to 0.12, a failed try ended the loop at once and failed the run. Now the
+loop goes on and the next try sees the failure. A loop whose last try still
+fails fails the run as before, so a red test loop still stops its dependents.
+
+Some failures still end the loop. With a plain `repeat` and no `until` or
+`while`, the first failure fails the task. A `tool:hitl` step that gets no
+answer fails at once, also inside a `tool:conduit` body, so the steps after
+the loop never run without that answer. A `tool:conduit` body that cannot
+start, for example because it misses a required input, also fails at once.
+An agent that runs out of usage waits for the reset, as described below, and
+never spends a try. `stagnation_limit` counts failed tries too, so the same
+failure several times in a row can fail the task.
 
 For a loop with several tasks, put `tasks:` on its `tool:conduit` step. Each
 iteration runs the body as a child flow; the predicate sees **every body task's
@@ -1096,17 +1135,22 @@ dependencies even without `--recursive`; use `--recursive` to follow named
 children and to include the body in `--probe`.
 
 Without `on_exhaust: fail`, a loop that reaches its limit without meeting
-`until` or `while` still completes and its dependents receive the last output.
+`until` or `while` still completes and its dependents receive the last output,
+as long as that last try exited 0. If the last try still failed, the task fails
+whatever `on_exhaust` says, and the saved reason says how the last try failed,
+with its exit code and error.
 `atelier check` and `atelier plan` warn when such a loop has dependents. A run,
 `atelier status`, and `atelier diagnose` report the unmet condition, iteration
 count, and which dependent tasks ran. Set `on_exhaust: fail` on that task when
 an unmet condition must stop the workflow; raise `repeat` when more attempts
 are appropriate. The default remains `complete` for existing recipes.
 
-If an agent fails inside a `tool:conduit` loop, the parent run and `diagnose`
-name the child task, agent, and loop iteration. Resume the parent flow with
-`atelier run --resume <parent-flow-id>`, or replace that child agent for the
-remaining work with `atelier run --resume <parent-flow-id> --agent
+If an agent fails inside a `tool:conduit` loop with `until` or `while`, that
+try fails and the next one starts a fresh body. When the loop still fails, for
+example after its last try with `on_exhaust: fail`, the parent run and
+`diagnose` name the child task, agent, and loop iteration. Resume the parent
+flow with `atelier run --resume <parent-flow-id>`, or replace that child agent
+for the remaining work with `atelier run --resume <parent-flow-id> --agent
 <loop-task>.<child-task>=<harness>`. Use `atelier logs <child-flow-id> --show
 all` for the raw error and Python traceback.
 
@@ -1115,8 +1159,9 @@ all` for the raw error and Python traceback.
 ### Retries and per-task timeout
 
 - `retries: <n>` — if a task *fails*, re-run it up to `n` more times
-(default `0`). This is different from `repeat`, which loops a task
-that is *succeeding*.
+(default `0`). This is different from `repeat`, which runs a task
+several times. In a loop with `until` or `while`, a try uses its
+retries first, and only then counts as a failed try.
 - `timeout: <seconds>` — override the per-task time limit for one task.
 When omitted, the conduit-level `timeout` applies.
 

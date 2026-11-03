@@ -121,17 +121,24 @@ def test_exhaustion_is_visible_before_and_after_run(tmp_path):
 
 def test_nested_auth_failure_names_agent_and_parent_recovery(tmp_path):
     project = _project(tmp_path, broken_coder=True)
-    (project.work / ".attempts").write_text("0")
+    # Every try fails on the agent and the loop goes on; on_exhaust: fail then
+    # stops the run. Primed so the first test run after the fix passes.
+    project.install("ship", project.recipe("ship").decode().replace(
+        "until: output.match(TESTS PASSED)",
+        "until: output.match(TESTS PASSED)\n      on_exhaust: fail",
+    ))
+    (project.work / ".attempts").write_text("1")
     run = project.cli("run", "ship", "--input", "goal=x")
     assert run.returncode == 1
     flow_id = project.flow_id(run)
     assert "fix_until_green -> fix [harness:coder], loop iteration 1/4" in _flat(run.stdout)
+    assert "fix_until_green -> fix [harness:coder], loop iteration 4/4" in _flat(run.stdout)
     assert "Authentication required" in run.stdout
     assert "Traceback (most recent call last)" not in run.stdout
     assert "File \"/" not in run.stdout
     diagnose = project.cli("diagnose", flow_id)
     assert diagnose.returncode == 0
-    assert "fix_until_green -> fix [harness:coder], loop iteration 1/4" in _flat(diagnose.stdout)
+    assert "fix_until_green -> fix [harness:coder], loop iteration 4/4" in _flat(diagnose.stdout)
     assert "Traceback (most recent call last)" not in diagnose.stdout
     assert f"atelier run --resume {flow_id}" in _flat(diagnose.stdout)
     assert f"atelier run --resume {flow_id} --agent fix_until_green.fix=<harness>" in _flat(diagnose.stdout)

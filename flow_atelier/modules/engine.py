@@ -39,7 +39,7 @@ from flow_atelier.modules.conditions import (
     parse_output_predicate,
 )
 from flow_atelier.modules.liveness import is_crashed
-from flow_atelier.modules.nested_failure import latest_nested_failure
+from flow_atelier.modules.nested_failure import latest_nested_failure, loop_note
 from flow_atelier.modules.plan import transitive_dependents
 from flow_atelier.modules.templating import (
     SkipSignal,
@@ -662,15 +662,14 @@ class Engine:
             # Append order is chronological even across repeated resumes.
             executed: dict[str, str] = {}
             for entry in self.store.read_logs(flow_id):
-                if entry.exit_code != 0:
+                # A failed try that a loop counted is history too.
+                if entry.exit_code != 0 and not entry.extra.get("failed_try"):
                     continue
                 executed[entry.task] = entry.tool
                 if statuses.get(entry.task) == TaskStatus.completed:
                     continue
                 prior_iterations.setdefault(entry.task, []).append(
-                    entry.last_turn_output
-                    if entry.last_turn_output is not None
-                    else entry.output
+                    _try_text(entry, entry.iteration, entry.of)
                 )
             # Work this resume keeps rather than redoes was produced by the tool
             # the log recorded, which is not necessarily the one the recipe
@@ -1087,7 +1086,8 @@ class Engine:
                                 return
                         mark_running(t.name, iteration, start_iteration)
                         # A transient non-zero exit is re-attempted in place up
-                        # to `retries` extra times before tripping fail-fast.
+                        # to `retries` extra times before tripping fail-fast
+                        # (or, in a loop with a condition, counting as a try).
                         # HITL is exempt: a human declining a prompt is not a
                         # transient failure, so it never auto-retries.
                         max_attempts = 1 if is_hitl else 1 + t.retries
@@ -1099,6 +1099,10 @@ class Engine:
                             attempt += 1
                             started = _now()
                             start_ts = datetime.now(UTC)
+                            # Whether a loop with a condition may count this
+                            # attempt, should it fail for good, as a try.
+                            countable = not is_hitl
+                            nested = None
                             try:
                                 # Grace margin: executors that self-enforce
                                 # ctx.timeout (bash, harness) return a graceful
@@ -1128,8 +1132,16 @@ class Engine:
                                 )
                                 if nested:
                                     nested = replace(nested, iteration=iteration, of=t.repeat)
+                                # A body that never ran (a missing input, say)
+                                # is a recipe error, and a tool:hitl step in
+                                # it is a human's answer: neither is a try.
+                                if t.tool == ToolType.conduit and (
+                                    nested is None or nested.hitl
+                                ):
+                                    countable = False
                                 result = ExecutionResult(
                                     exit_code=1,
+                                    stdout=nested.output if nested else "",
                                     stderr=(
                                         nested.summary if nested else
                                         f"{type(exc).__name__}: {exc}"
@@ -1158,6 +1170,21 @@ class Engine:
                                     "session": session_name,
                                     "session_continued": result.session_continued,
                                 }
+                            # A loop with a condition counts a try that failed
+                            # for good as one more try that did not meet it.
+                            # A human's answer and a usage limit still fail.
+                            failed_try = (
+                                not result.success
+                                and attempt >= max_attempts
+                                and loop_predicate is not None
+                                and countable
+                                and result.usage_limit is None
+                            )
+                            if failed_try:
+                                attempt_extra = {**attempt_extra, "failed_try": True}
+                            if nested is not None and nested.hitl:
+                                # So a loop that calls this run sees it too.
+                                attempt_extra = {**attempt_extra, "hitl_failed": True}
                             await self.store.append_log(
                                 flow_id,
                                 LogEntry(
@@ -1216,6 +1243,8 @@ class Engine:
                             if attempt < max_attempts:
                                 await asyncio.sleep(t.retry_backoff)
                                 continue
+                            if failed_try:
+                                break
                             reason = (
                                 f"exit={result.exit_code} "
                                 f"stderr={result.stderr.strip()[:200]}"
@@ -1230,11 +1259,7 @@ class Engine:
                                 )
                             return
                         previous_output = last_output
-                        last_output = (
-                            result.last_turn_output
-                            if result.last_turn_output is not None
-                            else result.output
-                        )
+                        last_output = _try_text(result, iteration, t.repeat)
                         loop_history.append(last_output)
                         if t.stagnation_limit is not None:
                             if (
@@ -1245,7 +1270,8 @@ class Engine:
                             else:
                                 stagnant_streak = 1
                             if stagnant_streak >= t.stagnation_limit:
-                                emit_event(t, iteration, result, duration)
+                                if result.success:
+                                    emit_event(t, iteration, result, duration)
                                 reason = (
                                     f"stagnated: {stagnant_streak} identical "
                                     "consecutive outputs"
@@ -1257,6 +1283,10 @@ class Engine:
                                         f"task {t.name!r} {reason}"
                                     )
                                 return
+                        if not result.success:
+                            # A failed try never meets the condition, and its
+                            # event went out with the attempt: try again.
+                            continue
                         pass_met: bool | None = None
                         if loop_predicate is not None:
                             # Conduit tasks evaluate the predicate against the
@@ -1289,10 +1319,20 @@ class Engine:
                             met=False,
                             dependents=transitive_dependents(parsed_deps, t.name),
                         )
-                        if t.on_exhaust == "fail":
+                        # `result` is the last try's: say when it failed, so
+                        # the reason does not read as a clean miss.
+                        last_failure = (
+                            f"; the last try failed: exit={result.exit_code} "
+                            f"stderr={result.stderr.strip()[:200]}"
+                            if not result.success else ""
+                        )
+                        # A last try that still failed fails the task whatever
+                        # on_exhaust says, so a red loop never runs its
+                        # dependents; `complete` covers a clean miss only.
+                        if t.on_exhaust == "fail" or not result.success:
                             reason = (
                                 f"exhausted {t.repeat} iterations without "
-                                "matching its loop predicate"
+                                f"matching its loop predicate{last_failure}"
                             )
                             mark_failed(t.name, reason, loop_outcome)
                             if not failed:
@@ -1302,7 +1342,7 @@ class Engine:
                                 )
                             return
                         completion_reason = (
-                            "loop exhausted without predicate match"
+                            f"loop exhausted without predicate match{last_failure}"
                         )
                     elif loop_predicate is not None:
                         condition = (
@@ -1489,13 +1529,25 @@ class Engine:
         when it was spawned by the same parent step (``invoking_task``), so a
         parent with two distinct steps invoking the same sub-conduit resumes the
         child belonging to the step being re-run rather than the most recent
-        child of that name.
+        child of that name. A failed child that a loop already counted as a
+        try is never resumed: the next try starts a fresh child that sees the
+        new feedback. Such a child started before the loop's newest counted
+        try finished, which holds even when its log entry could not name it,
+        as after a timeout.
 
         :param parent_flow_id: parent flow to search under
         :param conduit_name: child conduit name to match
         :param invoking_task: name of the parent step whose child to match
         :returns: child flow id to resume, or None
         """
+        counted_until = max(
+            (
+                datetime.fromisoformat(entry.finished_at)
+                for entry in self.store.read_logs(parent_flow_id)
+                if entry.task == invoking_task and entry.extra.get("failed_try")
+            ),
+            default=None,
+        )
         for fid in reversed(self.store.list_child_flows(parent_flow_id)):
             try:
                 cname, _, _ = parse_flow_id(fid)
@@ -1510,7 +1562,12 @@ class Engine:
             if p.invoking_task != invoking_task:
                 continue
             if p.status == FlowStatus.failed:
-                return fid
+                counted = (
+                    counted_until is not None
+                    and p.started_at is not None
+                    and datetime.fromisoformat(p.started_at) <= counted_until
+                )
+                return None if counted else fid
             if p.status == FlowStatus.running:
                 # A still-live child must not be double-driven; only resume one
                 # whose runner is provably dead.
@@ -1607,6 +1664,41 @@ class Engine:
                 _nested_path_ctx.reset(path_token)
 
         return _run_nested
+
+
+def _try_text(result: ExecutionResult | LogEntry, iteration: int, of: int) -> str:
+    """Return what ``{{loop.previous}}`` and ``{{loop.history}}`` keep for one try.
+
+    A successful try keeps its last-turn output, or its output when it has
+    none. A failed try that a loop counted keeps a first line naming its exit
+    code, then its output, then its error text, so the next try can see why it
+    failed. It adds no try number: the error line of a ``tool:conduit`` body
+    names the loop iteration for the log and the failure panel, and that part
+    is left out here, so identical failures can still trip
+    ``stagnation_limit``.
+
+    :param result: the try's last attempt, live or as saved in the log.
+    :param iteration: the 1-based iteration the try ran in.
+    :param of: the task's iteration count.
+    :returns: the text the loop history keeps for that try.
+    """
+    if result.exit_code == 0:
+        return (
+            result.last_turn_output
+            if result.last_turn_output is not None
+            else result.output
+        )
+    body = (
+        result.last_turn_output
+        if result.last_turn_output is not None
+        else result.output or result.stdout
+    )
+    parts = (
+        f"[this try failed with exit code {result.exit_code}]",
+        body.strip(),
+        result.stderr.strip().replace(loop_note(iteration, of), "", 1),
+    )
+    return "\n".join(part for part in parts if part)
 
 
 def _usage_limit_reason(result: ExecutionResult, waited: float) -> str:

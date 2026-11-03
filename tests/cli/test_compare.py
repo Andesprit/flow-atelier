@@ -144,6 +144,12 @@ def test_compare_names_planned_agent_of_a_task_that_never_ran(tmp_path):
 
 def test_compare_points_a_failed_loop_body_at_diagnose(tmp_path):
     project = _project(tmp_path)
+    # A loop with `until` counts a failed body as a try and goes on; a plain
+    # repeat still stops on it before any condition is checked.
+    recipe = project.recipe("ship").decode().replace("\r\n", "\n")
+    project.install("ship", recipe.replace(
+        "      until: output.match(TESTS PASSED)\n      on_exhaust: fail\n", ""
+    ))
     ok = project.cli("run", "ship", "--input", "goal=fix tests",
                      "--input", "test_command=bash check.sh")
     assert ok.returncode == 0, ok.stdout + ok.stderr

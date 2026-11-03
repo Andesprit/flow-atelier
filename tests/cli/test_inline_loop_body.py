@@ -36,6 +36,22 @@ def _project(tmp_path: Path, *, inline: bool = True, broken_agent: str = "") -> 
     return project
 
 
+def _fail_on_exhaust(project: Project) -> None:
+    """Make the loop fail the run once its tries run out.
+
+    A broken agent fails each try, and the loop goes on until ``repeat`` runs
+    out; only then does ``on_exhaust: fail`` stop the run for diagnose and
+    resume. The test counter is primed so the next test run passes.
+
+    :param project: the project whose ``ship`` recipe to edit.
+    """
+    project.install("ship", project.recipe("ship").decode().replace(
+        "until: output.match(TESTS PASSED)",
+        "until: output.match(TESTS PASSED)\n      on_exhaust: fail",
+    ))
+    (project.work / ".attempts").write_text("1")
+
+
 @pytest.mark.parametrize("inline", [False, True])
 def test_one_file_matches_shared_child_plan_run_and_probe(tmp_path: Path, inline: bool):
     project = _project(tmp_path, inline=inline)
@@ -86,6 +102,7 @@ def test_one_file_matches_shared_child_plan_run_and_probe(tmp_path: Path, inline
 
 def test_inline_failure_diagnose_and_parent_resume(tmp_path: Path):
     project = _project(tmp_path, broken_agent="coder")
+    _fail_on_exhaust(project)
     run = project.cli("run", "ship", "--input", "goal=add login")
     assert run.returncode == 1, run.stdout + run.stderr
     flow_id = project.flow_id(run)
@@ -98,18 +115,22 @@ def test_inline_failure_diagnose_and_parent_resume(tmp_path: Path):
     diagnose = project.cli("diagnose", flow_id)
     assert "fix [harness:coder]" in " ".join(diagnose.stdout.split())
     assert "fix_until_green pass 1/4" in " ".join(diagnose.stdout.split())
-    assert "condition unknown" in " ".join(diagnose.stdout.split())
+    assert "fix_until_green pass 4/4" in " ".join(diagnose.stdout.split())
+    assert "condition not met" in " ".join(diagnose.stdout.split())
     assert f"atelier run --resume {flow_id}" in " ".join(diagnose.stdout.split())
     assert "Traceback (most recent call last)" not in diagnose.stdout
     resumed = project.cli("run", "--resume", flow_id,
                           "--agent", "fix_until_green.fix=coder2")
     assert resumed.returncode == 0, resumed.stdout + resumed.stderr
     assert project.status(flow_id)["status"] == "completed"
-    assert len(project.prompts("coder2")) == 2
+    # The resume runs the last try again, now with the working agent.
+    assert len(project.prompts("coder2")) == 1
 
 
 def test_inline_saved_choice_and_exhaustion(tmp_path: Path):
     project = _project(tmp_path, broken_agent="coder2")
+    recipe = project.recipe("ship")
+    _fail_on_exhaust(project)
     failed = project.cli("run", "ship", "--input", "goal=x",
                          "--agent", "fix_until_green.fix=coder2")
     assert failed.returncode == 1
@@ -125,9 +146,10 @@ def test_inline_saved_choice_and_exhaustion(tmp_path: Path):
     project.env["ATELIER_HARNESSES"] = json.dumps(harnesses)
     resumed = project.cli("run", "--resume", flow_id)
     assert resumed.returncode == 0, resumed.stdout + resumed.stderr
-    assert len(project.prompts("coder2")) == 2
+    assert len(project.prompts("coder2")) == 1
     assert not project.prompts("coder")
 
+    project.install("ship", recipe.decode())
     (project.work / ".attempts").write_text("-100")
     exhausted = project.cli("run", "ship", "--input", "goal=x")
     assert exhausted.returncode == 0, exhausted.stdout + exhausted.stderr

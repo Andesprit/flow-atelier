@@ -991,7 +991,7 @@ async def test_until_not_match_breaks_when_pattern_absent(store):
 
 
 async def test_until_not_evaluated_on_failed_iteration(store):
-    """Fail-fast wins over until — a failed iteration never triggers early-exit.
+    """A failed iteration counts as a try that did not meet until; the loop goes on.
 
     :param store: FilesystemStore fixture.
     """
@@ -1002,14 +1002,15 @@ async def test_until_not_evaluated_on_failed_iteration(store):
              "until": "output.match(DONE)"},
         ]
     )
-    # Iteration 2 fails; its output contains "DONE" — but fail-fast should win.
+    # Iteration 2 fails; its output contains "DONE" — but it must not end the loop.
     fake = ScriptedExecutor(["wait", "DONE", "x", "x", "x"], fail_on=2)
     engine = Engine({"tool:bash": fake}, store)
-    with pytest.raises(RuntimeError):
-        await engine.run(conduit, {})
-    flow_id = store.list_flows()[0]
+    flow_id = await engine.run(conduit, {})
+    assert len(fake.calls) == 5
     p = store.read_progress(flow_id)
-    assert p.tasks["poll"].status == TaskStatus.failed
+    assert p.tasks["poll"].status == TaskStatus.completed
+    assert p.tasks["poll"].iteration == 5
+    assert p.tasks["poll"].loop_outcome.met is False
 
 
 async def test_while_match_breaks_when_pattern_absent(store):
@@ -1080,7 +1081,7 @@ async def test_while_runs_full_repeat_when_predicate_holds(store):
 
 
 async def test_while_not_evaluated_on_failed_iteration(store):
-    """Fail-fast wins over while too — failure stops the loop.
+    """A failed iteration never ends a while loop, even when its output would.
 
     :param store: FilesystemStore fixture.
     """
@@ -1091,13 +1092,14 @@ async def test_while_not_evaluated_on_failed_iteration(store):
              "while": "output.match(retry)"},
         ]
     )
-    fake = ScriptedExecutor(["retry", "retry", "x", "x", "x"], fail_on=2)
+    # Iteration 2 fails without "retry"; checked, it would end the loop there.
+    fake = ScriptedExecutor(["retry", "x", "retry", "done", "x"], fail_on=2)
     engine = Engine({"tool:bash": fake}, store)
-    with pytest.raises(RuntimeError):
-        await engine.run(conduit, {})
-    flow_id = store.list_flows()[0]
+    flow_id = await engine.run(conduit, {})
+    assert len(fake.calls) == 4
     p = store.read_progress(flow_id)
-    assert p.tasks["poll"].status == TaskStatus.failed
+    assert p.tasks["poll"].status == TaskStatus.completed
+    assert p.tasks["poll"].iteration == 4
 
 
 # ---------------------------------------------------------------- conduit-scope predicate

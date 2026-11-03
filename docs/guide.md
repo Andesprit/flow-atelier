@@ -1120,6 +1120,23 @@ that is *succeeding*.
 - `timeout: <seconds>` — override the per-task time limit for one task.
 When omitted, the conduit-level `timeout` applies.
 
+A shell task that times out or is cancelled stops with the processes it
+started: its process group, or its process tree on Windows. A task is
+cancelled when another task fails, when you press Ctrl-C, or when you run
+`atelier stop`. A process that leaves the group, for example through
+`setsid` or a tool that turns itself into a daemon, is not stopped. On
+Windows, a process whose parent has already exited is no longer part of the
+tree and keeps running too, for example a background job left by a shell
+that finished, or the child of `( cmd & )`. The tests check this stop on
+Linux and macOS only.
+
+A shell task waits until every process it started has closed the task's
+output. To leave a server running after the task ends, send both of its
+output streams elsewhere, for example `server > server.log 2>&1 &`.
+Otherwise the task waits for it until its timeout, then fails and stops it;
+the timeout message then says that a background process held the output.
+`nohup` and `disown` do not change this.
+
 ### When an agent runs out of usage
 
 A subscription agent that hits its 5-hour or weekly limit refuses the

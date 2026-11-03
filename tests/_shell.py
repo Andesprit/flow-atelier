@@ -14,6 +14,7 @@ Windows is why these exist, and why they are shared rather than repeated:
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,11 @@ from flow_atelier.services.executor.bash import to_bash_path
 # Runs this interpreter's CLI as plain `atelier`, without depending on the
 # console script being installed on PATH inside the test environment.
 CLI = "from flow_atelier.main import app; app()"
+
+# A command started with `&` from a shell without job control inherits
+# SIGINT as ignored, and Python then installs no Ctrl-C handler. Tests that
+# send a real SIGINT start the CLI with the default handler put back.
+INTERRUPTIBLE_CLI = "import signal; signal.signal(signal.SIGINT, signal.default_int_handler); " + CLI
 
 
 def bash() -> str:
@@ -135,3 +141,20 @@ def run_expression(expression: str, cwd: Path, env: dict, timeout: float):
         errors="replace",
         timeout=timeout,
     )
+
+
+def group_alive(pgid: int) -> bool:
+    """Say whether any process is left in POSIX process group ``pgid``.
+
+    :param pgid: process group id to probe with signal 0.
+    :returns: ``True`` while at least one process is in the group.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # macOS answers EPERM while the group's last member is an unreaped
+        # zombie: it is still there.
+        return True
+    return True

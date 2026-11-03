@@ -48,3 +48,6 @@ Corporate CLA before submitting.
 
 Open an issue on GitHub. For bugs, include the flow-atelier version, your OS,
 the conduit or command you ran, and the full output.
+
+Do not open a public issue for a security problem. See
+[SECURITY.md](SECURITY.md) to report it privately.

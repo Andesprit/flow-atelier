@@ -131,6 +131,17 @@ PATH. `atelier list harnesses` names the missing binary when it isn't there.
 
 Either way, logging in is yours to do, with that agent's own CLI.
 
+**Gemini CLI no longer works with a personal Google login.** Since 18 June
+2026, Google does not serve Gemini CLI to consumer accounts: Login with Google
+no longer works for personal, Google AI Pro and Google AI Ultra accounts. To
+use `harness:gemini`, set Gemini CLI up with a paid Gemini API key, Vertex AI,
+or an existing Gemini Code Assist Standard or Enterprise license. Google stopped
+selling Standard and Enterprise on 9 October 2026 and is phasing them out
+([schedule](https://docs.cloud.google.com/gemini/docs/codeassist/sunset)), so
+prefer an API key or Vertex AI for a new setup. See
+[Google's notice](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)
+and [Gemini CLI's authentication guide](https://github.com/google-gemini/gemini-cli/blob/main/docs/get-started/authentication.mdx).
+
 `npx` spends about a second on every launch resolving a package it has
 already cached, and a conduit launches the agent once per task. Install
 the pinned version once and every launch runs it directly:
@@ -1662,7 +1673,29 @@ storing each agent's login as a secret, an image with the adapters
 preinstalled, and a job that checks both logins with a test prompt before
 it starts.
 
+## Agent logins and provider terms
+
+Flow Atelier starts each agent's own CLI, and that CLI uses the login it
+already has. Flow Atelier does not store or proxy your keys or tokens.
+
+Each provider has its own terms for automated or unattended use, and for use
+through third-party tools. Some consumer subscriptions restrict this. Check
+your provider's current terms before you run agents unattended or on a
+schedule. API keys or business plans are the route providers document for
+automation.
+
+- Anthropic (Claude Code):
+  [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) and
+  [Commercial Terms](https://www.anthropic.com/legal/commercial-terms).
+- OpenAI (Codex): [Terms of Use](https://openai.com/policies/terms-of-use).
+- Google (Gemini CLI):
+  [Gemini CLI terms and privacy](https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md).
+
+Other agents have their own terms. Check them the same way.
+
 ## Security
+
+To report a security problem privately, see [SECURITY.md](../SECURITY.md).
 
 The API runs shell commands on the machine hosting it, so treat reaching it as
 equivalent to a shell on that machine.

@@ -1,6 +1,7 @@
 """/conduits CRUD round-trip tests."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import httpx
@@ -73,6 +74,144 @@ async def test_get_unknown_conduit_returns_404(client):
     resp = await client.get("/conduits/ghost")
     assert resp.status_code == 404
     assert "detail" in resp.json()
+
+
+# ---------------------------------------------------------------- broken files
+
+# Each broken conduit maps to its file and the reason the server must give.
+_BROKEN_CONDUITS = {
+    # The flow sequence never closes, so the YAML itself does not parse.
+    "yaml_typo": (
+        "name: yaml_typo\ndescription: d\ntasks:\n"
+        "  - name: t\n    description: t\n    tool: tool:bash\n    task: [unclosed\n",
+        "invalid YAML",
+    ),
+    # Parses fine, but the schema requires a description.
+    "no_description": (
+        "name: no_description\ntasks:\n"
+        "  - name: t\n    description: t\n    tool: tool:bash\n    task: echo hi\n",
+        "description: Field required",
+    ),
+}
+
+
+def _write_broken(tmp_path: Path, name: str) -> None:
+    """Write one of :data:`_BROKEN_CONDUITS` straight into the project store.
+
+    :param tmp_path: pytest temp directory the client's store lives in.
+    :param name: key of the broken conduit to write.
+    """
+    folder = tmp_path / ".atelier" / "conduits" / name
+    folder.mkdir(parents=True)
+    (folder / "conduit.yaml").write_text(_BROKEN_CONDUITS[name][0], encoding="utf-8")
+
+
+@pytest.mark.parametrize("broken", sorted(_BROKEN_CONDUITS))
+async def test_list_skips_a_broken_conduit_and_logs_why(client, tmp_path, caplog, broken):
+    """Verify one broken conduit.yaml does not take GET /conduits down.
+
+    The dashboard reads a failed list as "can't reach the API", so the good
+    conduits must still come back and the server log must name the bad one.
+
+    :param client: httpx client fixture.
+    :param tmp_path: pytest temp directory fixture.
+    :param caplog: pytest log capture fixture.
+    :param broken: key of the broken conduit to write.
+    """
+    await client.post("/conduits", json=_payload())
+    _write_broken(tmp_path, broken)
+
+    with caplog.at_level(logging.WARNING, logger="flow_atelier.routes.conduits"):
+        resp = await client.get("/conduits")
+
+    assert resp.status_code == 200
+    assert [item["name"] for item in resp.json()] == ["release_notes"]
+    [record] = [r for r in caplog.records if r.name == "flow_atelier.routes.conduits"]
+    assert record.levelno == logging.WARNING
+    assert broken in record.getMessage()
+    assert _BROKEN_CONDUITS[broken][1] in record.getMessage()
+
+
+@pytest.mark.parametrize("broken", sorted(_BROKEN_CONDUITS))
+async def test_get_broken_conduit_returns_422_with_the_reason(client, tmp_path, broken):
+    """Verify GET /conduits/<broken> says what is wrong instead of a 500.
+
+    :param client: httpx client fixture.
+    :param tmp_path: pytest temp directory fixture.
+    :param broken: key of the broken conduit to write.
+    """
+    _write_broken(tmp_path, broken)
+
+    resp = await client.get(f"/conduits/{broken}")
+
+    assert resp.status_code == 422
+    assert _BROKEN_CONDUITS[broken][1] in resp.json()["detail"]
+
+
+async def test_an_unreadable_conduit_yaml_never_answers_500(
+    client, tmp_path, _isolate_global_atelier_dir
+):
+    """Verify a conduit.yaml that is a folder is a broken conduit on every route.
+
+    Reading it raises an ``OSError`` (``IsADirectoryError``, or
+    ``PermissionError`` on Windows), not the ``ValueError`` of a YAML typo.
+
+    :param client: httpx client fixture.
+    :param tmp_path: pytest temp directory fixture.
+    :param _isolate_global_atelier_dir: isolated global atelier dir fixture.
+    """
+    (tmp_path / ".atelier" / "conduits" / "is_dir" / "conduit.yaml").mkdir(parents=True)
+    # A run of it from before the file broke, as the run page would show.
+    flow_id = Atelier(
+        settings=AtelierSettings(
+            atelier_dir=tmp_path / ".atelier",
+            global_atelier_dir=_isolate_global_atelier_dir,
+        ),
+    ).store.create_flow("is_dir", {})
+    schedule = {
+        "conduit_name": "is_dir",
+        "run_path": str(tmp_path),
+        "schedule": {"mode": "interval", "name": "often", "every_minutes": 5},
+    }
+
+    assert (await client.get("/conduits")).json() == []
+    assert (await client.get("/conduits/is_dir")).status_code == 422
+    patched = await client.patch("/conduits/is_dir", json={"description": "x"})
+    assert patched.status_code == 400
+    assert (await client.post("/schedules", json=schedule)).status_code == 400
+    view = await client.get(f"/flows/{flow_id}")
+    assert view.status_code == 200
+    assert view.json()["conduit_name"] == "is_dir"
+
+
+async def test_get_inline_loop_body_returns_404(client, tmp_path):
+    """Verify an inline loop body's internal name is not served as a conduit.
+
+    :param client: httpx client fixture.
+    :param tmp_path: pytest temp directory fixture.
+    """
+    folder = tmp_path / ".atelier" / "conduits" / "inl"
+    folder.mkdir(parents=True)
+    (folder / "conduit.yaml").write_text(
+        "name: inl\ndescription: d\ntasks:\n"
+        "  - name: loop\n    description: t\n    tool: tool:conduit\n    tasks:\n"
+        "      - name: s\n        description: s\n        tool: tool:bash\n"
+        "        task: echo x\n",
+        encoding="utf-8",
+    )
+
+    assert (await client.get("/conduits/~inline~inl~loop")).status_code == 404
+
+
+@pytest.mark.parametrize("name", ["%2E%2E", "%2E", "a%5Cb"])
+async def test_a_name_that_is_not_a_conduit_name_returns_404(client, name):
+    """Verify ``..``, ``.`` and a backslash name answer 404 instead of a 500.
+
+    :param client: httpx client fixture.
+    :param name: URL-encoded path segment to request.
+    """
+    assert (await client.get(f"/conduits/{name}")).status_code == 404
+    assert (await client.delete(f"/conduits/{name}")).status_code == 404
 
 
 # ---------------------------------------------------------------- create

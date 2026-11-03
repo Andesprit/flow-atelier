@@ -1,9 +1,12 @@
 """``/conduits`` REST routes."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 
+from flow_atelier.cli.rendering.render import format_conduit_error
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.schemas.api import (
     ConduitDTO,
@@ -12,8 +15,10 @@ from flow_atelier.schemas.api import (
     OpenPathOutput,
     UpdateConduitInput,
 )
+from flow_atelier.schemas.conduit import CONDUIT_NAME_RE
 from flow_atelier.services.api.base import get_atelier
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/conduits", tags=["conduits"])
 
 
@@ -33,6 +38,9 @@ def _default_run_path(atelier: Atelier) -> str:
 async def list_conduits(atelier: Atelier = Depends(get_atelier)) -> list[ConduitDTO]:
     """List every conduit visible to the facade (project + global).
 
+    A conduit whose file does not load is left out and logged, so one bad
+    ``conduit.yaml`` cannot fail the whole list.
+
     :param atelier: injected :class:`Atelier` facade.
     :returns: :class:`ConduitDTO` for each readable conduit.
     """
@@ -42,22 +50,33 @@ async def list_conduits(atelier: Atelier = Depends(get_atelier)) -> list[Conduit
             conduit = atelier.store.read_conduit(name)
         except FileNotFoundError:
             continue
+        except Exception as e:  # noqa: BLE001 — one broken file must not fail the list
+            logger.warning(
+                "skipping unreadable conduit %s: %s", name, format_conduit_error(e)
+            )
+            continue
         out.append(ConduitDTO.from_conduit(conduit, _default_run_path(atelier)))
     return out
 
 
 @router.get("/{name}", response_model=ConduitDTO)
 async def get_conduit(name: str, atelier: Atelier = Depends(get_atelier)) -> ConduitDTO:
-    """Return one conduit by name or 404 if missing.
+    """Return one conduit by name, 404 if missing or 422 if its file is broken.
 
     :param name: conduit identifier from the URL path.
     :param atelier: injected :class:`Atelier` facade.
     :returns: the matching :class:`ConduitDTO`.
     """
+    # The store raises ValueError for ``..`` or a path separator, which would
+    # read as a broken conduit. An inline loop body is not served on its own.
+    if not CONDUIT_NAME_RE.fullmatch(name):
+        raise HTTPException(status_code=404, detail=f"conduit not found: {name}")
     try:
         conduit = atelier.store.read_conduit(name)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except (OSError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=format_conduit_error(e)) from e
     return ConduitDTO.from_conduit(conduit, _default_run_path(atelier))
 
 
@@ -99,7 +118,7 @@ async def update_conduit(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except FileExistsError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
-    except ValueError as e:
+    except (OSError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return ConduitDTO.from_conduit(conduit, _default_run_path(atelier))
 
@@ -112,7 +131,12 @@ async def delete_conduit(name: str, atelier: Atelier = Depends(get_atelier)) -> 
     :param atelier: injected :class:`Atelier` facade.
     :returns: empty 204 response.
     """
-    if not atelier.delete_conduit(name):
+    try:
+        deleted = atelier.delete_conduit(name)
+    except ValueError as e:
+        # ``..`` or a path separator: the store refuses it, so no such conduit.
+        raise HTTPException(status_code=404, detail=f"conduit not found: {name}") from e
+    if not deleted:
         raise HTTPException(status_code=404, detail=f"conduit not found: {name}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

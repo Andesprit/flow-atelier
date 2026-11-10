@@ -279,3 +279,37 @@ def test_check_warns_when_a_shell_step_reads_a_variable_it_never_gets(workdir):
         "loop.test: $LOOP_ITERATION is empty here: this step does not loop "
         "(repeat is 1)",
     ]
+
+
+def test_check_warns_when_a_step_runs_after_an_approval_gate_whatever_the_answer(workdir):
+    """A plain dependency on an approval gate runs after 'no' too; a condition does not."""
+    import json
+
+    gate = (
+        "  - name: approve\n    description: a\n    tool: tool:hitl\n"
+        "    task: ship it?\n    inputs:\n      confirm: Type 'yes' to approve deploy\n"
+    )
+    _write_conduit(
+        workdir,
+        "plain",
+        "name: plain\ndescription: d\ntasks:\n" + gate
+        + "  - name: deploy\n    description: d\n    tool: tool:bash\n"
+        "    depends_on: [approve]\n    task: echo deploy\n",
+    )
+    _write_conduit(
+        workdir,
+        "guarded",
+        "name: guarded\ndescription: d\ntasks:\n" + gate
+        + "  - name: deploy\n    description: d\n    tool: tool:bash\n"
+        "    depends_on: [\"approve.output.match(confirm: 'yes')\"]\n    task: echo deploy\n",
+    )
+    result = CliRunner().invoke(app, ["check", "plain", "--json"])
+    assert result.exit_code == 0, result.stdout
+    assert json.loads(result.stdout)[0]["warnings"] == [
+        "deploy: runs after the human gate approve whatever the answer, even 'no' or "
+        "empty; to run it only on approval, depend on "
+        "\"approve.output.match(confirm: 'yes')\"",
+    ]
+    result = CliRunner().invoke(app, ["check", "guarded", "--json"])
+    assert result.exit_code == 0, result.stdout
+    assert "warnings" not in json.loads(result.stdout)[0]

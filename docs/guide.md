@@ -981,7 +981,8 @@ tasks:
       description: Run deploy sub-conduit
       task: deploy_to_env
       tool: tool:conduit
-      depends_on: [approve]
+      depends_on:
+        - "approve.output.match(confirm: 'yes')"
       inputs:
         target_env: "{{inputs.env}}"
         build_path: /tmp/build
@@ -1006,8 +1007,10 @@ nothing is deployed after red tests.
 either `VERDICT: APPROVE` or `VERDICT: REJECT`.
 - `approve` only runs if Claude approved (`...match(VERDICT:\s*APPROVE)`).
 It asks the human two typed questions on the terminal.
-- `deploy` only runs after the human approves, and calls another
-conduit (`deploy_to_env`) as a nested run.
+- `deploy` only runs when the human types `yes` at `confirm`, and calls
+another conduit (`deploy_to_env`) as a nested run. Any other answer, even an
+empty one, skips it. A plain `depends_on: [approve]` would not wait for a
+yes: a gate finishes once it has an answer, whatever the answer is.
 - `rollback` only runs if Claude rejected. The two branches are
 mutually exclusive — the unmet branch is silently skipped, not
 failed.
@@ -1371,6 +1374,23 @@ map. At runtime flow-atelier prints the prompt, asks for each input
 by name on the terminal, and saves the answers so downstream tasks
 can use them as `{{inputs.<name>}}`.
 
+A gate finishes once it has its answers, whatever they are, so a step with a
+plain `depends_on: [approve]` runs after `no` or an empty answer too. To
+make it an approval, depend on the answer. The gate's output lists each
+answer as YAML, `confirm: 'yes'`:
+
+```yaml
+  - deploy:
+      task: make deploy
+      tool: tool:bash
+      depends_on:
+        - "approve.output.match(confirm: 'yes')"
+```
+
+Any other answer skips `deploy`. `atelier check` warns about a step that
+depends on a gate named for an approval (its name or an input mentions
+approve or confirm) without such a condition.
+
 ### Long AI conversations (`interactive: true`)
 
 When a harness task sets `interactive: true`, flow-atelier appends
@@ -1409,8 +1429,18 @@ atelier ask "Help me write a specification" --path /absolute/path/to/project
 questions are read from stdin just like any other interactive harness task.
 The resulting flow is still recorded under the `.atelier/flows/` directory
 from which you invoked `atelier`. The agent runs with full permissions unless
-`ATELIER_AGENT_PERMISSIONS` (in the environment or in `.env`) sets another
-level; see [Security](#security).
+`--permissions edits` or `--permissions read-only` sets another level, or
+`ATELIER_AGENT_PERMISSIONS` (in the environment or in `.env`) does; see
+[Security](#security).
+
+```bash
+atelier ask "Review the last commit" --path . --harness codex --permissions read-only
+```
+
+`atelier run` and `atelier ask` exit with 0 when the run completed, 1 when it
+failed, and 143 when `atelier stop` or another SIGTERM stopped it.
+`atelier stop` exits with 1 when the flow is still running after its 15
+second wait.
 
 #### Conduit-wide human and supervisor policies
 
@@ -1505,7 +1535,7 @@ atelier schema                                         # print the conduit.yaml 
 atelier run <conduit> [--input key=value ...] [--input-file key=path ...]
                       [--show-steps/--hide-steps]
                                                        # --input-file loads a UTF-8 text file into one input
-atelier ask <query> --path <directory> [--harness <name>]   # interactive agent session (default: claude-code)
+atelier ask <query> --path <directory> [--harness <name>] [--permissions <level>]   # interactive agent session (default: claude-code)
 atelier run --resume <flow_id>                         # resume a failed/crashed flow
 atelier run --again <flow_id>                          # fresh run reusing a past flow's inputs
 atelier stop <flow_id>                                 # gracefully halt a running flow
@@ -1805,7 +1835,7 @@ reads in the project, can lead it to do damage. Limit what it may do with
 | --- | --- |
 | `full` | Everything. This is the default. |
 | `edits` | Read and change files. Atelier picks an accept-edits mode when the agent has one, such as Claude Code's `acceptEdits`. Otherwise it picks a read-only mode that asks before each edit, such as Codex's `read-only`. It allows requests to read, search, edit, move or delete files, and rejects the rest, such as running a command or fetching a URL. |
-| `read-only` | Only read, as far as Atelier is asked (see below). Atelier picks a read-only mode such as Codex's `read-only`, else keeps the agent's own mode (leaving a bypass mode first), and rejects every request. |
+| `read-only` | Only read, as far as Atelier is asked (see below). Atelier picks a read-only mode such as Codex's `read-only`, else a mode that asks before acting, such as Claude Code's `default` (leaving a bypass mode first), and rejects every request. |
 
 Set it on one task with `permissions:`, or for every agent task with
 `ATELIER_AGENT_PERMISSIONS` in the environment or in `.env`. The task field
@@ -1833,9 +1863,21 @@ not print it.
 The levels are not a sandbox. Atelier only chooses the agent's mode and answers
 the requests the agent sends. An agent can still do what its own mode allows
 without asking. For example, Codex in its `read-only` mode still runs commands
-that only read, inside its own sandbox. An agent with none of these modes keeps
-the mode it starts in (Atelier only moves it out of a bypass mode), and that
-mode decides what it does unasked.
+that only read, inside its own sandbox.
+
+An agent that offers neither a mode named for the level nor a mode known to ask
+before acting (`default`, `normal`, `ask`, `code`) could act without asking, so
+`edits` and `read-only` cannot be held there. Such a task fails before its
+prompt is sent, with `permissions read-only cannot be enforced: ...`. This
+covers an agent with no session modes at all, and one whose modes Atelier does
+not know, such as opencode's `build`. `atelier harness check` says so in its
+modes line. To run anyway, with only the requests the agent asks about checked,
+set `ATELIER_ALLOW_UNENFORCED_PERMISSIONS=1` in the environment (it is not read
+from `.env`); the run then prints a warning instead.
+
+A supervisor (see [interaction policies](interaction.md)) runs in the agent's
+read-only mode when it offers one, such as Codex's `read-only`, and every
+permission request it sends is rejected.
 
 The agent's own settings still apply at every level. Claude Code loads your
 user settings and the project's `.claude/settings.json` and

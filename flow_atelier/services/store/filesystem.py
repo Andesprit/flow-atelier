@@ -41,6 +41,32 @@ from flow_atelier.services.store.base import ConduitSource, StoreBase
 
 logger = logging.getLogger(__name__)
 
+# A flow's own files (inputs, outputs, sessions) are rewritten while it runs
+# and can hold megabytes of agent output. libyaml's emitter and parser read
+# and write the same YAML 15 to 60 times faster than the pure-Python ones.
+# conduit.yaml keeps the pure-Python path: people edit it, and its parse
+# errors show the offending line.
+_FLOW_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
+_FLOW_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+def _dump_flow_yaml(data: Any) -> str:
+    """Serialize one of a flow's own YAML files.
+
+    :param data: the mapping to write.
+    :returns: the YAML text, keys in insertion order.
+    """
+    return yaml.dump(data, Dumper=_FLOW_DUMPER, sort_keys=False)
+
+
+def _load_flow_yaml(text: str) -> Any:
+    """Parse one of a flow's own YAML files.
+
+    :param text: the file's text.
+    :returns: the parsed value.
+    """
+    return yaml.load(text, Loader=_FLOW_LOADER)
+
 if os.name == "nt":
     def _atomic_replace(src: str | Path, dst: str | Path) -> None:
         for attempt in range(5):
@@ -396,7 +422,7 @@ class FilesystemStore(StoreBase):
         (flow_dir / "flows").mkdir(exist_ok=True)
         self._flow_paths[flow_id] = flow_dir
         # input.yaml
-        (flow_dir / "input.yaml").write_text(yaml.safe_dump(inputs, sort_keys=False))
+        (flow_dir / "input.yaml").write_text(_dump_flow_yaml(inputs))
         # logs.jsonl (one JSON entry per line, appended as tasks run)
         (flow_dir / "logs.jsonl").write_text("")
         # progress.json (empty shell; engine writes real content immediately)
@@ -681,7 +707,7 @@ class FilesystemStore(StoreBase):
         path = self._flow_dir(flow_id) / "outputs.yaml"
         if not path.exists():
             return {}
-        loaded = yaml.safe_load(path.read_text())
+        loaded = _load_flow_yaml(path.read_text())
         return loaded if isinstance(loaded, dict) else {}
 
     def write_outputs(self, flow_id: str, outputs: dict[str, Any]) -> None:
@@ -693,7 +719,7 @@ class FilesystemStore(StoreBase):
         """
         path = self._flow_dir(flow_id) / "outputs.yaml"
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
-        tmp.write_text(yaml.safe_dump(outputs, sort_keys=False))
+        tmp.write_text(_dump_flow_yaml(outputs))
         _atomic_replace(tmp, path)
 
     # ------------------------------------------------------------------ sessions.yaml
@@ -707,7 +733,7 @@ class FilesystemStore(StoreBase):
         path = self._flow_dir(flow_id) / "sessions.yaml"
         if not path.exists():
             return {}
-        loaded = yaml.safe_load(path.read_text())
+        loaded = _load_flow_yaml(path.read_text())
         return loaded if isinstance(loaded, dict) else {}
 
     def write_sessions(self, flow_id: str, sessions: dict[str, dict[str, str]]) -> None:
@@ -718,7 +744,7 @@ class FilesystemStore(StoreBase):
         """
         path = self._flow_dir(flow_id) / "sessions.yaml"
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
-        tmp.write_text(yaml.safe_dump(sessions, sort_keys=False))
+        tmp.write_text(_dump_flow_yaml(sessions))
         _atomic_replace(tmp, path)
 
     # ------------------------------------------------------------------ input.yaml
@@ -731,7 +757,7 @@ class FilesystemStore(StoreBase):
         path = self._flow_dir(flow_id) / "input.yaml"
         if not path.exists():
             return {}
-        loaded = yaml.safe_load(path.read_text())
+        loaded = _load_flow_yaml(path.read_text())
         return loaded if isinstance(loaded, dict) else {}
 
     def append_input(self, flow_id: str, key: str, value: Any) -> None:
@@ -744,10 +770,10 @@ class FilesystemStore(StoreBase):
         path = self._flow_dir(flow_id) / "input.yaml"
         existing: dict[str, Any] = {}
         if path.exists():
-            loaded = yaml.safe_load(path.read_text())
+            loaded = _load_flow_yaml(path.read_text())
             if isinstance(loaded, dict):
                 existing = loaded
         existing[key] = value
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
-        tmp.write_text(yaml.safe_dump(existing, sort_keys=False))
+        tmp.write_text(_dump_flow_yaml(existing))
         _atomic_replace(tmp, path)

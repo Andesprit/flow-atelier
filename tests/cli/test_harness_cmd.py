@@ -123,15 +123,15 @@ _CODEX_MODES = ["read-only", "agent", "agent-full-access"]
     ("edits", _CLAUDE_MODES, "(permissions edits: runs will use acceptEdits)"),
     ("edits", _CODEX_MODES, "(permissions edits: runs will use read-only)"),
     ("read-only", _CODEX_MODES, "(permissions read-only: runs will use read-only)"),
-    ("read-only", _CLAUDE_MODES, "(permissions read-only: runs will use default; "
-     "that mode decides what the agent does unasked)"),
-    # opencode-like modes: nothing tells Atelier whether `build` asks.
-    ("read-only", ["build", "plan"], "(permissions read-only: runs will use build; "
-     "that mode decides what the agent does unasked)"),
-    ("edits", ["build", "plan"], "(permissions edits: runs will use build; "
-     "that mode decides what the agent does unasked)"),
+    # Claude's `default` asks before acting, so the level's check sees everything.
+    ("read-only", _CLAUDE_MODES, "(permissions read-only: runs will use default)"),
+    # opencode-like modes: nothing tells Atelier whether `build` asks, so runs fail.
+    ("read-only", ["build", "plan"], "(permissions read-only: runs fail, the agent "
+     "would run in its own mode build, which may act without asking)"),
+    ("edits", ["build", "plan"], "(permissions edits: runs fail, the agent would run "
+     "in its own mode build, which may act without asking)"),
     ("read-only", ["bypassPermissions", "default"], "(permissions read-only: runs will "
-     "use default; that mode decides what the agent does unasked)"),
+     "use default)"),
     ("read-only", ["bypassPermissions", "plan"], "(permissions read-only: runs fail, "
      "the agent starts in bypassPermissions, which skips permission requests)"),
 ])

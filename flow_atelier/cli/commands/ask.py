@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import get_args
 
 import typer
 from rich.markup import escape
@@ -13,7 +14,7 @@ from flow_atelier.cli.commands.run import drive_flow
 from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import _render_orchestration_msg
 from flow_atelier.core.atelier import Atelier
-from flow_atelier.schemas.conduit import Conduit, TaskDefinition
+from flow_atelier.schemas.conduit import AgentPermissions, Conduit, TaskDefinition
 from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 
 
@@ -42,6 +43,15 @@ def ask_cmd(
             ":<model> or :<model>:<effort>."
         ),
     ),
+    permissions: str | None = typer.Option(
+        None,
+        "--permissions",
+        help=(
+            "What the agent may do without asking: full, edits (read and "
+            "change files) or read-only. A level the agent cannot be held to "
+            "fails the run. Default: ATELIER_AGENT_PERMISSIONS, else full."
+        ),
+    ),
 ) -> None:
     """Start an interactive conversation with an AI agent in a target directory.
 
@@ -52,6 +62,8 @@ def ask_cmd(
     :param query: initial question or task sent to the agent.
     :param path: working directory passed to the agent's ACP session.
     :param harness: registry name of the agent, without the ``harness:`` prefix.
+    :param permissions: the task's permission level, or ``None`` for the
+        global setting.
     """
     if not query.strip():
         console.print("[red]error:[/red] query cannot be empty")
@@ -62,6 +74,12 @@ def ask_cmd(
             "expected a lowercase harness name, optionally followed by "
             ":<model> or :<model>:<effort>",
             param_hint="--harness",
+        )
+
+    levels = get_args(AgentPermissions)
+    if permissions is not None and permissions not in levels:
+        raise typer.BadParameter(
+            f"expected one of: {', '.join(levels)}", param_hint="--permissions"
         )
 
     atelier = Atelier()
@@ -77,6 +95,7 @@ def ask_cmd(
                 tool=f"harness:{harness}",
                 depends_on=[],
                 interactive=True,
+                permissions=permissions,
             )
         ],
     )

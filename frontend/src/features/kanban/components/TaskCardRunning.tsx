@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback } from "react";
 import type { Task } from "@/types/task";
 import { useConduits, getConduitSync } from "@/services/ConduitProvider";
 import { useTaskStore } from "@/runner";
-import { cancelTask as cancelEngine } from "@/runner";
 import { toolColor } from "@/constants/tools";
 import { cn } from "@/lib/cn";
 
@@ -10,9 +9,11 @@ interface Props {
   task: Task;
   selected?: boolean;
   onClick?: () => void;
+  /** Stops the run; no button is shown without it. */
+  onCancel?: () => void;
 }
 
-export function TaskCardRunning({ task: initialTask, selected, onClick }: Props) {
+export function TaskCardRunning({ task: initialTask, selected, onClick, onCancel }: Props) {
   const selectThisTask = useCallback((s: { tasks: Task[] }) => s.tasks.find((t) => t.name === initialTask.name), [initialTask.name]);
   const liveTask = useTaskStore(selectThisTask);
   const task = liveTask ?? initialTask;
@@ -58,15 +59,17 @@ export function TaskCardRunning({ task: initialTask, selected, onClick }: Props)
           {task.name}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); cancelEngine(task.name); }}
-            data-testid="cancel-button"
-            aria-label="Cancel task"
-            className="flex h-6 items-center px-1 font-mono text-micro uppercase tracking-[0.12em] text-muted-foreground hover:text-destructive focus-visible:outline-2 focus-visible:outline-primary"
-          >
-            cancel
-          </button>
+          {onCancel && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onCancel(); }}
+              data-testid="cancel-button"
+              aria-label="Cancel task"
+              className="flex h-6 items-center px-1 font-mono text-micro uppercase tracking-[0.12em] text-muted-foreground hover:text-destructive focus-visible:outline-2 focus-visible:outline-primary"
+            >
+              cancel
+            </button>
+          )}
           {hitl ? (
             <span className="shrink-0 font-mono text-micro uppercase tracking-[0.12em] text-warning">
               waiting for review

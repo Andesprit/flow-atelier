@@ -110,3 +110,39 @@ def test_ask_invalid_harness_is_a_usage_error(tmp_path, monkeypatch, harness) ->
     assert "--harness" in unstyle(result.output)
     assert "Traceback" not in result.output
     assert not (tmp_path / ".atelier" / "flows").exists()
+
+
+def test_ask_permissions_flag_sets_the_level(tmp_path, monkeypatch) -> None:
+    """``--permissions read-only`` reaches the agent; a bad level is a usage error.
+
+    :param tmp_path: pytest temporary directory fixture.
+    :param monkeypatch: pytest monkeypatch fixture.
+    """
+    project = tmp_path / "target-project"
+    project.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ATELIER_ATELIER_DIR", str(tmp_path / ".atelier"))
+    monkeypatch.delenv("ATELIER_AGENT_PERMISSIONS", raising=False)
+    script = json.dumps({
+        "modes": {"current": "agent", "available": [
+            {"id": "read-only", "name": "Read Only"}, {"id": "agent", "name": "Agent"},
+        ]},
+        "turns": [{"chunks": ["Looked only. [ATELIER_DONE]"]}],
+    })
+    launch = [sys.executable, str(FAKE_AGENT), "--script", script]
+    monkeypatch.setenv("ATELIER_HARNESSES", json.dumps({"custom-agent": launch}))
+
+    result = CliRunner().invoke(app, [
+        "ask", "Review it", "--path", str(project), "--harness", "custom-agent",
+        "--permissions", "read-only",
+    ])
+    assert result.exit_code == 0, result.output
+    flow_dir = next((tmp_path / ".atelier" / "flows").iterdir())
+    logs = [json.loads(line) for line in (flow_dir / "logs.jsonl").read_text().splitlines()]
+    assert "[mode_set:read-only]" in logs[-1]["output"]
+
+    result = CliRunner().invoke(app, [
+        "ask", "Review it", "--path", str(project), "--permissions", "none",
+    ])
+    assert result.exit_code == 2
+    assert "full, edits, read-only" in unstyle(result.output)

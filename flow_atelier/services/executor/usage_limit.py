@@ -23,6 +23,13 @@ _LIMIT_TEXT = re.compile(
     re.IGNORECASE,
 )
 
+# Narrower than _LIMIT_TEXT: it is matched against a turn that ended
+# normally, where "a 5-hour session limit" may just be the answer.
+_LIMIT_REPLY = re.compile(
+    r"hit your (?:usage )?limit|usage limit (?:reached|exceeded)|out of (?:usage|credits)",
+    re.IGNORECASE,
+)
+
 _UNIT_SECONDS = {"d": 86400, "h": 3600, "m": 60, "s": 1}
 _DURATION = re.compile(
     r"\bin\s+((?:\d+\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b"
@@ -64,6 +71,18 @@ def is_usage_limit(data: Any, message: str) -> bool:
         if data.get("codexErrorInfo") == "usageLimitExceeded":
             return True
     return bool(_LIMIT_TEXT.search(message))
+
+
+def is_usage_limit_reply(text: str) -> bool:
+    """Say whether an agent's normal reply is really a usage-limit notice.
+
+    Some agents end the turn normally and only say, in the reply, that the
+    plan's usage ran out.
+
+    :param text: the agent's whole reply to the turn.
+    :returns: ``True`` when the reply reports a usage limit.
+    """
+    return bool(_LIMIT_REPLY.search(text))
 
 
 def claude_reset(meta: Any) -> datetime | None:

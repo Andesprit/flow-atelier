@@ -1800,6 +1800,10 @@ shows the mode runs will use at the `ATELIER_AGENT_PERMISSIONS` level.
     permissions: read-only
 ```
 
+What happens after a rejection is up to the agent. Codex ends its turn, so
+the task fails and its error names the rejected request, for example
+`permissions read-only rejected: Edit files`.
+
 While neither is set, each run prints one line that says agents have full
 permissions, and keeps it with the first agent task's steps, so the run page
 shows it too. Setting either one, even to `full`, removes that line. A conduit

@@ -42,6 +42,9 @@ class PlannedTask:
     # The tool the installed recipe names, when this plan's ``tool`` came from
     # a per-task agent selection instead. ``None`` means the two agree.
     recipe_tool: str | None = None
+    # What an agent task may do without asking: ``full``, ``edits`` or
+    # ``read-only``. ``None`` for a task that runs no agent.
+    permissions: str | None = None
     plain_edges: list[PlannedEdge] = field(default_factory=list)
     conditional_edges: list[PlannedEdge] = field(default_factory=list)
     is_loop: bool = False
@@ -142,6 +145,7 @@ def build_plan(
     recipe: Conduit | None = None,
     isolation: PlanIsolation | None = None,
     children: dict[str, ExecutionPlan] | None = None,
+    agent_permissions: str | None = None,
 ) -> ExecutionPlan:
     """Build a static :class:`ExecutionPlan` from a validated conduit.
 
@@ -157,6 +161,8 @@ def build_plan(
         selections; each differing tool is reported as the recipe's default so
         the plan cannot be mistaken for the file on disk.
     :param isolation: the ``--worktree`` preview, when any task was selected.
+    :param agent_permissions: the ``ATELIER_AGENT_PERMISSIONS`` setting, used
+        for an agent task that names no ``permissions``; ``None`` is ``full``.
     :returns: the ordered, annotated execution plan.
     """
     isolated = set(isolation.tasks) if isolation is not None else set()
@@ -234,6 +240,11 @@ def build_plan(
             recipe_tool=(
                 installed[t.name]
                 if installed.get(t.name, t.tool) != t.tool
+                else None
+            ),
+            permissions=(
+                t.permissions or agent_permissions or "full"
+                if t.tool.startswith("harness:")
                 else None
             ),
             plain_edges=plain_edges,

@@ -35,7 +35,7 @@ async def create_schedule(
     """
     try:
         job = atelier.create_schedule(payload)
-    except ValueError as e:
+    except (OSError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     # Hot-register with the embedded daemon if one is attached.
     daemon = getattr(atelier, "scheduler_daemon", None)

@@ -20,6 +20,10 @@ Rules:
       when `--worktree` selected it, otherwise the run's shared working
       directory. Like `.tool` it never skips, and it names where the work is,
       not that any work happened there.
+
+A ``tool:bash`` step also gets the values as environment variables (see
+:func:`shell_env`), because a value substituted into shell text is parsed as
+shell code while a value read from ``"$INPUT_X"`` never is.
 """
 from __future__ import annotations
 
@@ -29,6 +33,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 _TEMPLATE_RE = re.compile(r"\{\{\s*([^}]+?)\s*\}\}")
+_ENV_UNSAFE_RE = re.compile(r"[^A-Z0-9_]")
 
 
 def _truncate_entry(text: str, entry_chars: int) -> str:
@@ -232,3 +237,100 @@ def resolve(
         raise TemplateError(f"unknown template expression: {expr!r}")
 
     return _TEMPLATE_RE.sub(_sub, template)
+
+
+def env_var_name(prefix: str, name: str) -> str:
+    """Name the environment variable that carries one template value.
+
+    :param prefix: ``INPUT_``, ``OUTPUT_`` or ``LOOP_``.
+    :param name: the input, task or loop value name.
+    :returns: ``prefix`` plus ``name`` in upper case, with every character
+        that is not A-Z, 0-9 or ``_`` turned into ``_``.
+    """
+    return prefix + _ENV_UNSAFE_RE.sub("_", name.upper())
+
+
+def shell_env(
+    inputs: Mapping[str, Any],
+    task_outputs: Mapping[str, str],
+    unavailable_tasks: set[str] | None = None,
+    loop_history: list[str] | None = None,
+    loop_history_limit: int = 0,
+    loop_history_entry_chars: int = 0,
+    iteration: int | None = None,
+) -> dict[str, str]:
+    """Return the values a template could use, keyed by environment variable.
+
+    ``INPUT_<NAME>`` holds each ``{{inputs.<name>}}`` and ``OUTPUT_<TASK>``
+    each ``{{<task>.output}}`` in ``task_outputs`` that would resolve; the
+    engine passes the outputs of the task's dependencies. A looping task gets
+    ``LOOP_ITERATION`` (1-based), ``LOOP_PREVIOUS`` and ``LOOP_HISTORY``,
+    rendered exactly as ``{{loop.*}}`` is.
+
+    Every variable also reserves ``<NAME>_FILE``, which the bash executor
+    points at a file holding the value. When two names map to the same
+    variable (``my-name`` and ``my_name``), names are taken in sorted order
+    and the first to claim either variable keeps both; the later name gets
+    none and stays reachable through ``{{...}}`` only.
+
+    :param inputs: mapping of input name -> value, as :func:`resolve` takes it.
+    :param task_outputs: mapping of task name -> completed output string.
+    :param unavailable_tasks: names of tasks whose outputs cannot be used
+        (skipped / failed / cancelled).
+    :param loop_history: this task's prior-iteration outputs, oldest first.
+    :param loop_history_limit: max iterations ``LOOP_HISTORY`` renders, newest
+        kept; <= 0 means unlimited.
+    :param loop_history_entry_chars: max characters per rendered history
+        entry; <= 0 means unlimited.
+    :param iteration: the 1-based iteration about to run, for a looping task;
+        ``None`` sets no ``LOOP_*`` variable.
+    :returns: mapping of variable name -> value.
+    """
+    unavailable = unavailable_tasks or set()
+    history = loop_history or []
+    candidates = [
+        (env_var_name("INPUT_", name), str(inputs[name])) for name in sorted(inputs)
+    ] + [
+        (env_var_name("OUTPUT_", name), task_outputs[name])
+        for name in sorted(task_outputs)
+        if name not in unavailable
+    ]
+    if iteration is not None:
+        candidates += [
+            ("LOOP_ITERATION", str(iteration)),
+            ("LOOP_PREVIOUS", history[-1] if history else ""),
+            ("LOOP_HISTORY", _format_history(
+                history, loop_history_limit, loop_history_entry_chars
+            )),
+        ]
+    env: dict[str, str] = {}
+    taken: set[str] = set()
+    for var, value in candidates:
+        if var in taken or f"{var}_FILE" in taken:
+            continue
+        taken.update((var, f"{var}_FILE"))
+        env[var] = value
+    return env
+
+
+def shell_env_hints(template: str) -> list[tuple[str, str]]:
+    """Pair each value placeholder in ``template`` with its environment variable.
+
+    Lists ``{{inputs.*}}``, ``{{<task>.output}}`` and ``{{loop.*}}`` only:
+    they carry text from callers, agents and commands, which the shell parses
+    as code once it is substituted into a command. ``{{conduit_dir}}``,
+    ``.tool`` and ``.workspace`` are paths and names the author controls.
+
+    :param template: a ``tool:bash`` task body.
+    :returns: ``(placeholder, variable)`` pairs in source order, each once.
+    """
+    prefixes = {"input": "INPUT_", "task": "OUTPUT_", "loop": "LOOP_"}
+    hints: list[tuple[str, str]] = []
+    for ref in extract_template_refs(template):
+        if ref.kind not in prefixes:
+            continue
+        name = ref.value.removeprefix("loop.")
+        hint = ("{{" + ref.raw + "}}", env_var_name(prefixes[ref.kind], name))
+        if hint not in hints:
+            hints.append(hint)
+    return hints

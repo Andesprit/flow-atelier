@@ -56,6 +56,9 @@ pass your real check command. The test task prints the command's output,
 including its error output, then `TESTS FAILED` when that command exits
 nonzero and `TESTS PASSED` when it succeeds. A failing check is
 feedback for the next loop attempt, so it does not abort the run by itself.
+The loop would go on even if the test task itself exited nonzero: in a loop
+with `until`, a failed try counts as one more try, and the next one sees its
+output and error in `{{loop.previous}}`.
 
 ## Preview and run
 
@@ -134,6 +137,7 @@ atelier status latest
 The `rm` resets only this demo's test counter. A real project should fix its
 failing test or implementation. You can raise `repeat` if four attempts are
 too few; leave `on_exhaust: fail` in place when later tasks require green
-tests. If an agent itself fails inside the loop, `atelier diagnose latest`
-names the nested task, agent, and iteration and gives the parent run's
+tests. If an agent itself fails inside the loop, that try counts as failed
+and the loop goes on. If the last try fails that way too, `atelier diagnose
+latest` names the nested task, agent, and iteration and gives the parent run's
 `atelier run --resume <flow-id>` command.

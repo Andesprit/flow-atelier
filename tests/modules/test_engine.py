@@ -991,7 +991,7 @@ async def test_until_not_match_breaks_when_pattern_absent(store):
 
 
 async def test_until_not_evaluated_on_failed_iteration(store):
-    """Fail-fast wins over until — a failed iteration never triggers early-exit.
+    """A failed iteration counts as a try that did not meet until; the loop goes on.
 
     :param store: FilesystemStore fixture.
     """
@@ -1002,14 +1002,15 @@ async def test_until_not_evaluated_on_failed_iteration(store):
              "until": "output.match(DONE)"},
         ]
     )
-    # Iteration 2 fails; its output contains "DONE" — but fail-fast should win.
+    # Iteration 2 fails; its output contains "DONE" — but it must not end the loop.
     fake = ScriptedExecutor(["wait", "DONE", "x", "x", "x"], fail_on=2)
     engine = Engine({"tool:bash": fake}, store)
-    with pytest.raises(RuntimeError):
-        await engine.run(conduit, {})
-    flow_id = store.list_flows()[0]
+    flow_id = await engine.run(conduit, {})
+    assert len(fake.calls) == 5
     p = store.read_progress(flow_id)
-    assert p.tasks["poll"].status == TaskStatus.failed
+    assert p.tasks["poll"].status == TaskStatus.completed
+    assert p.tasks["poll"].iteration == 5
+    assert p.tasks["poll"].loop_outcome.met is False
 
 
 async def test_while_match_breaks_when_pattern_absent(store):
@@ -1080,7 +1081,7 @@ async def test_while_runs_full_repeat_when_predicate_holds(store):
 
 
 async def test_while_not_evaluated_on_failed_iteration(store):
-    """Fail-fast wins over while too — failure stops the loop.
+    """A failed iteration never ends a while loop, even when its output would.
 
     :param store: FilesystemStore fixture.
     """
@@ -1091,13 +1092,14 @@ async def test_while_not_evaluated_on_failed_iteration(store):
              "while": "output.match(retry)"},
         ]
     )
-    fake = ScriptedExecutor(["retry", "retry", "x", "x", "x"], fail_on=2)
+    # Iteration 2 fails without "retry"; checked, it would end the loop there.
+    fake = ScriptedExecutor(["retry", "x", "retry", "done", "x"], fail_on=2)
     engine = Engine({"tool:bash": fake}, store)
-    with pytest.raises(RuntimeError):
-        await engine.run(conduit, {})
-    flow_id = store.list_flows()[0]
+    flow_id = await engine.run(conduit, {})
+    assert len(fake.calls) == 4
     p = store.read_progress(flow_id)
-    assert p.tasks["poll"].status == TaskStatus.failed
+    assert p.tasks["poll"].status == TaskStatus.completed
+    assert p.tasks["poll"].iteration == 4
 
 
 # ---------------------------------------------------------------- conduit-scope predicate
@@ -2230,3 +2232,91 @@ async def test_executor_timings_are_saved_with_the_log_entry(store):
     flow_id = await engine.run(conduit, {})
     logs = [e for e in store.read_logs(flow_id) if e.task == "a"]
     assert logs[0].extra == {"timings": {"startup_seconds": 1.25}}
+
+
+async def test_bash_steps_get_their_template_values_as_environment(store):
+    """Inputs, the depends_on chain's outputs and loop values reach a bash step.
+
+    ``other`` finishes first (one task at a time, in recipe order) but is not
+    a dependency, so like ``{{other.output}}`` it is not offered: whether it
+    had finished would otherwise depend on timing.
+
+    :param store: FilesystemStore fixture.
+    """
+    conduit = _conduit(
+        [
+            {"name": "other", "description": "d", "task": "x", "tool": "tool:bash"},
+            {"name": "prep", "description": "d", "task": "x", "tool": "tool:bash"},
+            {"name": "greet", "description": "d", "task": "x", "tool": "tool:bash",
+             "depends_on": ["prep"], "repeat": 2},
+        ],
+        inputs={"name": "who"},
+        max_concurrency=1,
+    )
+    seen: dict[str, list[dict[str, str]]] = {}
+
+    class Capturing(FakeExecutor):
+        async def execute(self, task, resolved_command, context):
+            """Record the environment values each call was handed.
+
+            :param task: task definition being executed.
+            :param resolved_command: command string after template resolution.
+            :param context: flow context provided by the engine.
+            """
+            seen.setdefault(task.name, []).append(dict(context.shell_env))
+            return await super().execute(task, resolved_command, context)
+
+    engine = Engine({"tool:bash": Capturing()}, store)
+    await engine.run(conduit, {"name": "$(touch pwned)"})
+
+    assert seen["prep"] == [{"INPUT_NAME": "$(touch pwned)"}]
+    base = {"INPUT_NAME": "$(touch pwned)", "OUTPUT_PREP": "out-prep"}
+    assert seen["greet"] == [
+        {**base, "LOOP_ITERATION": "1", "LOOP_PREVIOUS": "", "LOOP_HISTORY": ""},
+        {**base, "LOOP_ITERATION": "2", "LOOP_PREVIOUS": "out-greet",
+         "LOOP_HISTORY": "--- iteration 1 ---\nout-greet"},
+    ]
+
+
+async def test_an_input_read_from_its_variable_cannot_inject_commands(store, tmp_path):
+    """The injection reproduction, written with "$INPUT_NAME": nothing runs.
+
+    :param store: FilesystemStore fixture.
+    :param tmp_path: pytest temp directory, the run's working directory.
+    """
+    from flow_atelier.services.executor.bash import BashExecutor
+
+    conduit = _conduit(
+        [
+            {"name": "safe", "description": "d", "tool": "tool:bash",
+             "task": 'echo "hello $INPUT_NAME"'},
+        ],
+        inputs={"name": "who"},
+    )
+    engine = Engine({"tool:bash": BashExecutor()}, store)
+    flow_id = await engine.run(conduit, {"name": "$(touch pwned)"}, working_dir=tmp_path)
+
+    assert store.read_outputs(flow_id)["safe"] == "hello $(touch pwned)\n"
+    assert not (tmp_path / "pwned").exists()
+
+
+async def test_a_large_output_interpolated_into_a_bash_step_runs(store, tmp_path):
+    """A 1.5 MB {{make.output}} used to fail as one `bash -c` argument.
+
+    :param store: FilesystemStore fixture.
+    :param tmp_path: pytest temp directory, the run's working directory.
+    """
+    from flow_atelier.services.executor.bash import BashExecutor
+
+    conduit = _conduit(
+        [
+            {"name": "make", "description": "d", "tool": "tool:bash",
+             "task": "head -c 1500000 /dev/zero | tr '\\0' a"},
+            {"name": "use", "description": "d", "tool": "tool:bash",
+             "depends_on": ["make"], "task": "x='{{make.output}}'; echo ${#x}"},
+        ]
+    )
+    engine = Engine({"tool:bash": BashExecutor()}, store)
+    flow_id = await engine.run(conduit, {}, working_dir=tmp_path)
+
+    assert store.read_outputs(flow_id)["use"] == "1500000\n"

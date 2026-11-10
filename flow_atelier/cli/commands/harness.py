@@ -20,6 +20,7 @@ from rich.table import Table
 from flow_atelier.cli._shared import console
 from flow_atelier.cli.main import harness_app, list_app
 from flow_atelier.core.atelier import Atelier
+from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.schemas.conduit import split_harness_tool
 from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 from flow_atelier.services.executor.acp_registry import (
@@ -33,8 +34,10 @@ from flow_atelier.services.executor.acp_registry import (
     write_snapshot,
 )
 from flow_atelier.services.executor.harness import (
+    LIMITED_MODE_KEYWORDS,
     PROBE_TIMEOUT_SECONDS,
     AcpHarnessExecutor,
+    limited_mode,
 )
 
 
@@ -113,12 +116,41 @@ def harness_list_cmd(
     )
 
 
-def _render_probe(tool: str, launch: list[str], result) -> None:
+def _run_mode_note(result, level: str) -> str:
+    """Say which mode a run at permission ``level`` would use.
+
+    A safer level asks :func:`limited_mode`, the choice a run makes. A mode
+    it keeps rather than picks for the level is the agent's own, and Atelier
+    cannot tell whether that mode asks before acting.
+
+    :param result: the :class:`ProbeResult` whose modes are listed.
+    :param level: the ``ATELIER_AGENT_PERMISSIONS`` level, ``full`` when unset.
+    :returns: the text to append to the modes line, possibly empty.
+    """
+    if level == "full":
+        return f" (runs will use {result.permissive_mode})" if result.permissive_mode else ""
+    try:
+        mode = limited_mode(result.modes, result.current_mode, level)
+    except RuntimeError:
+        return (
+            f" (permissions {level}: runs fail, the agent starts in "
+            f"{result.current_mode}, which skips permission requests)"
+        )
+    if any(keyword in mode.lower() for keyword in LIMITED_MODE_KEYWORDS[level]):
+        return f" (permissions {level}: runs will use {mode})"
+    return (
+        f" (permissions {level}: runs will use {mode}; that mode decides what "
+        "the agent does unasked)"
+    )
+
+
+def _render_probe(tool: str, launch: list[str], result, level: str) -> None:
     """Print one connection-check report.
 
     :param tool: the harness tool name (or ``ad-hoc`` for a ``--cmd`` check).
     :param launch: the argv that was checked.
     :param result: the :class:`ProbeResult` to render.
+    :param level: the ``ATELIER_AGENT_PERMISSIONS`` level runs would use.
     """
     console.print(f"[bold]{escape(tool)}[/bold]  [dim]{escape(' '.join(launch))}[/dim]")
     if result.ok:
@@ -127,7 +159,7 @@ def _render_probe(tool: str, launch: list[str], result) -> None:
             console.print(f"  [dim]agent:[/dim] {escape(result.agent)}")
         console.print(f"  [dim]protocol:[/dim] ACP v{result.protocol_version}")
         if result.modes:
-            picked = f" (runs will use {result.permissive_mode})" if result.permissive_mode else ""
+            picked = _run_mode_note(result, level)
             console.print(
                 f"  [dim]modes:[/dim] {escape(', '.join(result.modes))}{escape(picked)}"
             )
@@ -242,7 +274,8 @@ def harness_check_cmd(
         label = tool
 
     result = asyncio.run(executor.probe(timeout=timeout, prompt=prompt))
-    _render_probe(label, executor.launch_cmd, result)
+    level = AtelierSettings().agent_permissions or "full"
+    _render_probe(label, executor.launch_cmd, result, level)
     if not result.ok:
         raise typer.Exit(code=1)
 

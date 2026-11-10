@@ -199,3 +199,171 @@ async def test_recorded_output_stops_at_the_cap(monkeypatch):
     recorded = "".join(s.text for _, s in steps if s.kind == "stdout")
     assert 0 < len(recorded.encode()) <= 20
     assert r.stdout.count("line-") == 50
+
+
+def _value_ctx(tmp_path, **values: str) -> FlowContext:
+    """Build a FlowContext that runs in ``tmp_path`` with step values.
+
+    :param tmp_path: pytest temp directory, used as the working directory.
+    :param values: variable name -> value, as the engine would pass them.
+    """
+    ctx = _ctx()
+    ctx.working_dir = tmp_path
+    ctx.shell_env = dict(values)
+    return ctx
+
+
+async def test_a_value_read_from_its_variable_is_never_run(tmp_path):
+    """The injection that `{{inputs.name}}` allows does nothing as "$INPUT_NAME"."""
+    cmd = 'echo "hello $INPUT_NAME"'
+    ctx = _value_ctx(tmp_path, INPUT_NAME="$(touch pwned)`touch pwned2`; touch pwned3")
+    r = await BashExecutor().execute(_task(cmd), cmd, ctx)
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == "hello $(touch pwned)`touch pwned2`; touch pwned3\n"
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_every_value_is_also_in_a_file_removed_after_the_step(tmp_path):
+    """<NAME>_FILE holds the exact value, newlines included, for the step only."""
+    cmd = 'cat "$OUTPUT_BUILD_FILE"; printf "%s" "$OUTPUT_BUILD_FILE" > path.txt'
+    ctx = _value_ctx(tmp_path, OUTPUT_BUILD="line one\nline two\n")
+    r = await BashExecutor().execute(_task(cmd), cmd, ctx)
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == "line one\nline two\n"
+    path = (tmp_path / "path.txt").read_text()
+    assert path
+    assert not os.path.exists(path)
+
+
+async def test_a_value_over_the_limit_arrives_only_as_a_file(tmp_path):
+    """150,000 bytes is too big for one variable, so only <NAME>_FILE is set."""
+    big = "x" * 150_000
+    cmd = 'echo "plain:${INPUT_BIG+set}"; wc -c < "$INPUT_BIG_FILE"; echo "$INPUT_SMALL"'
+    ctx = _value_ctx(tmp_path, INPUT_BIG=big, INPUT_SMALL="ok")
+    r = await BashExecutor().execute(_task(cmd), cmd, ctx)
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout.split() == ["plain:", "150000", "ok"]
+
+
+async def test_values_past_the_total_budget_arrive_only_as_files(tmp_path, monkeypatch):
+    """Once the step's plain values reach the total cap, later names get files only."""
+    monkeypatch.setattr(bash_mod, "ENV_BYTES", 5)
+    cmd = 'echo "${INPUT_A-unset} ${INPUT_B-unset}"; cat "$INPUT_B_FILE"'
+    ctx = _value_ctx(tmp_path, INPUT_A="abc", INPUT_B="def")
+    r = await BashExecutor().execute(_task(cmd), cmd, ctx)
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == "abc unset\ndef"
+
+
+async def test_the_names_a_script_reads_get_the_budget_first(tmp_path, monkeypatch):
+    """A big input sorted first cannot push out the output the step reads."""
+    monkeypatch.setattr(bash_mod, "ENV_BYTES", 3)
+    cmd = 'echo "$OUTPUT_REVIEW"; env | grep -c "^INPUT_DO[C]="'
+    ctx = _value_ctx(tmp_path, INPUT_DOC="abc", OUTPUT_REVIEW="ok")
+    r = await BashExecutor().execute(_task(cmd), cmd, ctx)
+    assert r.stdout == "ok\n0\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows caps a command line at 32 KB")
+async def test_plain_values_leave_programs_their_argument_room(tmp_path):
+    """Six 95 KB values passed as arguments still fit under macOS's 1 MB limit.
+
+    Only one of them also sits in the environment, which every program the
+    step starts inherits; the others come through their files.
+    """
+    values = {f"OUTPUT_PART{i}": "a" * 95_000 for i in range(6)}
+    args = " ".join(f'"$(cat "$OUTPUT_PART{i}_FILE")"' for i in range(6))
+    cmd = f'/bin/echo {args} > /dev/null && env | grep -c "^OUTPUT_PART[0-9]="'
+    r = await BashExecutor().execute(_task(cmd), cmd, _value_ctx(tmp_path, **values))
+    assert (r.exit_code, r.stderr) == (0, "")
+    assert r.stdout == "1\n"
+
+
+async def test_a_lone_surrogate_does_not_break_the_step(tmp_path):
+    """Half an emoji from JSON has no UTF-8 bytes; a step can still run."""
+    cmd = 'echo "hi ${INPUT_NOTE-unset}"; cat "$INPUT_NOTE_FILE"'
+    ctx = _value_ctx(tmp_path, INPUT_NOTE="half \ud83d")
+    r = await BashExecutor().execute(_task(cmd), cmd, ctx)
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == "hi unset\nhalf ?"
+
+
+async def test_a_value_with_a_nul_byte_does_not_break_the_step(tmp_path):
+    """No variable can hold NUL, so that value is only in its file."""
+    cmd = 'echo "${INPUT_RAW-unset}"; wc -c < "$INPUT_RAW_FILE"'
+    ctx = _value_ctx(tmp_path, INPUT_RAW="a\0b")
+    r = await BashExecutor().execute(_task(cmd), cmd, ctx)
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout.split() == ["unset", "3"]
+
+
+async def test_a_script_far_over_the_argument_limit_runs(tmp_path):
+    """A 1.5 MB script used to fail as one `bash -c` argument; a file has no limit."""
+    cmd = f"x='{'a' * 1_500_000}'\necho ${{#x}}"
+    r = await BashExecutor().execute(_task(cmd), cmd, _value_ctx(tmp_path))
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == "1500000\n"
+
+
+async def test_a_small_script_still_runs_as_bash_c(tmp_path):
+    """$0 and $- stay what they were, so "$0" -c still starts bash."""
+    cmd = "case $- in *c*) echo inline;; esac\n\"$0\" -c 'echo nested ok'"
+    r = await BashExecutor().execute(_task(cmd), cmd, _value_ctx(tmp_path))
+    assert (r.exit_code, r.stderr) == (0, "")
+    assert r.stdout == "inline\nnested ok\n"
+
+
+@pytest.mark.parametrize("inline_bytes", [bash_mod.INLINE_BYTES, 0])
+async def test_bash_error_lines_read_the_same_on_every_run(
+    tmp_path, monkeypatch, inline_bytes
+):
+    """No per-run script path in bash's own errors, inline or from a file."""
+    monkeypatch.setattr(bash_mod, "INLINE_BYTES", inline_bytes)
+    cmd = "if ( no_such_cmd_q ) 2>&1; then :; fi\nno_such_cmd_q"
+    first = await BashExecutor().execute(_task(cmd), cmd, _value_ctx(tmp_path))
+    second = await BashExecutor().execute(_task(cmd), cmd, _value_ctx(tmp_path))
+    assert "atelier-step-" not in first.stdout + first.stderr
+    assert "no_such_cmd_q" in first.stderr
+    assert (first.stdout, first.stderr) == (second.stdout, second.stderr)
+
+
+async def test_a_script_file_never_takes_the_task_name(tmp_path, monkeypatch):
+    """A task named after a Windows device (nul, con) gets a plain script name."""
+    monkeypatch.setattr(bash_mod, "INLINE_BYTES", 0)
+    task = _task('basename "$0"')
+    task.name = "nul"
+    r = await BashExecutor().execute(task, task.task, _value_ctx(tmp_path))
+    assert (r.exit_code, r.stdout) == (0, "step.sh\n")
+
+
+async def test_a_file_only_value_hides_an_inherited_variable_of_its_name(
+    tmp_path, monkeypatch
+):
+    """A parent run's INPUT_BIG never stands in for a value too big to set."""
+    monkeypatch.setenv("INPUT_BIG", "stale-parent")
+    monkeypatch.setenv("OUTPUT_DIR", "/my/build")
+    cmd = 'echo "plain:${INPUT_BIG-unset} dir:$OUTPUT_DIR"; wc -c < "$INPUT_BIG_FILE"'
+    ctx = _value_ctx(tmp_path, INPUT_BIG="x" * 150_000)
+    r = await BashExecutor().execute(_task(cmd), cmd, ctx)
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout.split() == ["plain:unset", "dir:/my/build", "150000"]
+
+
+async def test_a_named_variable_left_unset_is_reported(tmp_path, monkeypatch):
+    """A script that names a value with only a file form hears why it is empty."""
+    monkeypatch.setattr(bash_mod, "ENV_BYTES", 5)
+    seen = []
+
+    async def on_step(step):
+        seen.append(step.text)
+
+    cmd = 'echo "[$OUTPUT_B]"; cat "$OUTPUT_A_FILE"'
+    ctx = _value_ctx(tmp_path, OUTPUT_A="never named", OUTPUT_B="toolong")
+    ctx.on_step = on_step
+    r = await BashExecutor().execute(_task(cmd), cmd, ctx)
+    note = (
+        'atelier: OUTPUT_B is not set: the step\'s values pass the 5-byte '
+        'variable budget; read "$OUTPUT_B_FILE"'
+    )
+    assert (r.exit_code, r.stdout, r.stderr) == (0, "[]\nnever named", note)
+    assert seen[0] == note  # live, before the script's own lines

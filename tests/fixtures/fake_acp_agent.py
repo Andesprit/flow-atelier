@@ -33,6 +33,7 @@ Script schema::
                 "stop": "end_turn",
                 "ask_permission": null | {
                     "summary": "...",
+                    "kind": "execute",   // the ACP tool kind asked about
                     "options": [{"id": "allow", "label": "Allow"}]
                 }
             },
@@ -347,7 +348,7 @@ class FakeAgent:
             tool_call = ToolCallUpdate(
                 tool_call_id="tc-1",
                 title=ask.get("summary", "permission"),
-                kind="execute",
+                kind=ask.get("kind", "execute"),
                 status="pending",
                 raw_input=ask.get("raw_input"),
             )

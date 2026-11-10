@@ -7,9 +7,12 @@ from flow_atelier.modules.templating import (
     SkipSignal,
     TemplateError,
     TemplateRef,
+    env_var_name,
     extract_task_refs,
     extract_template_refs,
     resolve,
+    shell_env,
+    shell_env_hints,
 )
 
 
@@ -268,3 +271,78 @@ def test_extract_template_refs_classifies_task_tool():
     assert extract_template_refs("{{build.tool}}") == [
         TemplateRef("task_tool", "build", "build.tool")
     ]
+
+
+@pytest.mark.parametrize(
+    ("prefix", "name", "expected"),
+    [
+        ("INPUT_", "name", "INPUT_NAME"),
+        ("INPUT_", "repo-url", "INPUT_REPO_URL"),
+        ("INPUT_", "a.b c", "INPUT_A_B_C"),
+        ("OUTPUT_", "Build_2", "OUTPUT_BUILD_2"),
+    ],
+)
+def test_env_var_name_is_upper_case_with_unsafe_characters_replaced(
+    prefix: str, name: str, expected: str
+):
+    """Every character outside A-Z, 0-9 and _ becomes _."""
+    assert env_var_name(prefix, name) == expected
+
+
+def test_shell_env_carries_inputs_and_resolvable_outputs():
+    """Inputs and usable outputs become variables; unavailable ones do not."""
+    env = shell_env(
+        {"name": "$(touch pwned)", "count": 3},
+        {"build": "built\n", "lint": "skipped?"},
+        unavailable_tasks={"lint"},
+    )
+    assert env == {
+        "INPUT_COUNT": "3",
+        "INPUT_NAME": "$(touch pwned)",
+        "OUTPUT_BUILD": "built\n",
+    }
+
+
+def test_shell_env_sets_loop_values_only_for_a_looping_task():
+    """LOOP_* mirror {{loop.*}} exactly, and only when an iteration is given."""
+    history = ["first", "second"]
+    assert not any(k.startswith("LOOP_") for k in shell_env({}, {}, loop_history=history))
+    env = shell_env({}, {}, loop_history=history, loop_history_limit=1, iteration=3)
+    assert env["LOOP_ITERATION"] == "3"
+    assert env["LOOP_PREVIOUS"] == resolve("{{loop.previous}}", {}, {}, loop_history=history)
+    assert env["LOOP_HISTORY"] == resolve(
+        "{{loop.history}}", {}, {}, loop_history=history, loop_history_limit=1
+    )
+    assert shell_env({}, {}, iteration=1)["LOOP_PREVIOUS"] == ""
+
+
+def test_shell_env_collisions_keep_the_name_that_sorts_first():
+    """Two names for one variable: the first in sorted order keeps it."""
+    env = shell_env({"my_name": "underscore", "my-name": "hyphen"}, {})
+    assert env == {"INPUT_MY_NAME": "hyphen"}
+
+
+def test_shell_env_a_name_cannot_take_another_names_file_variable():
+    """`x` reserves INPUT_X_FILE, so input `x_file` gets no variable."""
+    env = shell_env({"x": "plain", "x_file": "other"}, {})
+    assert env == {"INPUT_X": "plain"}
+
+
+def test_shell_env_hints_name_the_variable_for_each_value_placeholder():
+    """Inputs, outputs and loop values are listed once, in source order."""
+    template = (
+        "echo {{inputs.repo-url}} {{ build.output }} {{loop.previous}} "
+        "{{inputs.repo-url}} {{loop.history}}"
+    )
+    assert shell_env_hints(template) == [
+        ("{{inputs.repo-url}}", "INPUT_REPO_URL"),
+        ("{{build.output}}", "OUTPUT_BUILD"),
+        ("{{loop.previous}}", "LOOP_PREVIOUS"),
+        ("{{loop.history}}", "LOOP_HISTORY"),
+    ]
+
+
+def test_shell_env_hints_leave_out_paths_and_names_the_author_controls():
+    """conduit_dir, .workspace and .tool are not values from outside."""
+    template = 'cd {{conduit_dir}} && ls {{build.workspace}} && echo {{build.tool}}'
+    assert shell_env_hints(template) == []

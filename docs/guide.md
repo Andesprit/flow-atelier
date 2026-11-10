@@ -131,6 +131,17 @@ PATH. `atelier list harnesses` names the missing binary when it isn't there.
 
 Either way, logging in is yours to do, with that agent's own CLI.
 
+**Gemini CLI no longer works with a personal Google login.** Since 18 June
+2026, Google does not serve Gemini CLI to consumer accounts: Login with Google
+no longer works for personal, Google AI Pro and Google AI Ultra accounts. To
+use `harness:gemini`, set Gemini CLI up with a paid Gemini API key, Vertex AI,
+or an existing Gemini Code Assist Standard or Enterprise license. Google stopped
+selling Standard and Enterprise on 9 October 2026 and is phasing them out
+([schedule](https://docs.cloud.google.com/gemini/docs/codeassist/sunset)), so
+prefer an API key or Vertex AI for a new setup. See
+[Google's notice](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)
+and [Gemini CLI's authentication guide](https://github.com/google-gemini/gemini-cli/blob/main/docs/get-started/authentication.mdx).
+
 `npx` spends about a second on every launch resolving a package it has
 already cached, and a conduit launches the agent once per task. Install
 the pinned version once and every launch runs it directly:
@@ -505,10 +516,11 @@ the source file; pass `--input-file` again to feed it a new version.
 `--resume` is refused with `--input-file`, because resuming continues a
 flow's saved inputs rather than starting a new run.
 
-File contents are ordinary input values: a conduit that drops an input
-into a `tool:bash` command interpolates it the same way it interpolates
-anything else. `--input-file` is a convenience for passing documents, not
-a sandbox and not secret storage.
+File contents are ordinary input values. A `tool:bash` step should read
+them from `"$INPUT_<NAME>"` or the file at `"$INPUT_<NAME>_FILE"`, not
+from `{{inputs.<name>}}` in the command (see
+[Values in shell steps](#values-in-shell-steps)). `--input-file` is a
+convenience for passing documents, not a sandbox and not secret storage.
 
 ### Writing a conduit with your editor's help
 
@@ -737,7 +749,7 @@ inputs:
 tasks:
   - name: write
     description: write the summary line
-    task: "echo summary of {{inputs.finding}}"
+    task: echo "summary of $INPUT_FINDING"
     tool: tool:bash
     depends_on: []
 YAML
@@ -773,7 +785,7 @@ inputs:
 tasks:
   - name: write
     description: write the summary line
-    task: "echo {{inputs.tone}} summary of {{inputs.finding}}"
+    task: echo "$INPUT_TONE summary of $INPUT_FINDING"
     tool: tool:bash
     depends_on: []
 ```
@@ -898,12 +910,14 @@ inputs:
 tasks:
   - greet:
       description: greet someone
-      task: "echo hello {{inputs.name}}"
+      task: echo "hello $INPUT_NAME"
       tool: tool:bash
       depends_on: []
 ```
 
-Run it with `atelier run hello --input name=world`.
+Run it with `atelier run hello --input name=world`. The shell reads the input
+from the `INPUT_NAME` environment variable; see
+[Values in shell steps](#values-in-shell-steps) for why.
 
 ### A bigger conduit (`deploy_pipeline`)
 
@@ -926,7 +940,7 @@ inputs:
 tasks:
   - clone_repo:
       description: Clone
-      task: "git clone -b {{inputs.branch}} {{inputs.repo_url}} /tmp/build"
+      task: 'git clone -b "$INPUT_BRANCH" "$INPUT_REPO_URL" /tmp/build'
       tool: tool:bash
       depends_on: []
 
@@ -937,6 +951,7 @@ tasks:
       depends_on: [clone_repo]
       repeat: 3                          # try up to 3 times
       until: output.match(PASS)        # ...stopping early on success
+      on_exhaust: fail                 # stop the run if no try passed
 
   - code_review:
       description: AI review
@@ -982,8 +997,9 @@ Step by step:
 - `clone_repo` runs first because nothing depends on it.
 - `run_tests` and `code_review` both wait on `clone_repo`, then run
 in parallel.
-- `run_tests` retries up to 3 times, stopping as soon as the output
-contains `PASS`.
+- `run_tests` runs `make test` up to 3 times, stopping as soon as the
+output contains `PASS`. After 3 runs without `PASS` the pipeline stops, so
+nothing is deployed after red tests.
 - `code_review` asks Claude Code to review the code and end with
 either `VERDICT: APPROVE` or `VERDICT: REJECT`.
 - `approve` only runs if Claude approved (`...match(VERDICT:\s*APPROVE)`).
@@ -1012,8 +1028,10 @@ quoting an upstream result can name the agent that produced it. It follows a
 `--agent` selection, so the label stays true when a run replaces that agent.
 The named task must appear in `depends_on`.
 - `{{loop.previous}}` — this task's output from its previous loop
-iteration (empty before the first iteration completes). Only valid on
-a looping task (`repeat > 1`).
+iteration (empty before the first iteration completes). When that try
+failed, it starts with `[this try failed with exit code N]`, followed by
+the try's output and its error text. Only valid on a looping task
+(`repeat > 1`).
 - `{{loop.history}}` — every prior iteration of this task, rendered as
 numbered blocks. Only valid on a looping task (`repeat > 1`).
 
@@ -1022,6 +1040,75 @@ task that was skipped or hasn't completed skips the referencing task.
 `atelier run` rejects an `--input` or `--input-file` key the conduit
 neither declares nor references, so a mistyped key fails before the run
 starts.
+
+#### Values in shell steps
+
+In a `tool:bash` step, read values from environment variables, not from
+`{{...}}`. Atelier puts a `{{...}}` value into the command text before bash
+reads it, so bash runs any `$(...)`, `;` or backtick in the value, even
+inside quotes. An input, a human answer or an agent's output can then run
+commands on your machine. Bash never runs what is inside a variable. Keep the
+variable in double quotes, so spaces and `*` in the value stay as they are:
+
+```yaml
+- greet:
+    description: greet someone
+    tool: tool:bash
+    task: echo "hello $INPUT_NAME"
+```
+
+Every shell step gets these variables on top of the normal environment:
+
+- `INPUT_<NAME>` for each input, the value of `{{inputs.<name>}}`.
+- `OUTPUT_<TASK>` for each finished task in the step's `depends_on` chain,
+  the value of `{{<task>.output}}`.
+- `LOOP_ITERATION` (1, 2, ...), `LOOP_PREVIOUS` and `LOOP_HISTORY` in a
+  looping task (`repeat > 1`), the values of `{{loop.*}}`.
+
+These replace any variable of the same name already in your environment;
+every other variable passes through as before. Up to 0.12 Atelier set none of
+them, so a step that read, say, `$INPUT_TOKEN` from your environment now gets
+the `token` input instead when the conduit has one. A variable holds the value
+exactly, so `$OUTPUT_<TASK>` keeps the newline that `echo` printed at the
+end: an unquoted `{{<task>.output}}` only seemed to drop it, because bash
+read that newline as the end of the command.
+
+A step inside a `tool:conduit` loop body does not loop itself, so it gets no
+`LOOP_*` and no `OUTPUT_<TASK>` of the enclosing conduit: forward them under
+the calling task's `inputs:` (`feedback: '{{loop.previous}}'`) and read
+`$INPUT_FEEDBACK`. A variable a step does not get is empty, and `atelier
+check` warns about it.
+
+The name is in upper case, and every character that is not a letter, a digit
+or `_` becomes `_`, so input `repo-url` is `$INPUT_REPO_URL`. If two names
+give the same variable, or one name's variable is the other's `_FILE` form
+(`report` and `report_file`), the name that comes first in sorted order keeps
+it, and the other value is only reachable through `{{...}}`. Declare each run
+input the step reads under `inputs:`, so `atelier run` accepts it. A
+`tool:hitl` answer needs no declaration: `$INPUT_<NAME>` holds it once the
+human answers, and declaring it makes the run ask for it before it starts, or
+stop when no one is at the terminal.
+
+Each value is also written to a file, and `<NAME>_FILE` holds its path, for
+example `cat "$INPUT_NAME_FILE"`. The plain variables of one step hold at most
+100,000 bytes in total, one budget shared by all its values, so the programs
+the step starts keep their room for arguments. Values the command names come
+first, then the others in name order. A value that does not fit, or that has
+a NUL byte or a broken character, gets only the file form and leaves
+`<NAME>` unset, so read the file when a value can be large, for example
+`< "$OUTPUT_<TASK>_FILE"`. When the command names a variable that is left unset
+this way, the step's error output starts with a line that says so. The files
+are removed when the step ends.
+
+A command up to 32,000 bytes runs as `bash -c`, as before. A bigger one runs
+from a temporary script file, so it no longer fails with "argument list too
+long"; there `$0` names that file, which is gone when the step ends. Use
+`"$BASH"`, not `$SHELL`, to start the running bash again.
+
+`{{...}}` still works in shell steps as before. `atelier check` warns when a
+shell step puts `{{inputs.*}}`, `{{<task>.output}}` or `{{loop.*}}` straight
+into its command, and names the variable to use instead. `{{conduit_dir}}`
+and `{{<task>.workspace}}` are paths you control, so they are fine to use.
 
 ### Conditional dependencies
 
@@ -1054,6 +1141,46 @@ while: output.not_match(<regex>)   # loop while no output matches; break otherwi
 
 Set at most one of `until` / `while`. The first iteration always runs
 before the predicate is checked.
+
+`stagnation_limit: <n>` (n >= 2, needs `repeat > 1`) fails the task with
+`stagnated: n identical consecutive outputs` when n tries in a row leave the
+same text, which is what `{{loop.previous}}` shows for each try. It works with
+a plain `repeat` as well as with `until` / `while`, and it fails the task even
+with `on_exhaust: complete`, so its dependents do not run.
+
+A try that fails does not end a loop that has `until` or `while`. When a
+try still exits nonzero after its `retries`, `until` and `while` are not
+checked on it: the try counts toward `repeat`, and the next try starts. If
+the last try still fails, the task fails, whatever `on_exhaust` says. The
+next try sees what went wrong through
+`{{loop.previous}}`: a first line `[this try failed with exit code N]`, then
+the try's output, then its error text. For a shell step that is its stdout
+and stderr. For a `tool:conduit` body it is the output of the body task that
+failed (and its stderr, when that task is a shell step), then a line that
+names that task and its error. The exit code is then the body's as a whole,
+usually 1, not the code of the task that failed. That text is raw: whatever
+the command or the agent printed. A shell step must read it as
+`"$LOOP_PREVIOUS"`, or as `"$INPUT_<NAME>"` when a loop body gets it
+forwarded, never through `{{loop.previous}}` in the command, where any `$(...)`
+or backtick in it would run (see [Values in shell steps](#values-in-shell-steps)).
+After a failed try,
+`{{loop.previous}}` holds that failure text, not the last good output, so a
+loop that carries state from try to try (a counter, say) should read it from
+`{{loop.history}}`, which keeps the earlier tries too (the last 10 by
+default).
+
+Up to 0.12, a failed try ended the loop at once and failed the run. Now the
+loop goes on and the next try sees the failure. A loop whose last try still
+fails fails the run as before, so a red test loop still stops its dependents.
+
+Some failures still end the loop. With a plain `repeat` and no `until` or
+`while`, the first failure fails the task. A `tool:hitl` step that gets no
+answer fails at once, also inside a `tool:conduit` body, so the steps after
+the loop never run without that answer. A `tool:conduit` body that cannot
+start, for example because it misses a required input, also fails at once.
+An agent that runs out of usage waits for the reset, as described below, and
+never spends a try. `stagnation_limit` counts failed tries too, so the same
+failure several times in a row can fail the task.
 
 For a loop with several tasks, put `tasks:` on its `tool:conduit` step. Each
 iteration runs the body as a child flow; the predicate sees **every body task's
@@ -1096,17 +1223,22 @@ dependencies even without `--recursive`; use `--recursive` to follow named
 children and to include the body in `--probe`.
 
 Without `on_exhaust: fail`, a loop that reaches its limit without meeting
-`until` or `while` still completes and its dependents receive the last output.
+`until` or `while` still completes and its dependents receive the last output,
+as long as that last try exited 0. If the last try still failed, the task fails
+whatever `on_exhaust` says, and the saved reason says how the last try failed,
+with its exit code and error.
 `atelier check` and `atelier plan` warn when such a loop has dependents. A run,
 `atelier status`, and `atelier diagnose` report the unmet condition, iteration
 count, and which dependent tasks ran. Set `on_exhaust: fail` on that task when
 an unmet condition must stop the workflow; raise `repeat` when more attempts
 are appropriate. The default remains `complete` for existing recipes.
 
-If an agent fails inside a `tool:conduit` loop, the parent run and `diagnose`
-name the child task, agent, and loop iteration. Resume the parent flow with
-`atelier run --resume <parent-flow-id>`, or replace that child agent for the
-remaining work with `atelier run --resume <parent-flow-id> --agent
+If an agent fails inside a `tool:conduit` loop with `until` or `while`, that
+try fails and the next one starts a fresh body. When the loop still fails, for
+example after its last try with `on_exhaust: fail`, the parent run and
+`diagnose` name the child task, agent, and loop iteration. Resume the parent
+flow with `atelier run --resume <parent-flow-id>`, or replace that child agent
+for the remaining work with `atelier run --resume <parent-flow-id> --agent
 <loop-task>.<child-task>=<harness>`. Use `atelier logs <child-flow-id> --show
 all` for the raw error and Python traceback.
 
@@ -1115,10 +1247,28 @@ all` for the raw error and Python traceback.
 ### Retries and per-task timeout
 
 - `retries: <n>` — if a task *fails*, re-run it up to `n` more times
-(default `0`). This is different from `repeat`, which loops a task
-that is *succeeding*.
+(default `0`). This is different from `repeat`, which runs a task
+several times. In a loop with `until` or `while`, a try uses its
+retries first, and only then counts as a failed try.
 - `timeout: <seconds>` — override the per-task time limit for one task.
 When omitted, the conduit-level `timeout` applies.
+
+A shell task that times out or is cancelled stops with the processes it
+started: its process group, or its process tree on Windows. A task is
+cancelled when another task fails, when you press Ctrl-C, or when you run
+`atelier stop`. A process that leaves the group, for example through
+`setsid` or a tool that turns itself into a daemon, is not stopped. On
+Windows, a process whose parent has already exited is no longer part of the
+tree and keeps running too, for example a background job left by a shell
+that finished, or the child of `( cmd & )`. The tests check this stop on
+Linux and macOS only.
+
+A shell task waits until every process it started has closed the task's
+output. To leave a server running after the task ends, send both of its
+output streams elsewhere, for example `server > server.log 2>&1 &`.
+Otherwise the task waits for it until its timeout, then fails and stops it;
+the timeout message then says that a background process held the output.
+`nohup` and `disown` do not change this.
 
 ### When an agent runs out of usage
 
@@ -1213,7 +1363,8 @@ same conversation travels over `/ws/run-conduit`: the agent's prose is
 streamed to the client as it is written, and the client sends the reply
 back on the same socket.
 
-Tool permission requests are automatically approved by default. Add a
+Tool permission requests are automatically approved by default. Set
+`permissions` to limit them (see [Security](#security)), or add a
 conduit-level `interaction` policy to choose human or supervisor decisions.
 
 Non-interactive tasks run one turn and stop.
@@ -1229,7 +1380,9 @@ atelier ask "Help me write a specification" --path /absolute/path/to/project
 `--path` is required and becomes Claude's working directory. Claude's
 questions are read from stdin just like any other interactive harness task.
 The resulting flow is still recorded under the `.atelier/flows/` directory
-from which you invoked `atelier`.
+from which you invoked `atelier`. The agent runs with full permissions unless
+`ATELIER_AGENT_PERMISSIONS` (in the environment or in `.env`) sets another
+level; see [Security](#security).
 
 #### Conduit-wide human and supervisor policies
 
@@ -1520,7 +1673,29 @@ storing each agent's login as a secret, an image with the adapters
 preinstalled, and a job that checks both logins with a test prompt before
 it starts.
 
+## Agent logins and provider terms
+
+Flow Atelier starts each agent's own CLI, and that CLI uses the login it
+already has. Flow Atelier does not store or proxy your keys or tokens.
+
+Each provider has its own terms for automated or unattended use, and for use
+through third-party tools. Some consumer subscriptions restrict this. Check
+your provider's current terms before you run agents unattended or on a
+schedule. API keys or business plans are the route providers document for
+automation.
+
+- Anthropic (Claude Code):
+  [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) and
+  [Commercial Terms](https://www.anthropic.com/legal/commercial-terms).
+- OpenAI (Codex): [Terms of Use](https://openai.com/policies/terms-of-use).
+- Google (Gemini CLI):
+  [Gemini CLI terms and privacy](https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md).
+
+Other agents have their own terms. Check them the same way.
+
 ## Security
+
+To report a security problem privately, see [SECURITY.md](../SECURITY.md).
 
 The API runs shell commands on the machine hosting it, so treat reaching it as
 equivalent to a shell on that machine.
@@ -1575,9 +1750,74 @@ The recorded logs under `.atelier/flows/<id>/` keep the **unredacted** text, so
 treat that directory as sensitive and check what you are pasting before sharing
 a terminal transcript.
 
+**Values in shell steps.** A `{{...}}` in a `tool:bash` command becomes part
+of the command before bash reads it, quoted or not. An input from a schedule,
+the API or a human answer, or an agent's output, can then run commands. Read
+values from `"$INPUT_<NAME>"` and `"$OUTPUT_<TASK>"` instead, or from the
+file at `"$OUTPUT_<TASK>_FILE"` when a value can pass 100,000 bytes, since the
+plain variable is then unset (see
+[Values in shell steps](#values-in-shell-steps)); `atelier check` warns about
+the direct form.
+
 **Conduits are code.** See the warning under
 [Installing conduit packages](#installing-conduit-packages): running a conduit
 runs whatever shell commands it contains.
+
+**Agents run with full permissions by default.** An agent task can edit any
+file and run any command it wants. Atelier switches the agent to the most
+permissive mode it knows, such as Claude Code's `bypassPermissions`, and
+approves every permission request the agent sends. A prompt, or text the agent
+reads in the project, can lead it to do damage. Limit what it may do with
+`permissions`:
+
+| Value | What the agent may do without asking |
+| --- | --- |
+| `full` | Everything. This is the default. |
+| `edits` | Read and change files. Atelier picks an accept-edits mode when the agent has one, such as Claude Code's `acceptEdits`. Otherwise it picks a read-only mode that asks before each edit, such as Codex's `read-only`. It allows requests to read, search, edit, move or delete files, and rejects the rest, such as running a command or fetching a URL. |
+| `read-only` | Only read, as far as Atelier is asked (see below). Atelier picks a read-only mode such as Codex's `read-only`, else keeps the agent's own mode (leaving a bypass mode first), and rejects every request. |
+
+Set it on one task with `permissions:`, or for every agent task with
+`ATELIER_AGENT_PERMISSIONS` in the environment or in `.env`. The task field
+wins. `atelier plan` shows the level of each agent task. `atelier harness check`
+shows the mode runs will use at the `ATELIER_AGENT_PERMISSIONS` level.
+
+```yaml
+- review:
+    description: Review the change
+    task: Review the last commit and list what must be fixed.
+    tool: harness:codex
+    permissions: read-only
+```
+
+While neither is set, each run prints one line that says agents have full
+permissions, and keeps it with the first agent task's steps, so the run page
+shows it too. Setting either one, even to `full`, removes that line. A conduit
+whose `interaction.permissions` sends requests to a person or a supervisor does
+not print it.
+
+The levels are not a sandbox. Atelier only chooses the agent's mode and answers
+the requests the agent sends. An agent can still do what its own mode allows
+without asking. For example, Codex in its `read-only` mode still runs commands
+that only read, inside its own sandbox. An agent with none of these modes keeps
+the mode it starts in (Atelier only moves it out of a bypass mode), and that
+mode decides what it does unasked.
+
+The agent's own settings still apply at every level. Claude Code loads your
+user settings and the project's `.claude/settings.json` and
+`.claude/settings.local.json`. Tools that their allow rules pre-approve run
+without asking, and their hooks run shell commands by themselves. Neither
+reaches Atelier, so `edits` and `read-only` cannot stop them; other agents'
+own config files can do the same. A checkout you do not trust can ship such a
+file, so `read-only` does not make it safe to review: check its `.claude/`
+folder first, or run the agent in a container or a virtual machine.
+
+A conduit whose `interaction.permissions` sends requests to a person or a
+supervisor still applies the level first. With `edits` or `read-only` Atelier
+then takes a read-only mode when the agent has one, such as Codex's
+`read-only`, so the person is still asked about each edit; it never takes an
+accept-edits mode there. A request the level does not allow is rejected
+without asking anyone. Only the rest are asked. See
+[interaction policies](interaction.md).
 
 ## Folder layout
 

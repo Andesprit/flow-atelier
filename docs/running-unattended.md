@@ -18,6 +18,9 @@ in [`examples/cloud-run/`](examples/cloud-run/).
 
 flow-atelier never handles these credentials. It passes its environment to
 each agent, and each agent reads its own login, exactly as on a laptop.
+Before you run agents on a schedule, check each provider's terms for
+unattended use: see
+[Agent logins and provider terms](guide.md#agent-logins-and-provider-terms).
 
 ## 1. Create the logins
 

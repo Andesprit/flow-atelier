@@ -28,7 +28,7 @@ from flow_atelier.schemas.progress import FlowStatus, Progress
 from flow_atelier.services.executor.bash import to_bash_path
 from flow_atelier.services.store.filesystem import FilesystemStore
 from tests._shell import CLI as _CLI
-from tests._shell import run_expression, write_shim
+from tests._shell import INTERRUPTIBLE_CLI, run_expression, write_shim
 
 
 @pytest.fixture
@@ -730,7 +730,7 @@ def test_ctrl_c_stops_the_observer_and_leaves_the_run_alone(real_project):
     runner = _start_waiter(work, env, ready)
     try:
         observer = subprocess.Popen(
-            [sys.executable, "-c", _CLI, "wait", "latest", "--timeout", "120"],
+            [sys.executable, "-c", INTERRUPTIBLE_CLI, "wait", "latest", "--timeout", "120"],
             cwd=work, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         # The banner is printed before the first sleep, so its arrival proves

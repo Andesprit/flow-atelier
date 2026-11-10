@@ -113,6 +113,50 @@ def test_check_lists_models_and_how_to_pick_one(workdir):
     assert ":<model>" not in result.output
 
 
+_CLAUDE_MODES = ["default", "acceptEdits", "bypassPermissions"]
+_CODEX_MODES = ["read-only", "agent", "agent-full-access"]
+
+
+@pytest.mark.parametrize(("level", "modes", "note"), [
+    (None, _CLAUDE_MODES, "(runs will use bypassPermissions)"),
+    ("full", _CLAUDE_MODES, "(runs will use bypassPermissions)"),
+    ("edits", _CLAUDE_MODES, "(permissions edits: runs will use acceptEdits)"),
+    ("edits", _CODEX_MODES, "(permissions edits: runs will use read-only)"),
+    ("read-only", _CODEX_MODES, "(permissions read-only: runs will use read-only)"),
+    ("read-only", _CLAUDE_MODES, "(permissions read-only: runs will use default; "
+     "that mode decides what the agent does unasked)"),
+    # opencode-like modes: nothing tells Atelier whether `build` asks.
+    ("read-only", ["build", "plan"], "(permissions read-only: runs will use build; "
+     "that mode decides what the agent does unasked)"),
+    ("edits", ["build", "plan"], "(permissions edits: runs will use build; "
+     "that mode decides what the agent does unasked)"),
+    ("read-only", ["bypassPermissions", "default"], "(permissions read-only: runs will "
+     "use default; that mode decides what the agent does unasked)"),
+    ("read-only", ["bypassPermissions", "plan"], "(permissions read-only: runs fail, "
+     "the agent starts in bypassPermissions, which skips permission requests)"),
+])
+def test_check_names_the_mode_the_permission_level_picks(
+    workdir, monkeypatch, level, modes, note
+):
+    """The modes line names the mode runs get at ATELIER_AGENT_PERMISSIONS.
+
+    :param workdir: isolated working directory fixture.
+    :param monkeypatch: pytest monkeypatch fixture.
+    :param level: the ATELIER_AGENT_PERMISSIONS value, or ``None`` for unset.
+    :param modes: the mode ids the fake agent offers.
+    :param note: the text expected after the mode list.
+    """
+    if level is not None:
+        monkeypatch.setenv("ATELIER_AGENT_PERMISSIONS", level)
+    script = json.dumps({
+        "turns": [],
+        "modes": {"current": modes[0], "available": [{"id": m, "name": m} for m in modes]},
+    })
+    result = CliRunner().invoke(app, ["harness", "check", "--cmd", _fake_cmd(script)])
+    assert result.exit_code == 0, result.output
+    assert f"modes: {', '.join(modes)} {note}" in " ".join(result.output.split())
+
+
 _EFFORT_SCRIPT = {
     "turns": [],
     "models": {

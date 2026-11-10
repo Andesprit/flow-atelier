@@ -20,6 +20,7 @@ tasks:
     depends_on: []
     repeat: 3
     until: output.match(TESTS PASSED)
+    on_exhaust: fail
   - name: review
     description: review the result
     task: 'Review: {{loop.output}}'
@@ -70,6 +71,8 @@ def test_plan_run_and_resume_nested_loop_choice(tmp_path):
     assert changed["recipe_tool"] == "harness:codex"
 
     project.break_agent("gemini")
+    # Primed so the one try the resume runs again passes its test.
+    (project.work / ".attempts").write_text("1")
     failed = project.cli("run", "parent", "--agent", "loop.fix=gemini")
     assert failed.returncode != 0
     flow_id = project.flow_id(failed)
@@ -80,7 +83,7 @@ def test_plan_run_and_resume_nested_loop_choice(tmp_path):
     project.fix_agent("gemini")
     resumed = project.cli("run", "--resume", flow_id)
     assert resumed.returncode == 0, resumed.stdout + resumed.stderr
-    assert len(project.prompts("gemini")) >= 2
+    assert len(project.prompts("gemini")) == 1
     assert not project.prompts("codex")
     assert project.status(flow_id)["task_agents"] == {"loop.fix": "harness:gemini"}
     child_flows = list((project.work / ".atelier" / "flows" / flow_id / "flows").glob("*_child"))
@@ -135,13 +138,14 @@ def test_nested_model_probe_and_replacement_on_resume(tmp_path):
     assert not project.prompts("gemini")
 
     project.break_agent("gemini")
+    (project.work / ".attempts").write_text("1")
     failed = project.cli("run", "parent", "--agent", choice)
     assert failed.returncode != 0
     flow_id = project.flow_id(failed)
     resumed = project.cli("run", "--resume", flow_id, "--agent", "loop.fix=codex")
     assert resumed.returncode == 0, resumed.stdout + resumed.stderr
     assert project.status(flow_id)["task_agents"] == {"loop.fix": "harness:codex"}
-    assert len(project.prompts("codex")) >= 2
+    assert len(project.prompts("codex")) == 1
     assert not project.prompts("gemini")
 
 
@@ -204,8 +208,8 @@ def test_resume_refuses_to_reassign_a_partly_completed_loop(tmp_path):
     refused = project.cli("run", "--resume", flow_id,
                           "--agent", "loop.fix=codex")
     assert refused.returncode != 0
-    # The second pass failed; status and the refusal both name that real pass.
-    assert "iteration 2" in refused.stdout
+    # Passes 2 and 3 failed and were counted; the refusal names the last one.
+    assert "iteration 3" in refused.stdout
     assert "--again" in refused.stdout
     assert not project.prompts("codex")
 

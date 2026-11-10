@@ -136,6 +136,7 @@ class Atelier:
             loop_history_limit=self.settings.loop_history_limit,
             loop_history_entry_chars=self.settings.loop_history_entry_chars,
             usage_limit_max_wait=self.settings.usage_limit_max_wait,
+            agent_permissions=self.settings.agent_permissions,
         )
         self.schedule_store = ScheduleStore(self.settings.atelier_dir)
 
@@ -1238,7 +1239,7 @@ class Atelier:
             conduit_name = ""
         try:
             conduit = self.store.read_conduit(conduit_name) if conduit_name else None
-        except (FileNotFoundError, ValueError):
+        except (OSError, ValueError):  # gone, unreadable or broken
             conduit = None
         return build_flow_view(
             flow_id, conduit_name, self.store.read_progress(flow_id), conduit, parent_flow_id

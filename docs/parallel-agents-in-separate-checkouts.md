@@ -19,7 +19,10 @@ several agents in one workflow](multi-agent-workflow.md) first.
 
 Three agents you are already logged into, and Git. The guide uses
 `claude-code` and `codex` as the two writers and `gemini` as the reviewer that
-reads both; any three names from `atelier list harnesses` work.
+reads both; any three names from `atelier list harnesses` work. Gemini CLI no
+longer works with a personal Google login: it needs a paid Gemini API key,
+Vertex AI, or an existing Gemini Code Assist Standard or Enterprise license
+(see [the guide](guide.md#optional-ai-harnesses)).
 
 ```bash
 atelier --version || exit 1

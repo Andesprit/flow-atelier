@@ -42,3 +42,27 @@ jobs:
       - run: uv sync --dev
       - name: Tests (live harness excluded via marker)
         run: uv run pytest
+
+  fresh-install:
+    # The jobs above run on uv.lock. `pip install flow-atelier` and
+    # `uv tool install flow-atelier` ignore the lock and take the newest versions
+    # pyproject.toml allows, so this job installs the wheel that way and tests it.
+    # A dependency release that breaks the package fails here first.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.13
+      - run: uv build --wheel
+      - name: Install the wheel without the lock
+        run: |
+          uv venv --python 3.13 "$RUNNER_TEMP/fresh"
+          uv pip install --python "$RUNNER_TEMP/fresh" dist/*.whl --group dev
+      - name: Tests against the installed wheel
+        # With the source package gone, every import, including the ones in
+        # the CLIs and agents the tests start, comes from the installed wheel.
+        run: |
+          rm -rf flow_atelier
+          "$RUNNER_TEMP/fresh/bin/python" -m pytest

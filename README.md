@@ -11,7 +11,9 @@ pass, and save every run to disk, so you can leave a job running overnight and
 read exactly what happened in the morning.
 
 It runs on your machine and uses the agent logins you already have. No API
-keys are configured, stored, or proxied by Flow Atelier.
+keys are configured, stored, or proxied by Flow Atelier. Check your provider's
+terms before you run agents unattended: see
+[Agent logins and provider terms](docs/guide.md#agent-logins-and-provider-terms).
 
 ## Try it in a minute
 
@@ -120,7 +122,10 @@ enterprise scheduling — flow-atelier deliberately does none of that.
 
 > **Note on scope.** flow-atelier runs shell commands and AI agents on the
 > machine it is installed on. It is a local developer tool, not a hosted
-> multi-user service. See [Security](#security) before exposing it on a network.
+> multi-user service. See [Security](docs/guide.md#security) before exposing
+> it on a network. Agents run with full permissions by default, so they can
+> edit files and run commands. See [agent permissions](docs/guide.md#security)
+> to limit them.
 
 
 
@@ -160,4 +165,5 @@ typed question, then continues with the answer.
 ## Contributing
 
 For test instructions, the project layout, and internal architecture
-notes, see [DEVELOPMENT.md](./DEVELOPMENT.md).
+notes, see [DEVELOPMENT.md](./DEVELOPMENT.md). To report a security problem
+privately, see [SECURITY.md](./SECURITY.md).

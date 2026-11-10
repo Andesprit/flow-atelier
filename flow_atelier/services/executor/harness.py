@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import sys
 import time
 from collections import deque
@@ -44,7 +45,7 @@ from flow_atelier.schemas.log import (
     TurnUsage,
     UsageLimit,
 )
-from flow_atelier.services.executor.base import ExecutorBase, FlowContext
+from flow_atelier.services.executor.base import ExecutorBase, FlowContext, child_environ
 from flow_atelier.services.executor.interaction import InteractionRouter
 from flow_atelier.services.executor.prompt_sink import (
     PromptSink,
@@ -97,6 +98,76 @@ async def _close_agent_quickly(proc: asyncio.subprocess.Process) -> None:
             proc.terminate()
 
 
+def _signal_agent_group(proc: asyncio.subprocess.Process, sig: int) -> None:
+    """Send ``sig`` to an agent and every process it started (POSIX only).
+
+    The agent leads its own process group (see :func:`_spawn_agent`), whose
+    id is its pid, so this also reaches the tools, MCP servers and shells it
+    left behind. The id is not looked up with ``os.getpgid``: once the agent
+    has exited and been reaped that lookup fails while its children live on.
+
+    :param proc: the agent process.
+    :param sig: the signal to send.
+    """
+    if sys.platform == "win32" or proc.pid is None:
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, sig)
+
+
+@contextlib.asynccontextmanager
+async def _spawn_agent(client: Any, cmd: str, *args: str, cwd: str, env: dict[str, str],
+                       observers: list) -> Any:
+    """Start an ACP agent in its own process group and connect to it.
+
+    Like ``acp.spawn_agent_process``, but the agent leads a new session, so a
+    stop, a timeout or a failed turn can end everything it started, not just
+    the agent itself (see :func:`_signal_agent_group`). Shutdown matches the
+    ACP transport's: close stdin, wait, then SIGTERM and SIGKILL, here sent to
+    the whole group. Windows has no process groups; it keeps
+    ``acp.spawn_agent_process``.
+
+    :param client: the ACP client the agent talks to.
+    :param cmd: the agent executable.
+    :param args: its arguments.
+    :param cwd: the agent's working directory.
+    :param env: the agent's environment.
+    :param observers: stream observers for the connection.
+    :returns: an async context of ``(connection, process)``.
+    """
+    import acp
+
+    proc = await asyncio.create_subprocess_exec(
+        cmd, *args,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+        env=env,
+        # Codex and similar harnesses emit large JSON-RPC frames (tool
+        # results, planning output) that exceed asyncio's 64 KiB line limit.
+        limit=8 * 1024 * 1024,
+        start_new_session=True,
+    )
+    conn = acp.connect_to_agent(client, proc.stdin, proc.stdout, observers=observers)
+    try:
+        yield conn, proc
+    finally:
+        with contextlib.suppress(Exception):
+            await conn.close()
+        if proc.stdin is not None:
+            with contextlib.suppress(Exception):
+                proc.stdin.close()
+        for sig in (None, signal.SIGTERM, signal.SIGKILL):
+            if sig is not None:
+                _signal_agent_group(proc, sig)
+            try:
+                await asyncio.wait_for(proc.wait(), AGENT_SHUTDOWN_SECONDS)
+                break
+            except TimeoutError:
+                continue
+
+
 def _close_proc_transports(proc: asyncio.subprocess.Process) -> None:
     """Explicitly close pipe transports on Windows to prevent ``__del__`` errors."""
     for stream in (proc.stdout, proc.stderr):
@@ -135,6 +206,10 @@ STDERR_DRAIN_GRACE_SECONDS = 0.5
 # (codex-acp) still take about 2 s to exit once stdin closes, which the ACP
 # transport waits out before it sends SIGTERM; give them this long instead.
 AGENT_CLOSE_GRACE_SECONDS = 0.5
+
+# How long an agent gets to exit after stdin closes, and again after SIGTERM,
+# before the next signal: the ACP transport's own shutdown timeout.
+AGENT_SHUTDOWN_SECONDS = 2.0
 
 # A turn with no tool calls whose whole reply is this short and reads like
 # the agent's own error message failed, even though the agent ended it
@@ -1390,11 +1465,12 @@ class AcpHarnessExecutor(ExecutorBase):
         and drops everything else. That silently breaks agents behind a proxy
         or custom CA, agents authenticated by API key or cloud provider, and
         any ``git push`` the agent tries (no ``SSH_AUTH_SOCK``). Pass the real
-        environment, then layer the agent's own variables on top.
+        environment, less Atelier's own secrets, then layer the agent's own
+        variables on top.
 
         :returns: the environment mapping for the agent process.
         """
-        return {**os.environ, **self.env}
+        return {**child_environ(), **self.env}
 
     def is_available(self) -> tuple[bool, str]:
         """Probe whether the harness's launch binary is on PATH.
@@ -1708,80 +1784,93 @@ class AcpHarnessExecutor(ExecutorBase):
 
         cmd, *args = self.launch_cmd
         cmd = _resolve_cmd(cmd)
-        # Raise the per-line StreamReader limit well above asyncio's 64 KiB
-        # default; Codex and similar harnesses emit large JSON-RPC frames
-        # (tool results, planning output) that routinely exceed it.
-        async with acp.spawn_agent_process(
-            client,
-            cmd,
-            *args,
-            cwd=cwd,
-            env=self._spawn_env(),
-            transport_kwargs={"limit": 8 * 1024 * 1024},
-            # Public stream-observer hook: lets the client count the session
-            # updates a turn produced so it can wait for its own handlers.
-            observers=[client.observe],
-        ) as (
-            conn,
-            proc,
-        ):
-            # Start draining before `initialize`: a harness that dies during
-            # the handshake (not authenticated, wrong version) writes its
-            # only explanation to stderr on the way out.
-            drain = (
-                asyncio.create_task(_drain_agent_stderr(proc.stderr, agent_stderr))
-                if proc.stderr is not None
-                else None
+        # Public stream-observer hook: lets the client count the session
+        # updates a turn produced so it can wait for its own handlers.
+        observers = [client.observe]
+        if sys.platform == "win32":
+            # Raise the per-line StreamReader limit well above asyncio's 64 KiB
+            # default; Codex and similar harnesses emit large JSON-RPC frames
+            # (tool results, planning output) that routinely exceed it.
+            spawn = acp.spawn_agent_process(
+                client, cmd, *args, cwd=cwd, env=self._spawn_env(),
+                transport_kwargs={"limit": 8 * 1024 * 1024}, observers=observers,
             )
-            succeeded = False
-            try:
-                init = await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
-                sess = await self._open_session(conn, init, cwd, client, resume_session)
-                if client.supervisor_run:
-                    await self._enter_supervisor_mode(conn, sess)
-                elif client.permissions != "full":
-                    await self._enter_limited_mode(
-                        conn, sess, client.permissions, routed=not client.approve_all
-                    )
-                elif not client.approve_all:
-                    await self._ensure_prompting_mode(conn, sess)
-                else:
-                    await self._maybe_switch_to_permissive_mode(conn, sess)
-                await self._apply_selection(conn, sess)
-                client.ready_at = time.monotonic()
+        else:
+            spawn = _spawn_agent(
+                client, cmd, *args, cwd=cwd, env=self._spawn_env(), observers=observers
+            )
+        succeeded = False
+        agent_proc = None
+        try:
+            async with spawn as (conn, proc):
+                agent_proc = proc
+                # Start draining before `initialize`: a harness that dies during
+                # the handshake (not authenticated, wrong version) writes its
+                # only explanation to stderr on the way out.
+                drain = (
+                    asyncio.create_task(_drain_agent_stderr(proc.stderr, agent_stderr))
+                    if proc.stderr is not None
+                    else None
+                )
+                try:
+                    init = await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
+                    sess = await self._open_session(conn, init, cwd, client, resume_session)
+                    if client.supervisor_run:
+                        await self._enter_supervisor_mode(conn, sess)
+                    elif client.permissions != "full":
+                        await self._enter_limited_mode(
+                            conn, sess, client.permissions, routed=not client.approve_all
+                        )
+                    elif not client.approve_all:
+                        await self._ensure_prompting_mode(conn, sess)
+                    else:
+                        await self._maybe_switch_to_permissive_mode(conn, sess)
+                    await self._apply_selection(conn, sess)
+                    client.ready_at = time.monotonic()
 
-                if client.supervisor_run:
-                    # Startup/mode announcements are not the decision response.
-                    await client.await_pending_updates()
-                    await client.flush_pending()
-                    client.buffer.clear()
-                if not interactive:
-                    result = await self._run_single_turn(
-                        conn, sess.session_id, initial_prompt, client
-                    )
-                else:
-                    result = await self._run_interactive(
-                        conn, sess.session_id, initial_prompt, client
-                    )
-                succeeded = result.success
-                return result
-            finally:
-                if drain is not None:
-                    if not succeeded:
-                        # A dead agent closes stderr, so the drain ends on its
-                        # own; the short wait lets those final lines land
-                        # before the transport tears the pipe down. A healthy
-                        # agent keeps stderr open, and its stderr is not
-                        # reported on success, so it is not waited for.
-                        with contextlib.suppress(TimeoutError, asyncio.CancelledError):
-                            await asyncio.wait_for(
-                                asyncio.shield(drain), STDERR_DRAIN_GRACE_SECONDS
-                            )
-                    drain.cancel()
-                if succeeded and sys.platform != "win32":
-                    await _close_agent_quickly(proc)
-                if sys.platform == "win32":
-                    _close_proc_transports(proc)
+                    if client.supervisor_run:
+                        # Startup/mode announcements are not the decision response.
+                        await client.await_pending_updates()
+                        await client.flush_pending()
+                        client.buffer.clear()
+                    if not interactive:
+                        result = await self._run_single_turn(
+                            conn, sess.session_id, initial_prompt, client
+                        )
+                    else:
+                        result = await self._run_interactive(
+                            conn, sess.session_id, initial_prompt, client
+                        )
+                    succeeded = result.success
+                    return result
+                except asyncio.CancelledError:
+                    # Stopped or timed out: end the agent and everything it
+                    # started now, not after the shutdown waits.
+                    if sys.platform != "win32":
+                        _signal_agent_group(proc, signal.SIGTERM)
+                    raise
+                finally:
+                    if drain is not None:
+                        if not succeeded:
+                            # A dead agent closes stderr, so the drain ends on its
+                            # own; the short wait lets those final lines land
+                            # before the transport tears the pipe down. A healthy
+                            # agent keeps stderr open, and its stderr is not
+                            # reported on success, so it is not waited for.
+                            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                                await asyncio.wait_for(
+                                    asyncio.shield(drain), STDERR_DRAIN_GRACE_SECONDS
+                                )
+                        drain.cancel()
+                    if succeeded and sys.platform != "win32":
+                        await _close_agent_quickly(proc)
+                    if sys.platform == "win32":
+                        _close_proc_transports(proc)
+        finally:
+            if not succeeded and agent_proc is not None and sys.platform != "win32":
+                # A failed, stopped or timed-out turn must not leave the
+                # tools, servers or shells the agent started running.
+                _signal_agent_group(agent_proc, signal.SIGKILL)
 
     @staticmethod
     async def _open_session(

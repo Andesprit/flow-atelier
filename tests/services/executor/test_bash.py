@@ -367,3 +367,13 @@ async def test_a_named_variable_left_unset_is_reported(tmp_path, monkeypatch):
     )
     assert (r.exit_code, r.stdout, r.stderr) == (0, "[]\nnever named", note)
     assert seen[0] == note  # live, before the script's own lines
+
+
+async def test_the_api_token_never_reaches_a_shell_step(monkeypatch):
+    """A shell step, or an agent it starts, must not get the server's token."""
+    monkeypatch.setenv("ATELIER_API_TOKEN", "secret")
+    monkeypatch.setenv("SOME_KEY", "kept")
+    cmd = 'echo "token=[${ATELIER_API_TOKEN:-}] key=[$SOME_KEY]"'
+    r = await BashExecutor().execute(_task(cmd), cmd, _ctx())
+    assert r.exit_code == 0, r.stderr
+    assert "token=[] key=[kept]" in r.output

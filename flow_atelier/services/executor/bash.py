@@ -16,7 +16,7 @@ from pathlib import Path
 
 from flow_atelier.schemas.conduit import TaskDefinition
 from flow_atelier.schemas.log import ExecutionResult, IntermediateStep, StepKind
-from flow_atelier.services.executor.base import ExecutorBase, FlowContext
+from flow_atelier.services.executor.base import ExecutorBase, FlowContext, child_environ
 
 logger = logging.getLogger(__name__)
 
@@ -345,7 +345,9 @@ class BashExecutor(ExecutorBase):
             # Atelier owns the names it sets: a value that gets only its file
             # form leaves the variable unset, never an inherited one in its
             # place. Every other variable of the environment passes through.
-            inherited = {k: v for k, v in os.environ.items() if k not in context.shell_env}
+            inherited = {
+                k: v for k, v in child_environ().items() if k not in context.shell_env
+            }
             if notes:
                 await _LiveOutput(context.on_step, StepKind.stderr).feed(
                     "".join(f"{note}\n" for note in notes).encode()

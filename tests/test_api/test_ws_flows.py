@@ -215,17 +215,18 @@ def test_token_is_required_when_configured(running):
             assert _receive(ws)["type"] == "flow"
 
 
-def test_other_sites_cannot_open_the_socket(running):
-    """A page on another site is refused; the UI's own origins are not."""
+def test_other_pages_cannot_open_the_socket(running):
+    """Another site or local port is refused; this server's UI and a --cors-origin are not."""
     atelier, flow_id = running
-    app = FastApiServer().create_app(atelier)
+    app = FastApiServer().create_app(atelier, cors_origins=["http://localhost:5173"])
     with TestClient(app, base_url="http://127.0.0.1", headers=HOST) as client:
-        with pytest.raises(WebSocketDisconnect):
-            with client.websocket_connect(
-                f"/ws/flows/{flow_id}", headers={"origin": "https://evil.example"}
-            ) as ws:
-                ws.receive_text()
-        for origin in ("http://localhost:5173", "http://127.0.0.1:8000"):
+        for origin in ("https://evil.example", "http://localhost:3000"):
+            with pytest.raises(WebSocketDisconnect):
+                with client.websocket_connect(
+                    f"/ws/flows/{flow_id}", headers={"origin": origin}
+                ) as ws:
+                    ws.receive_text()
+        for origin in ("http://localhost:5173", "http://127.0.0.1"):
             with client.websocket_connect(
                 f"/ws/flows/{flow_id}", headers={"origin": origin}
             ) as ws:

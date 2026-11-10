@@ -114,3 +114,43 @@ async def test_an_agent_that_ignores_stdin_closing_is_ended_promptly() -> None:
     await asyncio.wait_for(proc.wait(), 5)
     assert time.monotonic() - started < AGENT_CLOSE_GRACE_SECONDS + 1.5
     assert proc.returncode is not None and proc.returncode != 0
+
+
+def test_the_api_token_never_reaches_an_agent(monkeypatch) -> None:
+    """A delegated agent must not be able to drive the local server."""
+    monkeypatch.setenv("ATELIER_API_TOKEN", "secret")
+    monkeypatch.setenv("SOME_KEY", "kept")
+    env = AcpHarnessExecutor(launch_cmd=["x"], sink=_Sink())._spawn_env()
+    assert "ATELIER_API_TOKEN" not in env
+    assert env["SOME_KEY"] == "kept"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX only")
+async def test_a_timed_out_agent_takes_what_it_started_with_it(tmp_path) -> None:
+    """A tool or server the agent started does not outlive a timeout."""
+    import os
+    import signal as signal_module
+
+    pidfile = tmp_path / "child.pid"
+    script = json.dumps({"turns": [{"chunks": ["late"], "delay_before": 60}]})
+    # The shell starts a background child, then becomes the agent.
+    launch = [
+        "sh", "-c",
+        f'sleep 300 & echo $! > "{pidfile}"; exec "$0" "$@"',
+        sys.executable, str(FAKE_AGENT), "--script", script,
+    ]
+    executor = AcpHarnessExecutor(launch_cmd=launch, sink=_Sink())
+    task = TaskDefinition(name="h", description="d", task="x", tool="harness:fake")
+    context = FlowContext(flow_id="fake", store=None, inputs={}, timeout=3)  # type: ignore[arg-type]
+    result = await executor.execute(task, "x", context)
+    assert result.exit_code == 124
+    child = int(pidfile.read_text())
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.1)
+    else:
+        os.kill(child, signal_module.SIGKILL)
+        raise AssertionError("the agent's background child outlived the timeout")

@@ -43,8 +43,10 @@ is what it is for. So these are not vulnerabilities:
 
 These are, and we want to hear about them:
 
-- a web page you visit can drive the API on loopback, for example by getting
-  past the Origin, Host or WebSocket origin checks;
+- a web page you visit, including one on another local port, can drive the
+  API on loopback, for example by getting past the Origin, Host or WebSocket
+  origin checks;
+- a `.env` file in the folder you run in can choose a command Atelier runs;
 - the API can be reached from the network without `ATELIER_API_TOKEN`;
 - the installer or `atelier self-update` installs a binary whose checksum does
   not match the release.

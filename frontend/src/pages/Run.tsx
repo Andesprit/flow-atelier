@@ -3,6 +3,8 @@ import { fmtMSS } from "@/utils/format";
 import { RunMap } from "@/features/run/RunMap";
 import { TaskLog } from "@/features/run/TaskLog";
 import { useRunFeed } from "@/features/run/feed";
+import { RunSummary } from "@/features/run/RunSummary";
+import { summaryRevision, useRunSummary } from "@/features/run/summary";
 import type { RunView } from "@/types/run";
 
 const STATUS_STYLE: Record<string, string> = {
@@ -30,11 +32,25 @@ export default function RunPage() {
   const [params, setParams] = useSearchParams();
   const asked = params.get("task") ?? undefined;
   const { view, task, log, error } = useRunFeed(flowId, (v) => asked ?? (v && defaultTask(v)));
+  // The feed keeps the previous flow's map until the new one arrives, so only
+  // a view of this flow may ask for (or show) a summary. A run that cannot be
+  // loaded asks once too: the answer says where it was looked for.
+  const current = view?.flowId === flowId ? view : undefined;
+  const revision = current ? summaryRevision(current) : error ? "unloaded" : undefined;
+  const summary = useRunSummary(flowId, revision);
 
   if (error && !view) {
     return (
-      <div className="mx-auto max-w-[1100px] px-6 py-10">
+      <div className="mx-auto flex max-w-[1100px] flex-col gap-3 px-6 py-10" data-testid="run-missing">
         <p className="font-mono text-data text-destructive">Couldn't load run {flowId}: {error}</p>
+        <p className="font-mono text-data">
+          {summary.error?.includes("404")
+            ? summary.error.replace(/^API error 404: /, "")
+            : "Check that the link has the whole run id and that this server was started in the project that ran it."}
+        </p>
+        <p className="font-mono text-label text-muted-foreground">
+          The Dashboard lists the runs this server can show.
+        </p>
       </div>
     );
   }
@@ -83,6 +99,16 @@ export default function RunPage() {
           <span className="font-mono text-label text-muted-foreground">{view.runPath}</span>
         )}
       </header>
+
+      {current && (
+        <RunSummary
+          summary={summary.summary?.status === current.status ? summary.summary : undefined}
+          error={summary.error}
+          loading={summary.loading || (!!summary.summary && summary.summary.status !== current.status)}
+          onRetry={summary.retry}
+          onSelectTask={(task) => setParams({ task }, { replace: true })}
+        />
+      )}
 
       {view.tasks.length === 0 ? (
         <p className="font-mono text-data text-muted-foreground">This run has no tasks to show yet.</p>

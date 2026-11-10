@@ -1,4 +1,4 @@
-import { useReducer, useRef, useCallback, useEffect } from "react";
+import { useReducer, useRef, useCallback, useEffect, useMemo } from "react";
 import { RunConduitSocket } from "@/services/api/run-conduit";
 import type {
   ServerWsMessage,
@@ -257,6 +257,9 @@ export function reducer(state: State, action: Action): State {
             comment: lastLog?.text ?? "",
             taskName: action.taskName,
             inputs: hitlInputs.length ? hitlInputs : undefined,
+            // A fresh identity per question, so a form keeps its draft across
+            // rerenders but never carries it into a later question.
+            key: `${action.flowId}:${Date.now()}:${Math.random()}`,
           },
         });
       }
@@ -414,6 +417,24 @@ interface PendingRun {
   inputs: Record<string, string>;
 }
 
+// Never includes the answer itself: it is typed text the user may not want
+// echoed into a toast.
+export const ANSWER_NOT_SENT =
+  "Answer not sent: this question's connection is not available. Your text is kept. Open the run page to check the run before resuming.";
+
+/** The session that asked, if it is still this hook's current, open one. */
+function ownedSocket(
+  owner: RunConduitSocket | undefined,
+  current: RunConduitSocket | null,
+): RunConduitSocket {
+  // Not CONNECTING either: the wrapper would queue the answer for a session
+  // that never asked the question.
+  if (!owner || owner !== current || owner.readyState !== WebSocket.OPEN) {
+    throw new Error("question's session is not open");
+  }
+  return owner;
+}
+
 export function useConduit(opts: UseConduitOptions = {}) {
   const [state, dispatch] = useReducer(reducer, { runs: new Map() });
   const socketRef = useRef<RunConduitSocket | null>(null);
@@ -431,8 +452,15 @@ export function useConduit(opts: UseConduitOptions = {}) {
 
   const pendingRef = useRef<PendingRun[]>([]);
 
-  // Close the live-run socket when the consumer unmounts so navigating between
-  // screens doesn't leave idle connections receiving messages in the background.
+  // The session that asked each pending question: HITL gates by flow id, agent
+  // turns by request id. Only that session can carry the answer, and only while
+  // it is open — a newer connection (even for the same flow id) never asked it.
+  const hitlOwnerRef = useRef(new Map<string, RunConduitSocket>());
+  const agentOwnerRef = useRef(new Map<string, RunConduitSocket>());
+
+  // Close the live-run socket when the owner unmounts. LiveRunsProvider owns
+  // the app's sessions above the routes, so that is the tab going away, never a
+  // move between screens; closing makes the server cancel this socket's runs.
   useEffect(() => {
     return () => {
       socketRef.current?.close();
@@ -440,14 +468,14 @@ export function useConduit(opts: UseConduitOptions = {}) {
     };
   }, []);
 
-  const liveRuns = Array.from(state.runs.values());
+  const liveRuns = useMemo(() => Array.from(state.runs.values()), [state.runs]);
 
   // Closing this socket makes the server cancel every run started on it
   // (routes/ws.py runs `broker.cancel_all()` on disconnect), and a tab that
   // closes, reloads or leaves the site closes the socket. So while a run is
   // in flight, ask first: the browser shows its own leave-page prompt when
-  // this event is cancelled. In-app navigation does not fire it; that path
-  // still kills the runs and is left alone here on purpose.
+  // this event is cancelled. In-app navigation does not fire it and needs no
+  // guard: the session outlives the screen (LiveRunsProvider).
   const running = liveRuns.some((r) => r.status === "running");
   useEffect(() => {
     if (!running) return;
@@ -555,7 +583,11 @@ export function useConduit(opts: UseConduitOptions = {}) {
     if (existing && existing.readyState <= WebSocket.OPEN) return existing;
 
     const sock = new RunConduitSocket();
-    sock.onMessage = handleWsMessage;
+    sock.onMessage = (msg) => {
+      if (msg.type === "hitl_request") hitlOwnerRef.current.set(msg.flowId, sock);
+      if (msg.type === "agent_input_request") agentOwnerRef.current.set(msg.requestId, sock);
+      handleWsMessage(msg);
+    };
     sock.onClose = () => {
       if (socketRef.current === sock) socketRef.current = null;
     };
@@ -622,16 +654,18 @@ export function useConduit(opts: UseConduitOptions = {}) {
 
   const answerHITL = useCallback(
     (flowId: string, answers: Record<string, string>) => {
-      dispatch({ type: "ANSWER_HITL", flowId, answers });
-      const sock = socketRef.current;
-      if (!sock) return;
       try {
-        sock.send({ type: "hitl_answer", flowId, answers });
-      } catch (err) {
-        onErrorRef.current?.(
-          err instanceof Error ? err.message : "failed to send answer",
-        );
+        ownedSocket(hitlOwnerRef.current.get(flowId), socketRef.current).send({
+          type: "hitl_answer",
+          flowId,
+          answers,
+        });
+      } catch {
+        onErrorRef.current?.(ANSWER_NOT_SENT);
+        return;
       }
+      hitlOwnerRef.current.delete(flowId);
+      dispatch({ type: "ANSWER_HITL", flowId, answers });
     },
     [],
   );
@@ -641,19 +675,24 @@ export function useConduit(opts: UseConduitOptions = {}) {
       // Send first: an agent parked on this turn only unblocks if the answer
       // reaches it, so a failed send has to leave the prompt on screen.
       try {
-        const sock = socketRef.current;
-        if (!sock) throw new Error("not connected — cannot send answer");
-        sock.send({ type: "agent_input_answer", flowId, requestId, answer });
-      } catch (err) {
-        onErrorRef.current?.(
-          err instanceof Error ? err.message : "failed to send answer",
-        );
+        ownedSocket(agentOwnerRef.current.get(requestId), socketRef.current).send({
+          type: "agent_input_answer",
+          flowId,
+          requestId,
+          answer,
+        });
+      } catch {
+        onErrorRef.current?.(ANSWER_NOT_SENT);
         return;
       }
+      agentOwnerRef.current.delete(requestId);
       dispatch({ type: "ANSWER_AGENT_INPUT", flowId, requestId, answer });
     },
     [],
   );
 
-  return { run, cancel, resume, answerHITL, answerAgentInput, liveRuns } as const;
+  return useMemo(
+    () => ({ run, cancel, resume, answerHITL, answerAgentInput, liveRuns }),
+    [run, cancel, resume, answerHITL, answerAgentInput, liveRuns],
+  );
 }

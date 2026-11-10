@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { ConduitPicker } from "@/features/dashboard/components/conduit-picker";
 import { InputForm } from "@/features/dashboard/components/input-form";
@@ -7,9 +8,7 @@ import { Button } from "@/components/ui/button";
 import { useConduits, getConduitSync } from "@/services/ConduitProvider";
 import { BASE_URL } from "@/config/env";
 import { SELECTED_CONDUIT_STORAGE_KEY } from "@/constants/dashboard";
-import { useConduit } from "@/hooks/useConduit";
-import { useRunTitle } from "@/hooks/useRunTitle";
-import { useRunNotifications } from "@/hooks/useRunNotifications";
+import { openRunState, useDashboardRuns } from "@/context/LiveRunsContext";
 import { fetchSchedules } from "@/services/conduits";
 import { createSchedule, deleteSchedule } from "@/services/api/schedules";
 import { ScheduleDialog } from "@/features/dashboard/components/schedule-dialog";
@@ -27,20 +26,27 @@ export default function Dashboard() {
   const [scheduledJobs, setScheduledJobs] = useState<ScheduledJob[]>([]);
   const [addScheduleOpen, setAddScheduleOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [autoOpenFlowId, setAutoOpenFlowId] = useState<string | undefined>();
+  // A key as well as the id, so asking again for the same run (the top-bar link
+  // to running work) reopens a drawer the person closed.
+  const [autoOpen, setAutoOpen] = useState<{ flowId: string; key: string } | undefined>();
+  const location = useLocation();
   const conduit = getConduitSync(selected, conduits) ?? conduits[0];
 
-  const { run, cancel, resume, answerHITL, answerAgentInput, liveRuns } = useConduit({
+  const { run, cancel, resume, answerHITL, answerAgentInput, liveRuns } = useDashboardRuns({
     onFlowComplete: () => {
       setRefreshKey((k) => k + 1);
     },
     // Runs the user started here — scheduled runs arrive as their own message
     // type, so a background schedule firing never pops the drawer open.
-    onFlowStarted: (flowId) => setAutoOpenFlowId(flowId),
-    onError: (message) => toast.error(message),
+    onFlowStarted: (flowId) => setAutoOpen({ flowId, key: flowId }),
   });
-  useRunTitle(liveRuns);
-  useRunNotifications(liveRuns);
+
+  // Display intent only: it opens the run's drawer and never starts, resumes or
+  // re-runs anything, so Back, Forward and reload are safe.
+  const openFlowId = openRunState(location.state);
+  useEffect(() => {
+    if (openFlowId) setAutoOpen({ flowId: openFlowId, key: location.key });
+  }, [openFlowId, location.key]);
 
   // When the API is unreachable both fetches fail for the same reason, and the
   // conduits failure already renders a full cause-level message inline; a
@@ -210,7 +216,8 @@ export default function Dashboard() {
               onDeleteJob={handleDeleteJob}
               onAddSchedule={() => setAddScheduleOpen(true)}
               refreshKey={refreshKey}
-              autoOpenFlowId={autoOpenFlowId}
+              autoOpenFlowId={autoOpen?.flowId}
+              autoOpenKey={autoOpen?.key}
               liveRuns={liveRuns}
               onRespondToHitl={answerHITL}
               onAnswerAgentInput={answerAgentInput}

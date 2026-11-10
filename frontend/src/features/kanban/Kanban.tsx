@@ -1,4 +1,5 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import {
   DndContext,
   PointerSensor,
@@ -9,14 +10,11 @@ import {
   type DragStartEvent,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import { toast } from "sonner";
 import { Trash2 } from "lucide-react";
 import { startTask } from "@/runner/engine";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useTaskStore } from "@/runner";
-import { useConduit } from "@/hooks/useConduit";
-import { useRunTitle } from "@/hooks/useRunTitle";
-import { useRunNotifications } from "@/hooks/useRunNotifications";
+import { openRunState, useKanbanRuns } from "@/context/LiveRunsContext";
 import { getConduitCached } from "@/services/conduits";
 
 import {
@@ -129,26 +127,10 @@ export function Kanban() {
   const [deleteProjectOpen, setDeleteProjectOpen] = useState(false);
   const setTasks = useTaskStore((s) => s.setTasks);
 
-  const { run: conduitRun, cancel: conduitCancel, resume: conduitResume, answerHITL: conduitAnswerHITL, answerAgentInput: conduitAnswerAgentInput, liveRuns } = useConduit({
-    onFlowStarted: (flowId, conduitName) => {
-      const task = useTaskStore.getState().tasks.find(t => t.name === conduitName && t.column === "in_progress");
-      if (task) {
-        useTaskStore.getState().updateTask(task.name, (t) => ({
-          ...t,
-          flow: { ...t.flow!, flowId },
-        }));
-      }
-    },
-    onFlowComplete: (flowId) => {
-      const task = useTaskStore.getState().tasks.find(t => t.flow?.flowId === flowId);
-      if (task) {
-        useTaskStore.getState().updateTask(task.name, (t) => ({ ...t, column: "done" }));
-      }
-    },
-    onError: (message) => toast.error(message),
-  });
-  useRunTitle(liveRuns);
-  useRunNotifications(liveRuns);
+  // The session and its task-store effects live in LiveRunsProvider, so a run
+  // started here keeps going, and its card keeps moving, while the board is
+  // not on screen.
+  const { run: conduitRun, cancel: conduitCancel, resume: conduitResume, answerHITL: conduitAnswerHITL, answerAgentInput: conduitAnswerAgentInput, liveRuns } = useKanbanRuns();
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -203,6 +185,18 @@ export function Kanban() {
   }, [runTaskByName]);
 
   const handleDragCancel = useCallback(() => setActiveTask(null), []);
+
+  // Display intent from the top-bar link to running work: show the card that
+  // owns this exact flow, in its own project, without running anything.
+  const location = useLocation();
+  const openFlowId = openRunState(location.state);
+  useEffect(() => {
+    if (!openFlowId) return;
+    const task = useTaskStore.getState().tasks.find((t) => t.flow?.flowId === openFlowId);
+    if (!task) return;
+    setActiveProjectId((current) => (current === ALL_PROJECTS ? current : task.projectId));
+    setSelectedName(task.name);
+  }, [openFlowId, location.key]);
 
   const showAllProjects = activeProjectId === ALL_PROJECTS;
   const activeProject = useMemo(

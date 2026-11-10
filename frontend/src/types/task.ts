@@ -16,6 +16,8 @@ export interface HitlRequest {
   comment: string;
   taskName?: string;
   inputs?: HitlInput[];
+  /** Identity of one asked question; set for live questions only. */
+  key?: string;
 }
 
 export interface LogEntry {

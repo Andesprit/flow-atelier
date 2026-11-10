@@ -1043,6 +1043,14 @@ task that was skipped or hasn't completed skips the referencing task.
 neither declares nor references, so a mistyped key fails before the run
 starts.
 
+A declared input without a default is required. In a terminal, `atelier
+run` asks for each one you left out. Without a terminal (a script, an
+agent, CI) it exits 2 before the run starts, lists every missing input
+with its description and prints only the flags to add, such as
+`--input 'destination=<value>'`. Replace each `<value>` and append the
+flags to the command you just ran; your other inputs and options stay as
+you wrote them. The message never repeats the values you supplied.
+
 #### Values in shell steps
 
 In a `tool:bash` step, read values from environment variables, not from
@@ -1641,12 +1649,15 @@ runs started from the CLI, the dashboard or the scheduler. The server follows
 the run's files and pushes each new line over `/ws/flows/<flow_id>` within a
 quarter second, shell output included.
 
-`atelier run` and `atelier ask` print that page's address as soon as the flow
-starts, for example
+`atelier run` and `atelier ask` print that page's address when a server at the
+configured address can load the flow, for example
 `· run page http://127.0.0.1:8000/runs/20260925_0eb21391_hello`, so an agent
 driving the CLI can hand the link to you. The page loads only while
 `atelier serve` runs from the same project directory as the run. Set
-`ATELIER_SERVE_URL` when you serve on another host or port.
+`ATELIER_SERVE_URL` when you serve on another host or port. If the server is absent,
+unresponsive, or serves another project, the CLI gives an instruction instead:
+run `atelier serve --port 0` from this project, then open `/runs/<flow_id>` at
+the address it prints. Port 0 chooses a free port.
 
 A server started only to show a run page does not need to live forever.
 `atelier serve --idle-exit 30` stops itself after 30 minutes with no open page,
@@ -1790,6 +1801,10 @@ shows the mode runs will use at the `ATELIER_AGENT_PERMISSIONS` level.
     tool: harness:codex
     permissions: read-only
 ```
+
+What happens after a rejection is up to the agent. Codex ends its turn, so
+the task fails and its error names the rejected request, for example
+`permissions read-only rejected: Edit files`.
 
 While neither is set, each run prints one line that says agents have full
 permissions, and keeps it with the first agent task's steps, so the run page

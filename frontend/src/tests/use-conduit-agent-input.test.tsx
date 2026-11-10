@@ -32,7 +32,7 @@ vi.mock("@/services/api/run-conduit", () => ({
   RunConduitSocket: FakeSocket,
 }));
 
-const { useConduit } = await import("@/hooks/useConduit");
+const { useConduit, ANSWER_NOT_SENT } = await import("@/hooks/useConduit");
 
 describe("useConduit agent input answers", () => {
   beforeEach(() => {
@@ -97,7 +97,7 @@ describe("useConduit agent input answers", () => {
       hook.result.current.answerAgentInput("f1", "r-1", "blue");
     });
 
-    expect(onError).toHaveBeenCalledWith("cannot send on a closed connection");
+    expect(onError).toHaveBeenCalledWith(ANSWER_NOT_SENT);
     expect(
       hook.result.current.liveRuns[0].agentRequests.map((r) => r.requestId),
     ).toEqual(["r-1", "r-2"]);

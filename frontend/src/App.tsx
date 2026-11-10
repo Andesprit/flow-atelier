@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { AppFrame } from "@/layout/AppFrame";
 import { ConduitProvider } from "@/services/ConduitProvider";
+import { LiveRunsProvider } from "@/context/LiveRunsContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Toaster } from "@/components/ui/toaster";
 import Dashboard from "@/pages/dashboard";
@@ -51,19 +52,22 @@ export default function App() {
     <ThemeProvider>
       <ConduitProvider>
         <BrowserRouter>
-          <AppFrame>
-            <ErrorBoundary>
-              <Suspense fallback={<ScreenFallback />}>
-                <Routes>
-                  <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                  <Route path="/dashboard" element={<Dashboard />} />
-                  <Route path="/designer" element={<Designer />} />
-                  <Route path="/kanban" element={<Kanban />} />
-                  <Route path="/runs/:flowId" element={<Run />} />
-                </Routes>
-              </Suspense>
-            </ErrorBoundary>
-          </AppFrame>
+          {/* Above the routes so a run outlives the screen it was started on. */}
+          <LiveRunsProvider>
+            <AppFrame>
+              <ErrorBoundary>
+                <Suspense fallback={<ScreenFallback />}>
+                  <Routes>
+                    <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                    <Route path="/dashboard" element={<Dashboard />} />
+                    <Route path="/designer" element={<Designer />} />
+                    <Route path="/kanban" element={<Kanban />} />
+                    <Route path="/runs/:flowId" element={<Run />} />
+                  </Routes>
+                </Suspense>
+              </ErrorBoundary>
+            </AppFrame>
+          </LiveRunsProvider>
           <Toaster />
         </BrowserRouter>
       </ConduitProvider>

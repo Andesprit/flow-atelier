@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 import { cn } from "@lib/cn";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotifyToggle } from "./NotifyToggle";
+import { ActiveWork } from "./ActiveWork";
 
 const NAV = [
   { to: "/dashboard", label: "dashboard" },
@@ -13,7 +14,7 @@ export function TopBar() {
   return (
     <header
       data-testid="top-bar"
-      className="sticky top-0 z-sticky flex h-14 items-center gap-2 border-b border-border bg-background/90 px-3 backdrop-blur sm:gap-6 sm:px-6"
+      className="group/top sticky top-0 z-sticky flex h-14 items-center gap-2 border-b border-border bg-background/90 px-3 backdrop-blur sm:gap-6 sm:px-6"
     >
       {/* mr-auto replaces the empty aria-hidden flex-1 spacer that used to sit
           between the wordmark and the nav. min-w-0 + truncate lets the wordmark
@@ -22,7 +23,7 @@ export function TopBar() {
       <NavLink
         to="/dashboard"
         aria-label="flow-atelier home"
-        className="mr-auto flex h-11 shrink-0 items-center whitespace-nowrap"
+        className="mr-auto flex h-11 shrink-0 items-center whitespace-nowrap max-sm:group-has-[[data-testid=active-work]]/top:hidden"
       >
         {/* Drops the "flow-" half below sm rather than ellipsizing the brand:
             three 44px nav targets plus the theme toggle leave under 180px here,
@@ -32,6 +33,10 @@ export function TopBar() {
           <em className="text-primary italic">atelier</em>
         </span>
       </NavLink>
+
+      {/* Before the nav so it stays on screen on a phone, where it replaces the
+          wordmark while work is going. */}
+      <ActiveWork />
 
       <nav className="flex shrink-0 items-center" aria-label="primary">
         {NAV.map((n) => (

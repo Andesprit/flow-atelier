@@ -4,7 +4,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from flow_atelier.core.atelier import Atelier
-from flow_atelier.schemas.api import FlowLogsOutput, FlowView, PriorFlow, TaskLogView
+from flow_atelier.schemas.api import (
+    FlowLogsOutput,
+    FlowView,
+    PriorFlow,
+    RunSummary,
+    TaskLogView,
+)
 from flow_atelier.services.api.base import get_atelier
 
 router = APIRouter(prefix="/flows", tags=["flows"])
@@ -54,6 +60,45 @@ async def get_flow(flow_id: str, atelier: Atelier = Depends(get_atelier)) -> Flo
         return atelier.get_flow_view(flow_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.get("/{flow_id}/summary", response_model=RunSummary)
+async def get_flow_summary(
+    flow_id: str, atelier: Atelier = Depends(get_atelier)
+) -> RunSummary:
+    """Return the run page's saved results and suggested next step.
+
+    Read-only: it reads what ``atelier diagnose`` reads and runs nothing.
+
+    :param flow_id: flow identifier from the URL path.
+    :param atelier: injected :class:`Atelier` facade.
+    :returns: the summary, or 404 naming the store that was searched.
+    """
+    from flow_atelier.modules.diagnose import DiagnoseError
+    from flow_atelier.modules.run_summary import build_summary
+
+    try:
+        return build_summary(atelier, flow_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=_not_here(flow_id, atelier)) from e
+    except DiagnoseError as e:
+        if str(e).startswith("unknown flow"):
+            raise HTTPException(
+                status_code=404, detail=_not_here(flow_id, atelier)
+            ) from e
+        detail = f"{e} {e.hint}" if e.hint else str(e)
+        raise HTTPException(status_code=422, detail=detail) from e
+
+
+def _not_here(flow_id: str, atelier: Atelier) -> str:
+    """Say where a missing run was looked for and how to find the right one."""
+    base = atelier.store.base_dir.resolve()
+    where = base.parent if base.name == ".atelier" else base
+    return (
+        f"No run {flow_id} in {where}. This server only reads the runs of that "
+        "project: check the id, or list the project's runs with `atelier list flows` "
+        "there. A run of another project needs `atelier serve` started in that project."
+    )
 
 
 @router.get("/{flow_id}/tasks/{task}/log", response_model=TaskLogView)

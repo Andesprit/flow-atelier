@@ -1,6 +1,7 @@
 import { BASE_URL, USE_MOCK, getApiToken, setApiToken } from "@/config/env";
+import { fetchJson } from "@/services/client";
 import { toCamelCase } from "@/services/transforms";
-import type { RunView, TaskLog, TaskLogUpdate } from "@/types/run";
+import type { RunSummary, RunView, TaskLog, TaskLogUpdate } from "@/types/run";
 
 const WS_URL = BASE_URL.replace(/^http/, "ws");
 // Waits between reconnect attempts after the server goes away, in ms.
@@ -106,4 +107,14 @@ export function openRunFeed(flowId: string, handlers: RunFeedHandlers): RunFeed 
       socket?.close();
     },
   };
+}
+
+/** `GET /flows/<flow_id>/summary`: a run's saved results and suggested next step. */
+export function fetchRunSummary(flowId: string): Promise<RunSummary> {
+  if (USE_MOCK) {
+    return Promise.reject(new Error("The run page reads saved runs from `atelier serve`."));
+  }
+  return fetchJson<RunSummary>(`${BASE_URL}/flows/${encodeURIComponent(flowId)}/summary`, undefined, {
+    method: "GET",
+  });
 }

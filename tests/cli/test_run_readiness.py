@@ -44,3 +44,16 @@ def test_run_refuses_unrunnable_conduit(workdir, monkeypatch):
     assert result.exit_code == 1
     assert "cannot run" in result.stdout
     assert "starting flow" not in result.stdout
+
+
+def test_unknown_agent_names_the_discovery_command(workdir):
+    cdir = workdir / ".atelier/conduits/agentic"
+    cdir.mkdir()
+    (cdir / "conduit.yaml").write_text(
+        "name: agentic\ndescription: d\ntasks:\n"
+        "- build:\n    description: build\n    task: hi\n    tool: harness:nosuch\n"
+    )
+    result = CliRunner().invoke(app, ["run", "agentic"])
+    assert result.exit_code == 1
+    assert "atelier harness list" in result.stdout
+    assert "starting flow" not in result.stdout

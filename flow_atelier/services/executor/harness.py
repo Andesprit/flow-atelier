@@ -33,23 +33,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
-
-import acp
-from acp.connection import StreamDirection, StreamEvent
-from acp.schema import (
-    AgentMessageChunk,
-    AgentThoughtChunk,
-    AllowedOutcome,
-    DeniedOutcome,
-    RequestPermissionResponse,
-    SessionModeState,
-    TextContentBlock,
-    ToolCallProgress,
-    ToolCallStart,
-    Usage,
-    UsageUpdate,
-)
+from typing import TYPE_CHECKING, Any
 
 from flow_atelier.schemas.conduit import TaskDefinition
 from flow_atelier.schemas.log import (
@@ -70,6 +54,14 @@ from flow_atelier.services.executor.usage_limit import (
     is_usage_limit,
     parse_reset,
 )
+
+if TYPE_CHECKING:
+    from acp.connection import StreamEvent
+    from acp.schema import (
+        RequestPermissionResponse,
+        SessionModeState,
+        Usage,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +338,8 @@ class _ProbeClient:
 
         :param event: the raw JSON-RPC message event from the connection.
         """
+        from acp.connection import StreamDirection
+
         if (
             event.direction is StreamDirection.INCOMING
             and event.message.get("method") == "session/update"
@@ -376,6 +370,8 @@ class _ProbeClient:
         :param update: the ACP update payload.
         :param kwargs: additional ACP fields (unused).
         """
+        from acp.schema import AgentMessageChunk
+
         del session_id, kwargs
         try:
             if isinstance(update, AgentMessageChunk):
@@ -396,6 +392,8 @@ class _ProbeClient:
         :param kwargs: ignored keyword ACP arguments.
         :returns: a cancelled :class:`DeniedOutcome`.
         """
+        from acp.schema import DeniedOutcome, RequestPermissionResponse
+
         del args, kwargs
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
@@ -823,6 +821,8 @@ class _BufferingClient:
 
         :param event: the raw JSON-RPC message event from the connection.
         """
+        from acp.connection import StreamDirection
+
         if (
             event.direction is StreamDirection.INCOMING
             and event.message.get("method") == "session/update"
@@ -901,6 +901,14 @@ class _BufferingClient:
 
         :param update: the ACP update payload (message chunk, tool call, etc.).
         """
+        from acp.schema import (
+            AgentMessageChunk,
+            AgentThoughtChunk,
+            ToolCallProgress,
+            ToolCallStart,
+            UsageUpdate,
+        )
+
         if isinstance(update, AgentMessageChunk):
             await self._flush_thinking()
             content = update.content
@@ -993,6 +1001,8 @@ class _BufferingClient:
         :returns: an :class:`AllowedOutcome` selecting the chosen option, or
             a :class:`DeniedOutcome` if no allow option is available.
         """
+        from acp.schema import AllowedOutcome, DeniedOutcome, RequestPermissionResponse
+
         self.session.append({
             "source": "permission_request", "tool_call": tool_call.model_dump(mode="json"),
             "options": [o.model_dump(mode="json") for o in options],
@@ -1054,6 +1064,8 @@ class _BufferingClient:
         :returns: the selected reject option, or a cancelled
             :class:`DeniedOutcome` when the agent offered none.
         """
+        from acp.schema import AllowedOutcome, DeniedOutcome, RequestPermissionResponse
+
         chosen = (
             next((o for o in options if (o.kind or "") == "reject_once"), None)
             or next((o for o in options if (o.kind or "").startswith("reject")), None)
@@ -1332,6 +1344,8 @@ class AcpHarnessExecutor(ExecutorBase):
         :param prompt: also send :data:`PROBE_PROMPT` and require a reply.
         :returns: a :class:`ProbeResult` for the handshake.
         """
+        import acp
+
         cmd, *args = self.launch_cmd
         cmd = _resolve_cmd(cmd)
         client = _ProbeClient()
@@ -1431,6 +1445,8 @@ class AcpHarnessExecutor(ExecutorBase):
         :param client: the probe client collecting the reply text.
         :param result: the passing result so far, updated in place.
         """
+        from acp.schema import TextContentBlock
+
         try:
             resp = await conn.prompt(
                 prompt=[TextContentBlock(type="text", text=PROBE_PROMPT)],
@@ -1564,6 +1580,8 @@ class AcpHarnessExecutor(ExecutorBase):
             continue, or ``None`` to open a new one.
         :returns: :class:`ExecutionResult` from single-turn or interactive run.
         """
+        import acp
+
         cmd, *args = self.launch_cmd
         cmd = _resolve_cmd(cmd)
         # Raise the per-line StreamReader limit well above asyncio's 64 KiB
@@ -1867,6 +1885,8 @@ class AcpHarnessExecutor(ExecutorBase):
         :param client: buffering client capturing streamed output.
         :returns: :class:`ExecutionResult` built from the agent's stop_reason.
         """
+        from acp.schema import TextContentBlock
+
         client.session.append({"source": "user", "text": prompt_text})
         resp = await conn.prompt(
             prompt=[TextContentBlock(type="text", text=prompt_text)],
@@ -1894,6 +1914,8 @@ class AcpHarnessExecutor(ExecutorBase):
         :returns: :class:`ExecutionResult` with cleaned output on success, or
             an error result on input failure or turn-limit exhaustion.
         """
+        from acp.schema import TextContentBlock
+
         next_prompt = initial_prompt
         last_stop = "end_turn"
         # Sinks that don't render visually (e.g. API/queue transports)

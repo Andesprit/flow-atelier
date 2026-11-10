@@ -59,12 +59,16 @@ function toPriorFlow(raw: BackendPriorFlow): PriorFlow {
     startedAt,
     finishedAt,
     duration: finishedAt && startedAt ? finishedAt - startedAt : undefined,
-    status: raw.status === "failed"
-      ? "failed"
-      : raw.status === "cancelled"
-        ? "cancelled"
-        : "done",
+    status: toPriorStatus(raw.status),
   };
+}
+
+// A run still going must not read as done, and a stopped run is not a success.
+export function toPriorStatus(raw: string): PriorFlow["status"] {
+  if (raw === "running") return "running";
+  if (raw === "failed") return "failed";
+  if (raw === "cancelled" || raw === "stopped") return "cancelled";
+  return "done";
 }
 
 function toLogEntries(raw: BackendLogEntry[]): LogEntry[] {

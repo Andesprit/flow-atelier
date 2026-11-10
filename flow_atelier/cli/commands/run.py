@@ -4,11 +4,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import difflib
-import socket
+import http.client
+import json
+import shlex
 import sys
+import threading
 import time
 from collections.abc import Awaitable, Callable
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import typer
 import yaml
@@ -59,6 +62,52 @@ HEARTBEAT_SECONDS = 30.0
 _HEARTBEAT_TICK_SECONDS = 1.0
 
 
+def _run_page_available(base: str, flow_id: str, token: str) -> bool:
+    """Bound the optional check even during DNS stalls or trickling HTTP responses."""
+    result = [False]
+
+    def probe() -> None:
+        result[0] = _probe_run_page(base, flow_id, token)
+
+    try:
+        worker = threading.Thread(target=probe, daemon=True)
+        worker.start()
+        worker.join(timeout=0.6)
+        return not worker.is_alive() and result[0]
+    except Exception:  # noqa: BLE001 — even thread exhaustion must not break a run
+        return False
+
+
+def _probe_run_page(base: str, flow_id: str, token: str) -> bool:
+    """Check that the configured server can load this run, without following redirects."""
+    connection = None
+    try:
+        url = urlsplit(base)
+        if url.scheme not in ("http", "https") or not url.hostname:
+            return False
+        transport = (
+            http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+        )
+        connection = transport(url.hostname, url.port, timeout=0.1)
+        connection.connect()
+        connection.sock.settimeout(0.5)
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        path = f"{url.path.rstrip('/')}/flows/{quote(flow_id, safe='')}"
+        connection.request("GET", path, headers=headers)
+        with connection.getresponse() as response:
+            if response.status != 200:
+                return False
+            # A non-Atelier server must not make this optional check consume unbounded data.
+            payload = json.loads(response.read(1024 * 1024))
+            return isinstance(payload, dict) and payload.get("flow_id") == flow_id
+    except Exception:  # noqa: BLE001 — an optional page must never break a run
+        return False
+    finally:
+        if connection is not None:
+            with contextlib.suppress(Exception):
+                connection.close()
+
+
 class _RunningTasks:
     """Tracks which tasks are in flight and since when, for the heartbeat.
 
@@ -103,21 +152,6 @@ class _RunningTasks:
         """
         now = time.monotonic()
         return {name: now - started for name, started in self._started.items()}
-
-
-def _serving(url: str) -> bool:
-    """Say whether anything accepts connections at ``url``'s host and port.
-
-    :param url: the serve URL, such as ``http://127.0.0.1:8000``.
-    :returns: True when a TCP connection opens within a fifth of a second.
-    """
-    parts = urlsplit(url)
-    port = parts.port or (443 if parts.scheme == "https" else 80)
-    try:
-        with socket.create_connection((parts.hostname or "127.0.0.1", port), timeout=0.2):
-            return True
-    except OSError:
-        return False
 
 
 async def _with_heartbeat(coro, running: _RunningTasks):
@@ -179,7 +213,8 @@ def drive_flow(
     collected: list[TaskEvent] = []
     captured: dict[str, str | None] = {"id": flow_id}
     running = _RunningTasks()
-    page_base = AtelierSettings().serve_url.rstrip("/")
+    settings = AtelierSettings()
+    page_base = settings.serve_url.rstrip("/")
 
     def _task_label(name: str) -> str:
         parents = [
@@ -189,16 +224,20 @@ def drive_flow(
         return " > ".join((*parents, name))
 
     def _announce_page(fid: str) -> None:
+        if _run_page_available(page_base, fid, settings.api_token):
+            message = f"run page {page_base}/runs/{fid}"
+        else:
+            message = (
+                f"run page: no atelier serve for this project at {page_base}; "
+                "start one here with: atelier serve --port 0; "
+                f"open /runs/{fid} at its printed address"
+            )
         # soft_wrap keeps the URL on one line when the output is piped to a
         # log, where Rich would otherwise wrap at 80 columns.
         console.print(
-            _render_orchestration_msg(f"run page {page_base}/runs/{fid}"),
+            _render_orchestration_msg(message),
             soft_wrap=True,
         )
-        if not _serving(page_base):
-            console.print(_render_orchestration_msg(
-                "the page opens once `atelier serve` is running"
-            ))
 
     def _on_event(event: TaskEvent) -> None:
         if (
@@ -344,9 +383,19 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
     if not missing:
         return
     if not sys.stdin.isatty():
+        # Flags only, never a whole command: a rebuilt command would drop the
+        # inputs and options already given, and echoing them could leak secrets.
         console.print(f"[red]missing required inputs:[/red] {escape(', '.join(missing))}")
-        flags = " ".join(f"--input {escape(k)}=<value>" for k in missing)
-        console.print(f"[dim]→ atelier run {escape(conduit.name)} {flags}[/dim]")
+        for key in missing:
+            description = conduit.inputs[key].description
+            console.print(f"  {escape(key)}" + (f" — {escape(description)}" if description else ""))
+        console.print(
+            "[dim]→ add these flags to the command you just ran, keeping its other "
+            "inputs and options; replace each <value> (or use --input-file key=path "
+            "for a file), then run it again:[/dim]"
+        )
+        flags = " ".join(f"--input {shlex.quote(f'{k}=<value>')}" for k in missing)
+        console.print(f"  {escape(flags)}", soft_wrap=True)
         raise typer.Exit(code=2)
 
     from flow_atelier.cli.rendering.multiline_input import multiline_input_sync
@@ -573,6 +622,8 @@ def run_cmd(
     if problems:
         for problem in problems:
             console.print(f"[red]cannot run:[/red] {escape(problem)}")
+        if any("no executor registered for tool 'harness:" in problem for problem in problems):
+            console.print("→ run atelier harness list to see installed agents")
         raise typer.Exit(code=1)
 
     _collect_missing_inputs(conduit, inputs)

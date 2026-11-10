@@ -17,8 +17,6 @@ from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.liveness import is_runner_alive
 from flow_atelier.schemas.api import ScheduledJob
 from flow_atelier.schemas.log import TaskEvent
-from flow_atelier.services.api.app import LOOPBACK_HOSTS, FastApiServer
-from flow_atelier.services.api.scheduler_bus import SchedulerEventBus
 from flow_atelier.services.scheduler import SchedulerDaemon, default_local_zone
 from flow_atelier.services.scheduler.store import ScheduleStore
 
@@ -100,6 +98,10 @@ def serve_cmd(
         0 never stops.
     """
     import uvicorn
+
+    # Imported here so other commands never pay for FastAPI start-up.
+    from flow_atelier.services.api.app import LOOPBACK_HOSTS, FastApiServer
+    from flow_atelier.services.api.scheduler_bus import SchedulerEventBus
 
     logging.basicConfig(
         level=getattr(logging, log_level.upper(), logging.INFO),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseTs } from "@/services/api/flows";
+import { parseTs, toPriorStatus } from "@/services/api/flows";
 
 describe("parseTs", () => {
   it("parses a valid ISO timestamp to epoch ms", () => {
@@ -14,5 +14,21 @@ describe("parseTs", () => {
 
   it("returns null for garbage input instead of falling back to now", () => {
     expect(parseTs("not-a-date")).toBeNull();
+  });
+});
+
+describe("toPriorStatus", () => {
+  it("keeps a run that is still going as running", () => {
+    expect(toPriorStatus("running")).toBe("running");
+  });
+
+  it("shows a stopped run as cancelled, not done", () => {
+    expect(toPriorStatus("stopped")).toBe("cancelled");
+    expect(toPriorStatus("cancelled")).toBe("cancelled");
+  });
+
+  it("maps failed and completed runs", () => {
+    expect(toPriorStatus("failed")).toBe("failed");
+    expect(toPriorStatus("completed")).toBe("done");
   });
 });

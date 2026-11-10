@@ -10,7 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/cn";
-import { toast } from "sonner";
+import { CopyButton } from "@/components/CopyButton";
 import { fmtClock, fmtDuration, fmtMSS, logsToText } from "@/utils/format";
 import { ChevronRight } from "lucide-react";
 import type { LogEntry, HitlRequest, FlowTaskStatus } from "@/types/task";
@@ -398,56 +398,6 @@ function StartedWith({
   );
 }
 
-/* ── Copy to clipboard ────────────────────────────────────────────────────── */
-
-/**
- * Copies `getText()` on click and flips its label to "copied" for a moment.
- * `navigator.clipboard` only exists in secure contexts (https or localhost),
- * so a page served over http on a LAN address gets a toast instead of a silent
- * no-op; the text next to the button stays selectable for a manual copy.
- */
-function CopyButton({
-  label,
-  getText,
-  testId,
-}: {
-  label: string;
-  getText: () => string;
-  testId: string;
-}) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 1500);
-    return () => clearTimeout(timer);
-  }, [copied]);
-
-  const copy = () => {
-    if (!navigator.clipboard) {
-      toast.error("Clipboard unavailable here. Select the text and copy it by hand.");
-      return;
-    }
-    navigator.clipboard
-      .writeText(getText())
-      .then(() => setCopied(true))
-      .catch(() => toast.error("Couldn't copy to the clipboard"));
-  };
-
-  return (
-    <Button
-      type="button"
-      variant="outline"
-      size="sm"
-      className="font-mono text-micro"
-      onClick={copy}
-      data-testid={testId}
-    >
-      {copied ? "copied" : label}
-    </Button>
-  );
-}
-
 /* ── Expandable task list ─────────────────────────────────────────────────── */
 
 function ExpandableTasks({
@@ -813,7 +763,7 @@ export function AgentInputSection({
 
 /* ── HITL form ────────────────────────────────────────────────────────────── */
 
-function HitlSection({
+export function HitlSection({
   hitl,
   responses,
   onRespond,
@@ -830,6 +780,16 @@ function HitlSection({
   const [values, setValues] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<string[]>([]);
 
+  // Start empty for a new question only. Submitting leaves the draft alone: a
+  // sent answer removes the question, and a refused one keeps what was typed.
+  const questionKey = hitl.key ?? hitl.taskName;
+  const [shownKey, setShownKey] = useState(questionKey);
+  if (shownKey !== questionKey) {
+    setShownKey(questionKey);
+    setValues({});
+    setErrors([]);
+  }
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed: Record<string, string> = {};
@@ -845,7 +805,6 @@ function HitlSection({
     }
     setErrors([]);
     onRespond?.(trimmed);
-    setValues({});
   };
 
   return (

@@ -18,6 +18,8 @@ const feeds: FakeFeed[] = [];
 let onOpen: (feed: FakeFeed) => void = () => {};
 
 vi.mock("@/services/api/runs", () => ({
+  // The summary panel has its own tests (run-summary.test.tsx).
+  fetchRunSummary: () => new Promise(() => {}),
   openRunFeed: (flowId: string, handlers: RunFeedHandlers) => {
     const feed: FakeFeed = { flowId, handlers, watched: [] };
     feeds.push(feed);

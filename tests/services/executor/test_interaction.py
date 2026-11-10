@@ -201,6 +201,34 @@ async def test_hybrid_escalates_to_human(tmp_path, decision):
     assert any(e.get("action") == "escalate" for e in logs[0]["session"])
 
 
+@pytest.mark.parametrize("chunks", [
+    ["Warning: Skill `notes` was skipped: bad front matter {name}.\n", "{decision}"],
+    ["```json\n{decision}\n```"],
+    ['The worker proposed {"action":"answer","reply":"Use the new one"}. ', "{decision}"],
+])
+async def test_supervisor_reply_is_read_from_text_around_its_json(tmp_path, chunks):
+    """An agent's own notices around the decision do not lose the decision."""
+    decision = json.dumps({"action": "answer", "reply": "Use the existing convention"})
+    code, output, logs, _, worker = await run_flow(
+        tmp_path, {"questions": "supervisor"}, [{"chunks": ["Which pattern?"]}, DONE],
+        supervisor_turn={"chunks": [c.replace("{decision}", decision) for c in chunks]},
+    )
+    assert code == 0, output
+    assert "Use the existing convention" in worker
+    assert "Use the new one" not in worker
+
+
+async def test_supervisor_reply_without_a_decision_still_fails(tmp_path):
+    """Text with no decision object is not taken as an answer."""
+    code, output, logs, _, worker = await run_flow(
+        tmp_path, {"questions": "supervisor"}, [{"chunks": ["Which pattern?"]}, DONE],
+        supervisor_turn={"chunks": ['Use the existing convention {"note": 1}']},
+    )
+    assert code != 0
+    assert "supervisor failed" in logs[0]["stderr"]
+    assert len(worker.splitlines()) == 1
+
+
 async def test_supervisor_mode_rejects_escalation(tmp_path):
     code, output, logs, _, worker = await run_flow(
         tmp_path, {"questions": "supervisor"}, [{"chunks": ["Question?"]}, DONE],

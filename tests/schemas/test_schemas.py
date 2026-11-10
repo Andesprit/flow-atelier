@@ -192,6 +192,52 @@ def test_on_exhaust_fail_with_until_accepted():
     assert c.tasks[0].on_exhaust == "fail"
 
 
+def test_on_failed_try_requires_loop_predicate():
+    """Verify on_failed_try: fail is rejected without until/while."""
+    with pytest.raises(Exception, match="on_failed_try requires until or while"):
+        Conduit.model_validate(
+            {
+                "name": "x",
+                "description": "d",
+                "tasks": [
+                    {"a": {"description": "d", "task": "x", "tool": "tool:bash",
+                           "depends_on": [], "repeat": 3, "on_failed_try": "fail"}}
+                ],
+            }
+        )
+
+
+@pytest.mark.parametrize("value", ["retry", "fail"])
+def test_on_failed_try_values_accepted_with_until(value):
+    """Verify both on_failed_try values validate alongside an until predicate.
+
+    :param value: parametrized on_failed_try value.
+    """
+    c = Conduit.model_validate(
+        {
+            "name": "x",
+            "description": "d",
+            "tasks": [
+                {"a": {"description": "d", "task": "x", "tool": "tool:bash",
+                       "depends_on": [], "repeat": 3,
+                       "until": "output.match(ok)", "on_failed_try": value}}
+            ],
+        }
+    )
+    assert c.tasks[0].on_failed_try == value
+
+
+def test_on_failed_try_defaults_to_retry_and_rejects_other_values():
+    """Verify the default keeps the retry rule and an unknown value is an error."""
+    base = {"description": "d", "task": "x", "tool": "tool:bash", "depends_on": [],
+            "repeat": 3, "until": "output.match(ok)"}
+    c = Conduit.model_validate({"name": "x", "description": "d", "tasks": [{"a": base}]})
+    assert c.tasks[0].on_failed_try == "retry"
+    with pytest.raises(Exception, match="on_failed_try"):
+        Conduit.model_validate({"name": "x", "description": "d",
+                                "tasks": [{"a": {**base, "on_failed_try": "stop"}}]})
+
+
 @pytest.mark.parametrize(
     ("repeat", "limit", "msg"),
     [

@@ -104,6 +104,19 @@ def test_loop_predicate_surfaced():
     assert tasks["a"].loop_text is None
 
 
+def test_loop_text_names_on_failed_try_only_when_it_is_not_the_default():
+    """The plan shows ``on_failed_try=fail`` and stays quiet about ``retry``."""
+    loop = {"description": "d", "task": "x", "tool": "tool:bash", "depends_on": [],
+            "repeat": 5, "until": "output.match(DONE)"}
+    conduit = _conduit([
+        {"name": "stops", **loop, "on_failed_try": "fail"},
+        {"name": "retries", **loop},
+    ])
+    tasks = _by_name(_plan(conduit))
+    assert tasks["stops"].loop_text == "x5 until output.match(DONE) on_failed_try=fail"
+    assert tasks["retries"].loop_text == "x5 until output.match(DONE)"
+
+
 def test_exhaustion_warning_requires_predicate_default_and_dependent():
     loop = {
         "name": "loop", "description": "d", "task": "echo no",

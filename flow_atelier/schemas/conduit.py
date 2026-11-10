@@ -130,6 +130,7 @@ class TaskDefinition(BaseModel):
     until: str | None = None
     while_: str | None = Field(default=None, alias="while")
     on_exhaust: Literal["complete", "fail"] = "complete"
+    on_failed_try: Literal["retry", "fail"] = "retry"
     stagnation_limit: int | None = None
     retries: int = 0
     retry_backoff: float = 0.0
@@ -287,6 +288,12 @@ class TaskDefinition(BaseModel):
             and self.while_ is None
         ):
             raise ValueError("on_exhaust requires until or while")
+        if (
+            self.on_failed_try != "retry"
+            and self.until is None
+            and self.while_ is None
+        ):
+            raise ValueError("on_failed_try requires until or while")
         if self.stagnation_limit is not None:
             if self.repeat <= 1:
                 raise ValueError("stagnation_limit requires repeat > 1")

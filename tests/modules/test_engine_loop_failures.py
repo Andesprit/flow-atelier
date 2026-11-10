@@ -217,6 +217,94 @@ async def test_plain_repeat_without_a_condition_still_fails_fast(store):
     assert not any(e.extra.get("failed_try") for e in store.read_logs(flow_id))
 
 
+async def test_on_failed_try_fail_stops_the_loop_at_the_first_failed_try(store):
+    """With ``on_failed_try: fail`` a try that fails after its retries ends the run.
+
+    :param store: FilesystemStore fixture.
+    """
+    conduit = _conduit("t", [
+        {"name": "stage", "task": "x", "tool": "tool:bash", "repeat": 5,
+         "retries": 1, "until": "output.match(DONE)", "on_failed_try": "fail"},
+        {"name": "after", "task": "y", "tool": "tool:bash", "depends_on": ["stage"]},
+    ])
+    bash = Scripted(stage=[FAILED_1, FAILED_2])
+    with pytest.raises(RuntimeError, match="task 'stage' failed: exit=1"):
+        await Engine({"tool:bash": bash}, store).run(conduit, {})
+
+    flow_id = store.list_flows()[0]
+    task = store.read_progress(flow_id).tasks["stage"]
+    assert len(bash.commands["stage"]) == 2
+    assert "after" not in bash.commands
+    assert task.status == TaskStatus.failed
+    assert task.iteration == 1
+    assert task.reason == "exit=1 stderr=AssertionError: expected 200, got 404"
+    assert not any(e.extra.get("failed_try") for e in store.read_logs(flow_id))
+
+
+async def test_on_failed_try_fail_still_loops_while_tries_succeed(store):
+    """The setting changes nothing for tries that exit 0 without meeting the condition.
+
+    :param store: FilesystemStore fixture.
+    """
+    conduit = _conduit("t", [
+        {"name": "stage", "task": "x", "tool": "tool:bash", "repeat": 5,
+         "until": "output.match(DONE)", "on_failed_try": "fail"},
+    ])
+    bash = Scripted(stage=[_shell(0, "one"), _shell(0, "two"), _shell(0, "DONE")])
+    flow_id = await Engine({"tool:bash": bash}, store).run(conduit, {})
+
+    task = store.read_progress(flow_id).tasks["stage"]
+    assert task.status == TaskStatus.completed
+    assert task.iteration == 3
+    assert task.loop_outcome.met is True
+
+
+async def test_on_failed_try_fail_stops_a_conduit_loop_and_resume_continues_it(store):
+    """A body that fails ends the loop; resume goes on in the same try's child.
+
+    :param store: FilesystemStore fixture.
+    """
+    parent = _conduit("parent", [
+        {"name": "loop", "task": "child", "tool": "tool:conduit", "repeat": 5,
+         "until": "output.match(GOAL_DONE)", "on_exhaust": "fail",
+         "on_failed_try": "fail"},
+    ])
+    child = _conduit("child", [
+        {"name": "work", "task": "work", "tool": "harness:fake"},
+        {"name": "route", "task": "x", "tool": "tool:bash", "depends_on": ["work"]},
+    ])
+    store.write_conduit(parent)
+    store.write_conduit(child)
+    bash = Scripted(route=[_shell(0, "CONTINUE")])
+    agent = Scripted(work=[_shell(0, "stage one"), _shell(1, "", "transport closed")])
+    engine = Engine(
+        {"tool:conduit": ConduitExecutor(), "tool:bash": bash, "harness:fake": agent},
+        store,
+    )
+    with pytest.raises(RuntimeError, match="task 'loop' failed"):
+        await engine.run(parent, {})
+    flow_id = store.list_flows()[0]
+    first_try, second_try = store.list_child_flows(flow_id)
+    task = store.read_progress(flow_id).tasks["loop"]
+    assert task.status == TaskStatus.failed
+    assert task.iteration == 2
+    assert len(agent.commands["work"]) == 2
+
+    bash = Scripted(route=[_shell(0, "GOAL_DONE")])
+    agent = Scripted(work=[_shell(0, "stage two")])
+    engine = Engine(
+        {"tool:conduit": ConduitExecutor(), "tool:bash": bash, "harness:fake": agent},
+        store,
+    )
+    await engine.run(parent, {}, resume_from=flow_id)
+
+    task = store.read_progress(flow_id).tasks["loop"]
+    assert task.status == TaskStatus.completed
+    assert task.iteration == 2
+    assert store.list_child_flows(flow_id) == [first_try, second_try]
+    assert store.read_progress(second_try).status == FlowStatus.completed
+
+
 async def test_on_exhaust_fail_names_the_failed_last_try(store):
     """When every try failed, the reason says how the last one failed.
 

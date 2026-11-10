@@ -1183,6 +1183,24 @@ Up to 0.12, a failed try ended the loop at once and failed the run. Now the
 loop goes on and the next try sees the failure. A loop whose last try still
 fails fails the run as before, so a red test loop still stops its dependents.
 
+Set `on_failed_try: fail` on a loop with `until` or `while` to end it at the
+first try that still fails after its `retries`, as every loop did up to 0.12.
+The task fails with that try's exit code and error, its dependents do not run,
+and `atelier run --resume <flow-id>` goes on in the same try. Use it for a loop
+that walks through stages, such as a work queue or a long goal run, where a
+failure means something is broken and the next pass would only fail again. The
+default, `on_failed_try: retry`, is the rule above.
+
+```yaml
+- work_the_queue:
+    tool: tool:conduit
+    task: next_item
+    repeat: 100
+    until: output.match(^QUEUE_END$)
+    on_exhaust: fail
+    on_failed_try: fail   # an item that fails stops the queue
+```
+
 Some failures still end the loop. With a plain `repeat` and no `until` or
 `while`, the first failure fails the task. A `tool:hitl` step that gets no
 answer fails at once, also inside a `tool:conduit` body, so the steps after

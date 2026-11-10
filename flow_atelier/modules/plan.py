@@ -101,6 +101,8 @@ def _loop_text(task) -> str | None:
         parts.append(f"stagnation_limit={task.stagnation_limit}")
     if task.on_exhaust != "complete":
         parts.append(f"on_exhaust={task.on_exhaust}")
+    if task.on_failed_try != "retry":
+        parts.append(f"on_failed_try={task.on_failed_try}")
     return " ".join(parts)
 
 

@@ -1266,11 +1266,13 @@ class Engine:
                                 }
                             # A loop with a condition counts a try that failed
                             # for good as one more try that did not meet it.
-                            # A human's answer and a usage limit still fail.
+                            # A human's answer and a usage limit still fail,
+                            # and so does any failure with on_failed_try: fail.
                             failed_try = (
                                 not result.success
                                 and attempt >= max_attempts
                                 and loop_predicate is not None
+                                and t.on_failed_try == "retry"
                                 and countable
                                 and result.usage_limit is None
                             )

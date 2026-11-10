@@ -53,8 +53,10 @@ def _run(project: Path, *args: str) -> tuple[subprocess.CompletedProcess, list[s
         "NO_COLOR": "1",
     }
     proc = subprocess.run(
-        [sys.executable, "-c", _DRIVER, ",".join(HEAVY), *args],
-        cwd=project, env=env, capture_output=True, text=True,
+        # The run prints terminal glyphs. Windows pipes otherwise use a legacy
+        # code page on both ends, and the parent cannot decode the output.
+        [sys.executable, "-X", "utf8", "-c", _DRIVER, ",".join(HEAVY), *args],
+        cwd=project, env=env, capture_output=True, encoding="utf-8", errors="replace",
         stdin=subprocess.DEVNULL, timeout=240,
     )
     line = next(x for x in proc.stderr.splitlines() if x.startswith("LOADED="))

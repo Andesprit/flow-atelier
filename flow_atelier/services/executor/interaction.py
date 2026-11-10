@@ -160,4 +160,31 @@ class InteractionRouter:
             self.session.append({"source": "supervisor_usage", **result.usage.model_dump()})
         if not result.success:
             raise RuntimeError(result.stderr or "supervisor harness failed")
-        return SupervisorDecision.model_validate_json(result.output)
+        return _decision_from(result.output)
+
+
+def _decision_from(output: str) -> SupervisorDecision:
+    """Read the supervisor's decision from its reply.
+
+    An agent can put its own text around the JSON object it was asked for, such
+    as a start-up warning or a code fence. The last object in the reply that is
+    a valid decision wins, so an object the supervisor only quotes before its
+    answer is not taken as the answer.
+
+    :param output: the supervisor's whole reply.
+    :returns: the decision.
+    :raises ValueError: when no object in the reply is a valid decision.
+    """
+    try:
+        return SupervisorDecision.model_validate_json(output)
+    except ValueError as strict:
+        decoder = json.JSONDecoder()
+        for start in range(len(output) - 1, -1, -1):
+            if output[start] != "{":
+                continue
+            try:
+                value, _ = decoder.raw_decode(output, start)
+                return SupervisorDecision.model_validate(value)
+            except ValueError:
+                continue
+        raise strict

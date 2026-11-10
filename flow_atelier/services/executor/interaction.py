@@ -167,24 +167,37 @@ def _decision_from(output: str) -> SupervisorDecision:
     """Read the supervisor's decision from its reply.
 
     An agent can put its own text around the JSON object it was asked for, such
-    as a start-up warning or a code fence. The last object in the reply that is
-    a valid decision wins, so an object the supervisor only quotes before its
-    answer is not taken as the answer.
+    as a start-up warning or a code fence, so the decision is searched for in
+    the text. It is taken only when the reply holds exactly one decision. The
+    worker writes the session the supervisor reads, so a decision the
+    supervisor quotes from it (say, an approval while it explains its
+    refusal) must never be mistaken for the answer: two different decisions
+    in one reply are no decision.
 
     :param output: the supervisor's whole reply.
     :returns: the decision.
-    :raises ValueError: when no object in the reply is a valid decision.
+    :raises ValueError: when the reply holds no valid decision, or more than
+        one different one.
     """
     try:
         return SupervisorDecision.model_validate_json(output)
     except ValueError as strict:
         decoder = json.JSONDecoder()
-        for start in range(len(output) - 1, -1, -1):
-            if output[start] != "{":
+        found: list[SupervisorDecision] = []
+        for start, char in enumerate(output):
+            if char != "{":
                 continue
             try:
                 value, _ = decoder.raw_decode(output, start)
-                return SupervisorDecision.model_validate(value)
+                decision = SupervisorDecision.model_validate(value)
             except ValueError:
                 continue
+            if decision not in found:
+                found.append(decision)
+        if len(found) > 1:
+            raise ValueError(
+                "the supervisor's reply holds more than one decision; none is taken"
+            ) from strict
+        if found:
+            return found[0]
         raise strict

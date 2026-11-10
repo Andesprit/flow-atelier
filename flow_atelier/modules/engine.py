@@ -725,9 +725,15 @@ class Engine:
         prior_iterations: dict[str, list[str]] = {}
         if resume_from is not None:
             for tname, tp in prior.tasks.items():
-                if tp.status == TaskStatus.completed:
+                # A completed task with no saved output (a run from before
+                # outputs were written first, killed between the two
+                # writes) runs again rather than passing on an empty answer.
+                if (
+                    tp.status == TaskStatus.completed
+                    and prior_outputs.get(tname) is not None
+                ):
                     statuses[tname] = TaskStatus.completed
-                    outputs[tname] = prior_outputs.get(tname, "")
+                    outputs[tname] = prior_outputs[tname]
                     progress.tasks[tname] = tp
             # Rebuild loop history for tasks that will re-run, so they
             # continue at the next iteration with {{loop.*}} context intact.
@@ -1447,11 +1453,14 @@ class Engine:
                         )
                         loop_outcome = LoopOutcome(condition=condition, met=True)
                     outputs[t.name] = last_output
+                    # Output first: a crash between the two writes must not
+                    # leave a task saved as completed with no output, which
+                    # a resume would read as an empty answer.
+                    self.store.write_outputs(flow_id, outputs)
                     mark_completed(
                         t.name, iteration, reason=completion_reason,
                         loop_outcome=loop_outcome,
                     )
-                    self.store.write_outputs(flow_id, outputs)
             except asyncio.CancelledError:
                 if statuses[t.name] not in (
                     TaskStatus.completed, TaskStatus.failed, TaskStatus.skipped

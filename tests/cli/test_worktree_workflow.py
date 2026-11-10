@@ -993,6 +993,8 @@ def test_stopping_a_run_leaves_every_checkout_in_place(project):
             run.kill()
 
     assert "flow stopped" in out, out
+    # Cut short is not success: 128 + SIGTERM, as a shell reports it.
+    assert run.returncode == 143, out
     flow_id = [line for line in out.splitlines() if "flow_id:" in line][0]
     flow_id = flow_id.split(":", 1)[1].strip()
     payload = project.status(flow_id)

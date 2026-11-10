@@ -32,7 +32,11 @@ from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import format_conduit_error
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.modules.binding import child_bindings
-from flow_atelier.modules.conditions import ConditionalDependency, parse_dependency
+from flow_atelier.modules.conditions import (
+    ConditionalDependency,
+    PlainDependency,
+    parse_dependency,
+)
 from flow_atelier.modules.engine import (
     MAX_NESTED_CONDUIT_DEPTH,
     ConduitValidationError,
@@ -143,6 +147,46 @@ def _hitl_answers(tasks: list[TaskDefinition]) -> set[str]:
     :returns: the answer names, which need no ``inputs:`` declaration.
     """
     return {key for task in tasks if task.tool == ToolType.hitl for key in task.inputs}
+
+
+_APPROVAL_WORDS = re.compile(r"approv|confirm", re.IGNORECASE)
+
+
+def _approval_gate_warnings(conduit: Conduit) -> list[str]:
+    """Warn for each task that runs after an approval gate whatever the answer.
+
+    A ``tool:hitl`` task finishes once it has an answer, whether that answer
+    is yes, no or empty, so a plain dependency on it does not wait for an
+    approval. Only gates that read like approvals (their name or one of
+    their inputs mentions approve or confirm) are judged, so a gate that only
+    collects values stays quiet.
+
+    :param conduit: the conduit to scan, inline loop bodies included.
+    :returns: one warning per dependent task and gate, in task order.
+    """
+    warnings: list[str] = []
+    for prefix, tasks in [("", conduit.tasks)] + [
+        (f"{t.name}.", t.tasks) for t in conduit.tasks if t.tasks is not None
+    ]:
+        gates = {
+            t.name: next(iter(t.inputs), "answer")
+            for t in tasks
+            if t.tool == ToolType.hitl
+            and _APPROVAL_WORDS.search(
+                " ".join([t.name, *t.inputs, *map(str, t.inputs.values())])
+            )
+        }
+        for step in tasks:
+            for dep in step.depends_on:
+                parsed = parse_dependency(dep)
+                if isinstance(parsed, PlainDependency) and parsed.task in gates:
+                    warnings.append(
+                        f"{prefix}{step.name}: runs after the human gate "
+                        f"{parsed.task} whatever the answer, even 'no' or empty; "
+                        f"to run it only on approval, depend on "
+                        f"\"{parsed.task}.output.match({gates[parsed.task]}: 'yes')\""
+                    )
+    return warnings
 
 
 def _shell_value_warnings(conduit: Conduit) -> list[str]:
@@ -577,6 +621,7 @@ def _check_one(
         parsed = validate_conduit(conduit)
         warnings = list(exhaustion_warnings(conduit, parsed).values())
         warnings += _shell_value_warnings(conduit)
+        warnings += _approval_gate_warnings(conduit)
         # A selection that no longer fits the recipe, or names an agent this
         # machine has nothing registered for, is a failed row like any other.
         effective = atelier.bind_agents(conduit, agents) if agents else conduit

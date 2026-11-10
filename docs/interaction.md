@@ -68,8 +68,16 @@ The supervisor returns a validated JSON answer or escalation. For permissions it
 must select an offered option id or `cancel`; choosing a rejection option sends
 that rejection back to the worker. Invalid human permission input fails the task
 without granting the operation. The supervisor is instructed not to use tools;
-its own ACP permission requests are denied, and it cannot recursively supervise
-itself or request human input.
+its own ACP permission requests are denied, it runs in the agent's read-only mode
+when the agent offers one, and it cannot recursively supervise itself or request
+human input.
+
+Text around the JSON object, such as a start-up warning or a code fence, is
+allowed. A reply that holds two different decisions is no decision: the worker
+writes the session the supervisor reads, so a decision the supervisor quotes
+from it while explaining its own must never be taken as the answer. In
+`supervisor` mode that fails the task; in `hybrid` mode the request goes to the
+human.
 
 Human and supervisor answers are displayed with their source and persisted as
 `interaction` steps. Final task logs include a `session` array with the full

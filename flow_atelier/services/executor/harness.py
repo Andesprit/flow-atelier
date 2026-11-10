@@ -24,6 +24,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import time
@@ -52,6 +53,7 @@ from flow_atelier.services.executor.prompt_sink import (
 from flow_atelier.services.executor.usage_limit import (
     claude_reset,
     is_usage_limit,
+    is_usage_limit_reply,
     parse_reset,
 )
 
@@ -73,6 +75,26 @@ def _resolve_cmd(cmd: str) -> str:
         if resolved is not None:
             return resolved
     return cmd
+
+
+async def _close_agent_quickly(proc: asyncio.subprocess.Process) -> None:
+    """End an agent whose turn succeeded without the transport's 2 s wait.
+
+    Closes stdin, gives the agent :data:`AGENT_CLOSE_GRACE_SECONDS` to exit,
+    then sends SIGTERM. The ACP transport's own shutdown still runs after
+    this and escalates to SIGKILL if the agent ignores SIGTERM.
+
+    :param proc: the agent process.
+    """
+    if proc.returncode is not None or proc.stdin is None:
+        return
+    with contextlib.suppress(Exception):
+        proc.stdin.close()
+    try:
+        await asyncio.wait_for(proc.wait(), AGENT_CLOSE_GRACE_SECONDS)
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
 
 
 def _close_proc_transports(proc: asyncio.subprocess.Process) -> None:
@@ -108,6 +130,21 @@ AGENT_STDERR_LINES = 50
 # Grace period for the stderr drain to pick up an agent's dying words
 # before the transport tears the pipe down.
 STDERR_DRAIN_GRACE_SECONDS = 0.5
+
+# After a successful turn the agent has nothing left to say. Some adapters
+# (codex-acp) still take about 2 s to exit once stdin closes, which the ACP
+# transport waits out before it sends SIGTERM; give them this long instead.
+AGENT_CLOSE_GRACE_SECONDS = 0.5
+
+# A turn with no tool calls whose whole reply is this short and reads like
+# the agent's own error message failed, even though the agent ended it
+# normally.
+ERROR_REPLY_MAX_CHARS = 600
+_AGENT_ERROR_TEXT = re.compile(
+    r"not logged in|please run /login|invalid api key|authentication required"
+    r"|not supported when using codex with a chatgpt account",
+    re.IGNORECASE,
+)
 
 # Bound on waiting for a turn's session-update handlers to finish. Reached
 # only if a notification is lost, in which case a run must not stall until
@@ -538,6 +575,56 @@ def limited_mode(available: list[str], current: str, level: str, routed: bool = 
     )
 
 
+def mode_enforces(mode: str, level: str, routed: bool = False) -> bool:
+    """Say whether a session in ``mode`` keeps to a safer ``level``.
+
+    True for a mode named for the level, and for a mode known to ask before
+    acting, so every request reaches the level's check. Any other mode is the
+    agent's own, and it may act without asking.
+
+    :param mode: the mode id the session runs in.
+    :param level: ``edits`` or ``read-only``.
+    :param routed: a person or a supervisor answers the requests.
+    :returns: ``True`` when the level is enforced in that mode.
+    """
+    lowered = mode.lower()
+    keywords = LIMITED_MODE_KEYWORDS["read-only" if routed else level]
+    return any(k in lowered for k in keywords) or lowered in PROMPTING_MODE_IDS
+
+
+# Lets a safer level run on an agent that cannot be held to it. Read from
+# the process environment only, never from a project's .env file.
+ALLOW_UNENFORCED_ENV = "ATELIER_ALLOW_UNENFORCED_PERMISSIONS"
+
+
+def _refuse_unenforced(level: str, why: str) -> None:
+    """Fail a run whose permission level the agent cannot be held to.
+
+    :param level: ``edits`` or ``read-only``.
+    :param why: what makes the level unenforceable for this agent.
+    :raises RuntimeError: unless :data:`ALLOW_UNENFORCED_ENV` is set, in
+        which case a warning is printed and the run goes on.
+    """
+    message = (
+        f"permissions {level} cannot be enforced: {why}, so the agent could "
+        "act without asking"
+    )
+    if os.environ.get(ALLOW_UNENFORCED_ENV, "").lower() in ("1", "true", "yes"):
+        print(
+            f"[flow-atelier] warning: {message}; running anyway because "
+            f"{ALLOW_UNENFORCED_ENV} is set. Only requests the agent asks about "
+            "are checked.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    raise RuntimeError(
+        f"{message}. Use an agent with a read-only or asking mode (Claude Code, "
+        f"Codex), use permissions: full, or set {ALLOW_UNENFORCED_ENV}=1 to run "
+        "anyway with only the requests the agent asks about checked"
+    )
+
+
 def _pick_permissive_mode(
     state: SessionModeState | None,
     keywords: tuple[str, ...] = PERMISSIVE_MODE_KEYWORDS,
@@ -622,6 +709,43 @@ def _usage_limit(exc: Exception, client: _BufferingClient) -> UsageLimit | None:
         resets_at=resets_at.astimezone(UTC).isoformat() if resets_at else None,
         detail=(detail or str(exc)).strip(),
     )
+
+
+def _failure_in_words(
+    client: _BufferingClient, output: str
+) -> tuple[str, UsageLimit | None] | None:
+    """Find a normally ended turn that did not really succeed.
+
+    Only a turn with no tool calls is judged: an agent that did work may
+    say anything. An empty reply failed. A short reply that is only a usage
+    limit notice or a login or account error failed; a usage limit gets its
+    reset time so the engine can wait and retry.
+
+    :param client: the buffering client that drove the turn.
+    :param output: the agent's whole reply.
+    :returns: the failure reason and any usage limit, or ``None``.
+    """
+    if any(step.kind == StepKind.tool_call for step in client.steps):
+        return None
+    text = output.strip()
+    if not text:
+        if client._saw_nontext_content:
+            return None
+        return "agent returned no answer", None
+    if client.supervisor_run or len(text) > ERROR_REPLY_MAX_CHARS:
+        return None
+    if is_usage_limit_reply(text):
+        resets_at = client.limit_resets_at or parse_reset(
+            text, datetime.now().astimezone()
+        )
+        limit = UsageLimit(
+            resets_at=resets_at.astimezone(UTC).isoformat() if resets_at else None,
+            detail=text,
+        )
+        return f"agent reported a usage limit: {text}", limit
+    if _AGENT_ERROR_TEXT.search(text):
+        return f"agent reported an error instead of an answer: {text}", None
+    return None
 
 
 def _timings(client: _BufferingClient, spawned_at: float) -> dict[str, float]:
@@ -1609,11 +1733,12 @@ class AcpHarnessExecutor(ExecutorBase):
                 if proc.stderr is not None
                 else None
             )
+            succeeded = False
             try:
                 init = await conn.initialize(protocol_version=acp.PROTOCOL_VERSION)
                 sess = await self._open_session(conn, init, cwd, client, resume_session)
                 if client.supervisor_run:
-                    await self._ensure_prompting_mode(conn, sess)
+                    await self._enter_supervisor_mode(conn, sess)
                 elif client.permissions != "full":
                     await self._enter_limited_mode(
                         conn, sess, client.permissions, routed=not client.approve_all
@@ -1631,22 +1756,30 @@ class AcpHarnessExecutor(ExecutorBase):
                     await client.flush_pending()
                     client.buffer.clear()
                 if not interactive:
-                    return await self._run_single_turn(
+                    result = await self._run_single_turn(
                         conn, sess.session_id, initial_prompt, client
                     )
-                return await self._run_interactive(
-                    conn, sess.session_id, initial_prompt, client
-                )
+                else:
+                    result = await self._run_interactive(
+                        conn, sess.session_id, initial_prompt, client
+                    )
+                succeeded = result.success
+                return result
             finally:
                 if drain is not None:
-                    # A dead agent closes stderr, so the drain ends on its
-                    # own; the short wait lets those final lines land before
-                    # the transport tears the pipe down.
-                    with contextlib.suppress(TimeoutError, asyncio.CancelledError):
-                        await asyncio.wait_for(
-                            asyncio.shield(drain), STDERR_DRAIN_GRACE_SECONDS
-                        )
+                    if not succeeded:
+                        # A dead agent closes stderr, so the drain ends on its
+                        # own; the short wait lets those final lines land
+                        # before the transport tears the pipe down. A healthy
+                        # agent keeps stderr open, and its stderr is not
+                        # reported on success, so it is not waited for.
+                        with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                            await asyncio.wait_for(
+                                asyncio.shield(drain), STDERR_DRAIN_GRACE_SECONDS
+                            )
                     drain.cancel()
+                if succeeded and sys.platform != "win32":
+                    await _close_agent_quickly(proc)
                 if sys.platform == "win32":
                     _close_proc_transports(proc)
 
@@ -1744,14 +1877,22 @@ class AcpHarnessExecutor(ExecutorBase):
         :param level: ``edits`` or ``read-only``.
         :param routed: a person or a supervisor answers the requests.
         :raises RuntimeError: when the session starts in a mode that skips
-            permission requests and offers none to switch to.
+            permission requests and offers none to switch to, or the agent
+            cannot be held to ``level`` (see :func:`_refuse_unenforced`).
         """
         modes = getattr(sess, "modes", None)
         if modes is None:
+            _refuse_unenforced(level, "the agent offers no session modes")
             return
         picked = limited_mode(
             [m.id for m in modes.available_modes], modes.current_mode_id, level, routed
         )
+        if not mode_enforces(picked, level, routed):
+            _refuse_unenforced(
+                level,
+                f"the agent would run in its own mode {picked!r}, which is not "
+                "a read-only mode or one known to ask before acting",
+            )
         if picked != modes.current_mode_id:
             await conn.set_session_mode(mode_id=picked, session_id=sess.session_id)
 
@@ -1854,6 +1995,29 @@ class AcpHarnessExecutor(ExecutorBase):
             config_id=choice.config_id, session_id=sess.session_id, value=self.effort
         )
         return list(response.config_options)
+
+    async def _enter_supervisor_mode(self, conn, sess) -> None:
+        """Run a supervisor in a read-only mode when the agent offers one.
+
+        A supervisor only reads the worker's session and answers; its own
+        permission requests are always rejected. A read-only mode also stops
+        an agent from changing the workspace in a mode that does not ask
+        (Codex's ``agent``). Without one, it leaves bypass modes as before.
+
+        :param conn: the ACP connection.
+        :param sess: the new-session response carrying advertised mode ids.
+        """
+        modes = sess.modes
+        if modes is not None:
+            for mode in modes.available_modes:
+                lowered = mode.id.lower()
+                if any(k in lowered for k in LIMITED_MODE_KEYWORDS["read-only"]):
+                    if mode.id != modes.current_mode_id:
+                        await conn.set_session_mode(
+                            session_id=sess.session_id, mode_id=mode.id
+                        )
+                    return
+        await self._ensure_prompting_mode(conn, sess)
 
     @staticmethod
     async def _ensure_prompting_mode(conn, sess) -> None:
@@ -2014,6 +2178,13 @@ class AcpHarnessExecutor(ExecutorBase):
         output = "".join(client.buffer)
         usage = _usage_from_client(client)
         if stop_reason == "end_turn":
+            failure = _failure_in_words(client, output)
+            if failure is not None:
+                reason, limit = failure
+                return ExecutionResult(
+                    exit_code=1, stdout=output, stderr=reason, output=output,
+                    steps=client.steps, usage=usage, usage_limit=limit,
+                )
             # An empty success is indistinguishable from a real one unless we
             # note that the agent's only content was non-text (image/resource).
             stderr = (

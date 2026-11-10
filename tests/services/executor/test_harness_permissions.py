@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -209,10 +210,12 @@ async def test_reject_once_is_preferred_and_no_reject_option_cancels() -> None:
         {"id": "never", "label": "Never", "kind": "reject_always"},
         {"id": "no", "label": "No", "kind": "reject_once"},
     ]
-    result = await _executor(_Sink(), options=options).execute(_task(), "x", _ctx("read-only"))
+    result = await _executor(_Sink(), modes=CLAUDE_MODES, options=options).execute(
+        _task(), "x", _ctx("read-only")
+    )
     assert "[perm:no]" in result.output
     allow_only = [{"id": "allow", "label": "Allow", "kind": "allow_once"}]
-    result = await _executor(_Sink(), options=allow_only).execute(
+    result = await _executor(_Sink(), modes=CLAUDE_MODES, options=allow_only).execute(
         _task(), "x", _ctx("read-only")
     )
     assert "[perm:]" in result.output
@@ -227,7 +230,9 @@ async def test_task_permissions_beat_the_global_setting(
     task_level: str, global_level: str | None, answer: str
 ) -> None:
     """A task's own ``permissions`` overrides ATELIER_AGENT_PERMISSIONS."""
-    result = await _executor(_Sink()).execute(_task(task_level), "x", _ctx(global_level))
+    result = await _executor(_Sink(), modes=CLAUDE_MODES).execute(
+        _task(task_level), "x", _ctx(global_level)
+    )
     assert f"[perm:{answer}]" in result.output
 
 
@@ -235,14 +240,14 @@ async def test_a_routed_request_the_level_forbids_is_never_asked() -> None:
     """With ``interaction.permissions: human`` only allowed requests reach a person."""
     policy = InteractionPolicy(questions="human", permissions="human")
     sink = _Sink()
-    result = await _executor(sink, kind="execute").execute(
+    result = await _executor(sink, modes=CLAUDE_MODES, kind="execute").execute(
         _task("edits"), "x", _ctx(interaction=policy, interactive_harnesses=True)
     )
     assert "[perm:deny]" in result.output
     assert not any("execute something" in p for p in sink.prompts)
 
     sink = _Sink()
-    result = await _executor(sink, kind="edit").execute(
+    result = await _executor(sink, modes=CLAUDE_MODES, kind="edit").execute(
         _task("edits"), "x", _ctx(interaction=policy, interactive_harnesses=True)
     )
     assert "[perm:allow]" in result.output
@@ -279,12 +284,64 @@ async def test_routed_edits_keeps_claude_asking_about_edits() -> None:
 
 async def test_a_failed_turn_names_what_the_level_rejected() -> None:
     """The rejection reaches stderr, and so the next loop try, only on failure."""
-    result = await _executor(_Sink(), stop="refusal").execute(
+    result = await _executor(_Sink(), modes=CLAUDE_MODES, stop="refusal").execute(
         _task("read-only"), "x", _ctx()
     )
     assert result.exit_code != 0
     assert result.stderr.endswith("permissions read-only rejected: execute something")
 
-    result = await _executor(_Sink()).execute(_task("read-only"), "x", _ctx())
+    result = await _executor(_Sink(), modes=CLAUDE_MODES).execute(
+        _task("read-only"), "x", _ctx()
+    )
     assert result.exit_code == 0, result.stderr
     assert "rejected" not in result.stderr
+
+
+@pytest.mark.parametrize("level", ["edits", "read-only"])
+@pytest.mark.parametrize("modes", [None, [{"id": "build", "name": "Build"},
+                                          {"id": "plan", "name": "Plan"}]])
+async def test_a_level_the_agent_cannot_be_held_to_fails_before_the_prompt(
+    level: str, modes: list[dict] | None, monkeypatch
+) -> None:
+    """No modes, or only modes Atelier cannot read, fail the task unprompted."""
+    monkeypatch.delenv("ATELIER_ALLOW_UNENFORCED_PERMISSIONS", raising=False)
+    result = await _executor(_Sink(), modes=modes, current="build").execute(
+        _task(level), "x", _ctx()
+    )
+    assert result.exit_code != 0
+    assert f"permissions {level} cannot be enforced" in result.stderr
+    assert "[perm:" not in result.output
+
+
+async def test_the_opt_in_runs_an_unenforced_level_with_a_warning(monkeypatch, capsys) -> None:
+    """ATELIER_ALLOW_UNENFORCED_PERMISSIONS turns the refusal into a warning."""
+    monkeypatch.setenv("ATELIER_ALLOW_UNENFORCED_PERMISSIONS", "1")
+    result = await _executor(_Sink()).execute(_task("read-only"), "x", _ctx())
+    assert result.exit_code == 0, result.stderr
+    assert "[perm:deny]" in result.output
+    assert "cannot be enforced" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("modes", "current", "expected"), [
+    (CODEX_MODES, "agent", "read-only"),
+    (CODEX_MODES, "read-only", None),
+    (CLAUDE_MODES, "bypassPermissions", "default"),
+    (CLAUDE_MODES, "default", None),
+])
+async def test_a_supervisor_runs_read_only_where_the_agent_offers_it(
+    modes: list[dict], current: str, expected: str | None
+) -> None:
+    """A supervisor takes a read-only mode, else leaves a bypass mode as before."""
+    switched: list[str] = []
+
+    class _Conn:
+        async def set_session_mode(self, session_id: str, mode_id: str) -> None:
+            switched.append(mode_id)
+
+    sess = SimpleNamespace(session_id="s", modes=SimpleNamespace(
+        current_mode_id=current,
+        available_modes=[SimpleNamespace(id=m["id"]) for m in modes],
+    ))
+    executor = AcpHarnessExecutor(launch_cmd=["agent"], sink=_Sink())
+    await executor._enter_supervisor_mode(_Conn(), sess)
+    assert switched == ([expected] if expected else [])

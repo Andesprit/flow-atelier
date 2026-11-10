@@ -34,10 +34,10 @@ from flow_atelier.services.executor.acp_registry import (
     write_snapshot,
 )
 from flow_atelier.services.executor.harness import (
-    LIMITED_MODE_KEYWORDS,
     PROBE_TIMEOUT_SECONDS,
     AcpHarnessExecutor,
     limited_mode,
+    mode_enforces,
 )
 
 
@@ -121,7 +121,7 @@ def _run_mode_note(result, level: str) -> str:
 
     A safer level asks :func:`limited_mode`, the choice a run makes. A mode
     it keeps rather than picks for the level is the agent's own, and Atelier
-    cannot tell whether that mode asks before acting.
+    cannot tell whether that mode asks before acting, so such a run fails.
 
     :param result: the :class:`ProbeResult` whose modes are listed.
     :param level: the ``ATELIER_AGENT_PERMISSIONS`` level, ``full`` when unset.
@@ -136,11 +136,11 @@ def _run_mode_note(result, level: str) -> str:
             f" (permissions {level}: runs fail, the agent starts in "
             f"{result.current_mode}, which skips permission requests)"
         )
-    if any(keyword in mode.lower() for keyword in LIMITED_MODE_KEYWORDS[level]):
+    if mode_enforces(mode, level):
         return f" (permissions {level}: runs will use {mode})"
     return (
-        f" (permissions {level}: runs will use {mode}; that mode decides what "
-        "the agent does unasked)"
+        f" (permissions {level}: runs fail, the agent would run in its own mode "
+        f"{mode}, which may act without asking)"
     )
 
 
@@ -162,6 +162,11 @@ def _render_probe(tool: str, launch: list[str], result, level: str) -> None:
             picked = _run_mode_note(result, level)
             console.print(
                 f"  [dim]modes:[/dim] {escape(', '.join(result.modes))}{escape(picked)}"
+            )
+        elif level != "full":
+            console.print(
+                f"  [dim]modes:[/dim] none (permissions {level}: runs fail, the "
+                "agent cannot be held to it)"
             )
         if result.models:
             current = f" (current {result.current_model})" if result.current_model else ""

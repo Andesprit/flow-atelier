@@ -110,3 +110,5 @@ def stop_cmd(
     console.print(
         f"[yellow]stop signal sent; flow {flow_id} still shutting down[/yellow]"
     )
+    # Not stopped yet: a caller must not assume the work has ended.
+    raise typer.Exit(code=1)

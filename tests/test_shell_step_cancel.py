@@ -210,7 +210,8 @@ tasks:
                 timeout=60,
             )
             assert stop.returncode == 0, stop.stdout + stop.stderr
-        assert runner.wait(timeout=20) == (130 if how == "ctrl-c" else 0)
+        # A stopped run is cut short, not a success: 143 is 128 + SIGTERM.
+        assert runner.wait(timeout=20) == (130 if how == "ctrl-c" else 143)
     finally:
         if runner.poll() is None:
             runner.kill()

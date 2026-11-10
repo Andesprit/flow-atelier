@@ -25,6 +25,9 @@ import {
 } from "@/services/storage/projects";
 import { KANBAN_COLUMNS } from "@/constants/kanban";
 import type { Task, ColumnId } from "@/types/task";
+import type { LiveRun } from "@/hooks/useConduit";
+import { USE_MOCK } from "@/config/env";
+import { cancelTask as cancelEngine } from "@/runner";
 import { TaskCard } from "./components/TaskCard";
 import { TaskCardRunning } from "./components/TaskCardRunning";
 import { KanbanColumn } from "./components/KanbanColumn";
@@ -376,6 +379,8 @@ export function Kanban() {
                     task={t}
                     selected={selectedName === t.name}
                     onClick={() => handleTaskClick(t)}
+                    liveRuns={liveRuns}
+                    onCancelRun={conduitCancel}
                   />
                 ))}
                 {colTasks.length === 0 && (
@@ -430,13 +435,45 @@ function CardSelector({
   task,
   selected,
   onClick,
+  liveRuns,
+  onCancelRun,
 }: {
   task: Task;
   selected: boolean;
   onClick: () => void;
+  liveRuns: LiveRun[];
+  onCancelRun: (flowId: string) => void;
 }) {
   if (task.column === "in_progress" && task.flow) {
-    return <TaskCardRunning task={task} selected={selected} onClick={onClick} />;
+    return (
+      <TaskCardRunning
+        task={task}
+        selected={selected}
+        onClick={onClick}
+        onCancel={runningCardCancel(task, liveRuns, onCancelRun)}
+      />
+    );
   }
   return <TaskCard task={task} selected={selected} onClick={onClick} />;
+}
+
+/**
+ * What the cancel button on a running card does, or `undefined` to hide it.
+ *
+ * A run the server is hosting is cancelled on the server, exactly as the
+ * drawer does. The demo simulator (mock mode) cancels in the browser. Any
+ * other running card has no server run to cancel, so it gets no button:
+ * moving the card while the work goes on would say it stopped when it did not.
+ */
+export function runningCardCancel(
+  task: Task,
+  liveRuns: LiveRun[],
+  onCancelRun: (flowId: string) => void,
+): (() => void) | undefined {
+  const flowId = task.flow?.flowId;
+  const liveRun = flowId ? liveRuns.find((r) => r.flowId === flowId) : undefined;
+  if (liveRun) {
+    return liveRun.status === "running" ? () => onCancelRun(liveRun.flowId) : undefined;
+  }
+  return USE_MOCK ? () => cancelEngine(task.name) : undefined;
 }

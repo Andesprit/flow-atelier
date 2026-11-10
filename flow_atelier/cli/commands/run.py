@@ -58,6 +58,10 @@ from flow_atelier.schemas.progress import TaskStatus
 # How long the run stream must stay silent before the heartbeat speaks up.
 HEARTBEAT_SECONDS = 30.0
 
+# `run` and `ask` exit with this when `atelier stop` or any SIGTERM ended the
+# run (128 + SIGTERM, as a shell reports it).
+STOPPED_EXIT_CODE = 143
+
 # How often the heartbeat wakes to check for silence.
 _HEARTBEAT_TICK_SECONDS = 1.0
 
@@ -300,11 +304,12 @@ def drive_flow(
         raise typer.Exit(code=exc.code)
     except asyncio.CancelledError:
         # SIGTERM via `atelier stop`: the engine has marked the flow stopped.
+        # The work was cut short, so a caller must not read it as success.
         render_run_footer(collected, console)
         console.print("[yellow]flow stopped[/yellow]")
         if captured["id"]:
             console.print(f"[yellow]flow_id:[/yellow] {captured['id']}")
-        raise typer.Exit(code=0)
+        raise typer.Exit(code=STOPPED_EXIT_CODE)
     except Exception as exc:  # noqa: BLE001
         render_run_footer(collected, console)
         console.print(f"[red]flow failed:[/red] {escape(str(exc))}")

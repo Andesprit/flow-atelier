@@ -650,3 +650,48 @@ async def test_find_child_to_resume_skips_live_running_child(store):
         ),
     )
     assert engine.find_child_to_resume(parent, "build", "step1") == child
+
+
+async def test_resume_reruns_a_completed_task_whose_output_was_never_saved(store):
+    """A crash between "completed" and the outputs write must not pass on ''.
+
+    :param store: FilesystemStore fixture.
+    """
+    conduit = _conduit(
+        [
+            {"name": "a", "description": "d", "task": "x", "tool": "tool:bash", "depends_on": []},
+            {"name": "b", "description": "d", "task": "echo {{a.output}}", "tool": "tool:bash",
+             "depends_on": ["a"]},
+        ]
+    )
+    flow_id = await _seed_failed_flow(store, conduit, fail={"b"}, outputs={"a": "alpha"})
+    # Simulate the old write order: `a` saved as completed, its output lost.
+    store.write_outputs(flow_id, {})
+
+    fake = FakeExecutor(outputs={"a": "alpha again", "b": "recovered"})
+    engine = Engine({"tool:bash": fake}, store)
+    await engine.run(conduit, {}, resume_from=flow_id)
+    assert fake.calls == ["a", "b"]
+    assert store.read_outputs(flow_id)["a"] == "alpha again"
+
+
+async def test_a_task_output_is_saved_before_the_task_is_marked_completed(store):
+    """When progress first says completed, outputs.yaml already holds the output.
+
+    :param store: FilesystemStore fixture.
+    """
+    conduit = _conduit(
+        [{"name": "a", "description": "d", "task": "x", "tool": "tool:bash", "depends_on": []}]
+    )
+    seen: list[Any] = []
+    write_progress = store.write_progress
+
+    def spy(flow_id: str, progress: Progress) -> None:
+        task = progress.tasks.get("a")
+        if task is not None and task.status == TaskStatus.completed and not seen:
+            seen.append(store.read_outputs(flow_id).get("a"))
+        write_progress(flow_id, progress)
+
+    store.write_progress = spy
+    await Engine({"tool:bash": FakeExecutor(outputs={"a": "alpha"})}, store).run(conduit, {})
+    assert seen == ["alpha"]

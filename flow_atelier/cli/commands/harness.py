@@ -1,8 +1,9 @@
 """`atelier harness` sub-app and `atelier list harnesses` — check, refresh and list ACP agents.
 
-Nothing here installs an agent or logs into one; that stays with the user
-and the agent's own CLI. These commands only report what is available and
-what is missing.
+Nothing here logs into an agent; that stays with the user and the agent's
+own CLI. ``install`` only puts an npx adapter the registry already pins
+where launches can run it without ``npx``; the rest report what is
+available and what is missing.
 """
 from __future__ import annotations
 
@@ -19,18 +20,24 @@ from rich.table import Table
 from flow_atelier.cli._shared import console
 from flow_atelier.cli.main import harness_app, list_app
 from flow_atelier.core.atelier import Atelier
+from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.schemas.conduit import split_harness_tool
 from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 from flow_atelier.services.executor.acp_registry import (
+    INSTALL_DIRNAME,
     LEGACY_HARNESS_ALIASES,
     REGISTRY_URL,
     SNAPSHOT_FILENAME,
     fetch_registry,
+    install_agent,
+    load_registry,
     write_snapshot,
 )
 from flow_atelier.services.executor.harness import (
+    LIMITED_MODE_KEYWORDS,
     PROBE_TIMEOUT_SECONDS,
     AcpHarnessExecutor,
+    limited_mode,
 )
 
 
@@ -84,8 +91,9 @@ def harness_list_cmd(
     table.add_column("agent")
     table.add_column("version")
     # The full argv is in --json; here just name the agent's own
-    # distribution: npx/uvx fetch themselves on first run, binary means
-    # the user installed the CLI and we run it from PATH.
+    # distribution: npx/uvx fetch themselves on first run, installed runs
+    # the copy `atelier harness install` made, binary means the user
+    # installed the CLI and we run it from PATH.
     table.add_column("via")
     table.add_column("ready", overflow="fold")
     for row in rows:
@@ -108,12 +116,41 @@ def harness_list_cmd(
     )
 
 
-def _render_probe(tool: str, launch: list[str], result) -> None:
+def _run_mode_note(result, level: str) -> str:
+    """Say which mode a run at permission ``level`` would use.
+
+    A safer level asks :func:`limited_mode`, the choice a run makes. A mode
+    it keeps rather than picks for the level is the agent's own, and Atelier
+    cannot tell whether that mode asks before acting.
+
+    :param result: the :class:`ProbeResult` whose modes are listed.
+    :param level: the ``ATELIER_AGENT_PERMISSIONS`` level, ``full`` when unset.
+    :returns: the text to append to the modes line, possibly empty.
+    """
+    if level == "full":
+        return f" (runs will use {result.permissive_mode})" if result.permissive_mode else ""
+    try:
+        mode = limited_mode(result.modes, result.current_mode, level)
+    except RuntimeError:
+        return (
+            f" (permissions {level}: runs fail, the agent starts in "
+            f"{result.current_mode}, which skips permission requests)"
+        )
+    if any(keyword in mode.lower() for keyword in LIMITED_MODE_KEYWORDS[level]):
+        return f" (permissions {level}: runs will use {mode})"
+    return (
+        f" (permissions {level}: runs will use {mode}; that mode decides what "
+        "the agent does unasked)"
+    )
+
+
+def _render_probe(tool: str, launch: list[str], result, level: str) -> None:
     """Print one connection-check report.
 
     :param tool: the harness tool name (or ``ad-hoc`` for a ``--cmd`` check).
     :param launch: the argv that was checked.
     :param result: the :class:`ProbeResult` to render.
+    :param level: the ``ATELIER_AGENT_PERMISSIONS`` level runs would use.
     """
     console.print(f"[bold]{escape(tool)}[/bold]  [dim]{escape(' '.join(launch))}[/dim]")
     if result.ok:
@@ -122,7 +159,7 @@ def _render_probe(tool: str, launch: list[str], result) -> None:
             console.print(f"  [dim]agent:[/dim] {escape(result.agent)}")
         console.print(f"  [dim]protocol:[/dim] ACP v{result.protocol_version}")
         if result.modes:
-            picked = f" (runs will use {result.permissive_mode})" if result.permissive_mode else ""
+            picked = _run_mode_note(result, level)
             console.print(
                 f"  [dim]modes:[/dim] {escape(', '.join(result.modes))}{escape(picked)}"
             )
@@ -148,6 +185,8 @@ def _render_probe(tool: str, launch: list[str], result) -> None:
                 f"  [dim]auth methods advertised:[/dim] "
                 f"{escape(', '.join(result.auth_methods))}"
             )
+        if result.reply:
+            console.print(f"  [dim]reply:[/dim] {escape(result.reply[:200])}")
         return
 
     console.print(f"  [red]not usable[/red] — {escape(result.detail)}")
@@ -174,13 +213,23 @@ def harness_check_cmd(
         None, "--cmd", help="Check an arbitrary agent command instead of a name."
     ),
     timeout: float = typer.Option(
-        PROBE_TIMEOUT_SECONDS, "--timeout", help="Seconds to allow for the handshake."
+        PROBE_TIMEOUT_SECONDS, "--timeout", help="Seconds to allow for the check."
+    ),
+    prompt: bool = typer.Option(
+        False,
+        "--prompt",
+        help=(
+            "Also send a one-line test prompt, costing a few tokens. Catches an "
+            "expired login, a used-up plan or an outdated adapter."
+        ),
     ),
 ) -> None:
     """Check that an agent command is reachable and speaks ACP.
 
     Starts the agent, completes the ACP handshake and opens a session, then
-    stops — no prompt is sent, so the check costs no tokens. A ``:<model>``
+    stops — no prompt is sent, so the check costs no tokens. ``--prompt``
+    also sends a one-line test prompt and requires an answer, which proves
+    the login works for real requests before an unattended run. A ``:<model>``
     (or ``:<model>:<effort>``) suffix is resolved the same way a run resolves
     it, so what the check reports is what a task naming that tool would get.
     Installing the agent and logging into it stay entirely yours; this only
@@ -189,7 +238,8 @@ def harness_check_cmd(
     :param name: a registered harness name, optionally with a model and
         effort suffix.
     :param cmd: an arbitrary command to check instead of a registered name.
-    :param timeout: seconds to allow for the handshake.
+    :param timeout: seconds to allow for the check.
+    :param prompt: also send a one-line test prompt and require a reply.
     """
     if (name is None) == (cmd is None):
         console.print("[red]pass either a harness name or --cmd, not both[/red]")
@@ -223,8 +273,9 @@ def harness_check_cmd(
             executor = executor.with_model(model, effort)
         label = tool
 
-    result = asyncio.run(executor.probe(timeout=timeout))
-    _render_probe(label, executor.launch_cmd, result)
+    result = asyncio.run(executor.probe(timeout=timeout, prompt=prompt))
+    level = AtelierSettings().agent_permissions or "full"
+    _render_probe(label, executor.launch_cmd, result, level)
     if not result.ok:
         raise typer.Exit(code=1)
 
@@ -255,3 +306,69 @@ def harness_sync_cmd() -> None:
     )
     if added:
         console.print(f"[dim]new: {escape(', '.join(added))}[/dim]")
+    root = atelier.settings.global_atelier_dir / INSTALL_DIRNAME
+    if root.is_dir():
+        # An agent installed at its old pin now falls back to npx.
+        installed_before = {
+            agent_id for agent_id, spec in atelier.registry.items() if spec.kind == "installed"
+        }
+        stale = sorted(
+            agent_id
+            for agent_id, spec in load_registry(destination, root).items()
+            if agent_id in installed_before and spec.kind != "installed"
+        )
+        if stale:
+            console.print(
+                f"[yellow]new versions pinned; run 'atelier harness install "
+                f"{escape(' '.join(stale))}' to keep skipping npx[/yellow]"
+            )
+
+
+@harness_app.command("install")
+def harness_install_cmd(
+    names: list[str] = typer.Argument(
+        ..., help="Harnesses to install, e.g. claude-code codex."
+    ),
+) -> None:
+    """Install npx adapters so each agent task starts without ``npx``.
+
+    ``npx`` spends about a second per launch resolving a package it already
+    cached. This installs the exact version the registry pins into the
+    global atelier dir; every later launch runs that copy directly. Re-run
+    it after ``atelier harness sync`` pins a newer version, or launches fall
+    back to ``npx``. Logging into the agent stays yours.
+
+    :param names: harness names, with or without the ``harness:`` prefix.
+    """
+    atelier = Atelier()
+    root = atelier.settings.global_atelier_dir / INSTALL_DIRNAME
+    failed = False
+    for raw in names:
+        name = raw.removeprefix("harness:")
+        spec = atelier.registry.get(name) or atelier.registry.get(
+            LEGACY_HARNESS_ALIASES.get(name, "")
+        )
+        if spec is None:
+            console.print(
+                f"[red]unknown harness:[/red] {escape(name)} — try 'atelier list harnesses'"
+            )
+            failed = True
+            continue
+        if spec.kind not in ("npx", "installed"):
+            console.print(
+                f"[yellow]skipped[/yellow] {escape(name)} — it runs via {escape(spec.kind)}, "
+                "not npx, so there is nothing to install"
+            )
+            continue
+        try:
+            executable = install_agent(root, spec.package)
+        except OSError as exc:
+            console.print(f"[red]install failed:[/red] {escape(name)} — {escape(str(exc))}")
+            failed = True
+            continue
+        console.print(
+            f"[green]installed[/green] {escape(name)} ({escape(spec.package)}) "
+            f"→ {escape(str(executable))}"
+        )
+    if failed:
+        raise typer.Exit(code=1)

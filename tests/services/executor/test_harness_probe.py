@@ -130,3 +130,38 @@ class TestMissingSetup:
         assert not result.ok
         assert result.stage == "handshake"
         assert "2s" in result.detail
+
+
+class TestPromptCheck:
+    async def test_a_plain_check_sends_no_prompt(self, tmp_path) -> None:
+        """Without --prompt the check opens a session and stops, costing nothing."""
+        record = tmp_path / "prompts.jsonl"
+        result = await _agent(
+            {"turns": [{"chunks": ["OK"]}], "record_path": str(record)}
+        ).probe(timeout=30)
+        assert result.ok
+        assert result.reply == ""
+        assert not record.exists()
+
+    async def test_a_prompt_check_reports_the_reply(self) -> None:
+        """An agent that answers the test prompt passes and shows its reply."""
+        result = await _agent({"turns": [{"chunks": ["OK"]}]}).probe(timeout=30, prompt=True)
+        assert result.ok
+        assert result.reply == "OK"
+        assert "answered a test prompt" in result.detail
+
+    async def test_a_refused_prompt_fails_the_check(self) -> None:
+        """A login that opens sessions but fails requests is caught by the prompt."""
+        result = await _agent({"turns": [{"fail_auth": "token expired"}]}).probe(
+            timeout=30, prompt=True
+        )
+        assert not result.ok
+        assert result.stage == "prompt"
+        assert "refused a test prompt" in result.detail
+        assert result.guidance()
+
+    async def test_an_empty_reply_fails_the_check(self) -> None:
+        """A turn that ends without any text does not count as an answer."""
+        result = await _agent({"turns": [{"chunks": []}]}).probe(timeout=30, prompt=True)
+        assert not result.ok
+        assert result.stage == "prompt"

@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from flow_atelier.schemas.conduit import HARNESS_NAME_RE
+from flow_atelier.schemas.conduit import HARNESS_NAME_RE, AgentPermissions
 
 
 class AtelierSettings(BaseSettings):
@@ -42,6 +42,25 @@ class AtelierSettings(BaseSettings):
             "Max characters per {{loop.history}} entry; longer entries keep "
             "head and tail around a truncation marker. Values <= 0 mean "
             "unlimited."
+        ),
+    )
+    usage_limit_max_wait: int = Field(
+        default=21600,
+        description=(
+            "Seconds one task may wait for its agent's usage limit to reset "
+            "(env ATELIER_USAGE_LIMIT_MAX_WAIT). A turn refused for usage is "
+            "retried after the reset the agent states, or every 30 minutes "
+            "when it states none, without spending the task's retries. "
+            "0 fails the task at once."
+        ),
+    )
+    agent_permissions: AgentPermissions | None = Field(
+        default=None,
+        description=(
+            "What agent tasks may do without asking (env "
+            "ATELIER_AGENT_PERMISSIONS): 'full', 'edits' (read and change "
+            "files, no commands) or 'read-only'. A task's own 'permissions' "
+            "wins. Unset = full, with a one-line notice on each run."
         ),
     )
     claude_launch_cmd: list[str] = Field(

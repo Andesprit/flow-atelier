@@ -1,14 +1,14 @@
 # install.ps1 — one-command installer for flow-atelier (Windows)
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/LGuillermoAngaritaG/flow-atelier/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Andesprit/flow-atelier/main/install.ps1 | iex
 #
 # Downloads the latest binary for the current platform to
 # %USERPROFILE%\.atelier\bin\ and adds it to the user-level PATH (idempotent).
 
 $ErrorActionPreference = "Stop"
 
-$Repo = "LGuillermoAngaritaG/flow-atelier"
+$Repo = "Andesprit/flow-atelier"
 $InstallDir = Join-Path (Join-Path $env:USERPROFILE ".atelier") "bin"
 $BinaryName = "atelier.exe"
 

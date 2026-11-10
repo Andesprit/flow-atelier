@@ -11,8 +11,11 @@ import yaml
 from pydantic import ValidationError
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from flow_atelier.modules.templating import extract_template_refs
-from flow_atelier.schemas.conduit import Conduit, TaskDefinition
+from flow_atelier.modules.templating import env_var_name, extract_template_refs
+from flow_atelier.schemas.conduit import Conduit, TaskDefinition, ToolType
+
+# A shell body reading an input the way the guide teaches: $INPUT_X, ${INPUT_X}.
+_INPUT_VAR_RE = re.compile(r"\$\{?(INPUT_[A-Z0-9_]+)")
 
 
 class RecipeSource:
@@ -226,7 +229,13 @@ def unforwarded_inputs(child: Conduit, task: TaskDefinition, source: RecipeSourc
     """Catch body inputs that would be absent when the child starts."""
     supplied = set(task.inputs)
     defaulted = {key for key, spec in child.inputs.items() if spec.default is not None}
+    # The declared input each variable carries. An undeclared $INPUT_X is not
+    # one a call can forward, and may come from the user's own environment.
+    declared: dict[str, str] = {}
+    for key in sorted(child.inputs):
+        declared.setdefault(env_var_name("INPUT_", key), key)
     missing: set[str] = set()
+    unset: set[tuple[str, str]] = set()
     for body_task in child.tasks:
         templates = [body_task.task, *(v for v in body_task.inputs.values() if isinstance(v, str))]
         for template in templates:
@@ -235,10 +244,20 @@ def unforwarded_inputs(child: Conduit, task: TaskDefinition, source: RecipeSourc
                 for ref in extract_template_refs(template)
                 if ref.kind == "input" and ref.value not in supplied | defaulted
             )
+        if body_task.tool == ToolType.bash:
+            for var in _INPUT_VAR_RE.findall(body_task.task):
+                key = declared.get(var) or declared.get(var.removesuffix("_FILE"))
+                if key and key not in supplied | defaulted:
+                    unset.add((var, key))
     line, path = source.task_loc(task.name, "inputs")
     return [
         source.prefix(line, path)
         + f"body reads {{{{inputs.{key}}}}} but this call does not forward {key}; "
         f"add {key}: '{{{{inputs.{key}}}}}' under this task's inputs:"
         for key in sorted(missing)
+    ] + [
+        source.prefix(line, path)
+        + f"body reads ${var} but this call does not forward {key}; "
+        f"add {key}: '{{{{inputs.{key}}}}}' under this task's inputs:"
+        for var, key in sorted(unset)
     ]

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from flow_atelier.schemas.conduit import TaskDefinition
+from flow_atelier.schemas.conduit import AgentPermissions, TaskDefinition
 from flow_atelier.schemas.interaction import InteractionPolicy
 from flow_atelier.schemas.log import ExecutionResult, IntermediateStep
 from flow_atelier.services.store.base import StoreBase
@@ -65,11 +65,21 @@ class FlowContext:
     """Absolute install dir of the running conduit, backing ``{{conduit_dir}}``
     when an executor resolves its own templates (e.g. nested-conduit inputs).
     ``None`` when the conduit is not registered in the store."""
+    shell_env: dict[str, str] = field(default_factory=dict)
+    """The values this task's template could use, keyed by the environment
+    variable that carries them (``INPUT_<NAME>``, ``OUTPUT_<TASK>``,
+    ``LOOP_*``). Set by the engine for ``tool:bash`` steps, which export them
+    so a script reads a value without the shell parsing it as code."""
 
     resume_session: str | None = None
     """The agent's id of an earlier session this invocation should continue,
     set by the engine for a task that names a ``session``. ``None`` opens a
     new session."""
+
+    agent_permissions: AgentPermissions | None = None
+    """What agent tasks may do without asking when a task names no
+    ``permissions`` of its own (``ATELIER_AGENT_PERMISSIONS``). ``None`` when
+    unset, which runs them with ``full`` permissions."""
 
     interaction: InteractionPolicy = field(default_factory=InteractionPolicy)
     supervisor_executor: ExecutorBase | None = None

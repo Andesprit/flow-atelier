@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ from flow_atelier.modules.engine import (
     validate_conduit,
 )
 from flow_atelier.modules.plan import exhaustion_warnings
+from flow_atelier.modules.templating import env_var_name, shell_env, shell_env_hints
 from flow_atelier.schemas.conduit import (
     Conduit,
     TaskDefinition,
@@ -127,6 +129,201 @@ class _TeamTask:
     path: str
     tool: str
     conditional: bool
+
+
+# A shell step reading a value Atelier sets: $INPUT_X, ${OUTPUT_PLAN_FILE}.
+_VALUE_VAR_RE = re.compile(r"\$\{?((?:INPUT|OUTPUT|LOOP)_[A-Z0-9_]+)")
+_LOOP_VARS = ("LOOP_ITERATION", "LOOP_PREVIOUS", "LOOP_HISTORY")
+
+
+def _hitl_answers(tasks: list[TaskDefinition]) -> set[str]:
+    """Name the inputs a ``tool:hitl`` task among ``tasks`` sets once answered.
+
+    :param tasks: the tasks of one conduit level.
+    :returns: the answer names, which need no ``inputs:`` declaration.
+    """
+    return {key for task in tasks if task.tool == ToolType.hitl for key in task.inputs}
+
+
+def _shell_value_warnings(conduit: Conduit) -> list[str]:
+    """Warn for each value a ``tool:bash`` task reads the unsafe or the empty way.
+
+    The shell parses a substituted ``{{...}}`` value as code, so an input or an
+    agent's output can run commands there; the environment variable cannot.
+    A ``$LOOP_*`` or ``$OUTPUT_<task>`` the step never gets is just empty,
+    where the template form of the same value fails validation. Only names
+    Atelier sets are judged, so a script's own ``$OUTPUT_DIR`` stays quiet
+    unless a task is called ``dir``.
+
+    :param conduit: the conduit to scan, inline loop bodies included.
+    :returns: one warning per task and placeholder or variable, in task order.
+    """
+    outer_tasks = {t.name for t in conduit.tasks}
+    scopes: list[tuple[str, list[TaskDefinition], set[str], TaskDefinition | None]] = [
+        ("", conduit.tasks, set(conduit.inputs) | _hitl_answers(conduit.tasks), None)
+    ] + [
+        (f"{task.name}.", task.tasks, set(task.inputs) | _hitl_answers(task.tasks), task)
+        for task in conduit.tasks
+        if task.tasks is not None
+    ]
+    warnings: list[str] = []
+    for prefix, tasks, declared, call in scopes:
+        deps = {t.name: [parse_dependency(d).task for d in t.depends_on] for t in tasks}
+        own = {}
+        for name in sorted(deps):
+            own.setdefault(env_var_name("OUTPUT_", name), name)
+        outer = {}
+        if call is not None:
+            for name in sorted(outer_tasks):
+                outer.setdefault(env_var_name("OUTPUT_", name), name)
+            for key in sorted(conduit.inputs):
+                if key not in declared:
+                    outer.setdefault(env_var_name("INPUT_", key), key)
+        for step in tasks:
+            if step.tool != ToolType.bash:
+                continue
+            upstream: set[str] = set()
+            frontier = [step.name]
+            while frontier:
+                for dep in deps.get(frontier.pop(), []):
+                    if dep not in upstream:
+                        upstream.add(dep)
+                        frontier.append(dep)
+            where = f"{prefix}{step.name}"
+            warnings += _placeholder_warnings(where, step, declared, upstream, call)
+            warnings += _unset_variable_warnings(where, step, upstream, own, outer, call)
+    return warnings
+
+
+def _placeholder_warnings(
+    where: str,
+    step: TaskDefinition,
+    declared: set[str],
+    upstream: set[str],
+    call: TaskDefinition | None,
+) -> list[str]:
+    """Name the variable to read in place of each ``{{...}}`` value in ``step``.
+
+    :param where: the step as warnings name it.
+    :param step: a ``tool:bash`` task.
+    :param declared: inputs its level declares, forwards or gets from a human.
+    :param upstream: the tasks in its depends_on chain.
+    :param call: the looping task whose inline body ``step`` is, or ``None``.
+    :returns: one warning per placeholder.
+    """
+    hints = shell_env_hints(step.task)
+    referenced = {
+        p.removeprefix("{{inputs.").removesuffix("}}")
+        for p, _ in hints if p.startswith("{{inputs.")
+    }
+    # Ask shell_env itself who owns each variable, so a name that loses a
+    # collision (my-name and my_name, report and report_file) is never sent
+    # to a variable that holds another value.
+    owners = shell_env(
+        {name: f"inputs.{name}" for name in declared | referenced},
+        {name: f"{name}.output" for name in upstream},
+    )
+    forwarded_loop = {
+        key for key, value in (call.inputs if call is not None else {}).items()
+        if isinstance(value, str) and "{{loop." in value
+    }
+    warnings: list[str] = []
+    for placeholder, var in hints:
+        ref = placeholder[2:-2]
+        name = ref.removeprefix("inputs.")
+        if not ref.startswith("loop.") and owners.get(var) != ref:
+            warnings.append(
+                f"{where}: {placeholder} gets no variable, because ${var} "
+                "holds another value; rename it to read it safely"
+            )
+            continue
+        raw = ref.startswith("loop.") or (ref.startswith("inputs.") and name in forwarded_loop)
+        warning = (
+            f'{where}: use "${var}" instead of {placeholder}, so the value'
+            + (", which can hold a failed try's raw output," if raw else "")
+            + " cannot run as a command; "
+        )
+        if not ref.startswith("inputs."):
+            warning += "it keeps the trailing newline, and "
+        warning += (
+            "a value past the step's 100,000-byte budget comes only as "
+            f'"${var}_FILE"'
+        )
+        if ref.startswith("inputs.") and name not in declared:
+            # run accepts an undeclared input only while a {{inputs.*}}
+            # names it, so the variable form needs the declaration.
+            warning += f"; declare {name} under inputs: too"
+        warnings.append(warning)
+    return warnings
+
+
+def _unset_variable_warnings(
+    where: str,
+    step: TaskDefinition,
+    upstream: set[str],
+    own: dict[str, str],
+    outer: dict[str, str],
+    call: TaskDefinition | None,
+) -> list[str]:
+    """Warn for each Atelier variable ``step`` reads but never gets.
+
+    :param where: the step as warnings name it.
+    :param step: a ``tool:bash`` task.
+    :param upstream: the tasks in its depends_on chain.
+    :param own: ``OUTPUT_<X>`` -> task, for the tasks of its own level.
+    :param outer: in an inline body, ``OUTPUT_<X>`` / ``INPUT_<X>`` -> the
+        enclosing conduit's task or unforwarded input; else empty.
+    :param call: the looping task whose inline body ``step`` is, or ``None``.
+    :returns: one warning per value, however many spellings read it.
+    """
+    warnings: list[str] = []
+    seen: set[str] = set()
+    for var in dict.fromkeys(_VALUE_VAR_RE.findall(step.task)):
+        base = next(
+            (v for v in (var, var.removesuffix("_FILE"))
+             if v in _LOOP_VARS or v in own or v in outer),
+            None,
+        )
+        if base is None or base in seen:
+            continue
+        seen.add(base)
+        if base in _LOOP_VARS:
+            if step.repeat > 1:
+                continue
+            hint = "this step does not loop (repeat is 1)"
+            value = base.removeprefix("LOOP_").lower()
+            # {{loop.previous}} and {{loop.history}} can be forwarded; the
+            # iteration has no template form.
+            if call is not None and call.repeat > 1 and value != "iteration":
+                hint += (
+                    f"; a loop body gets only what {call.name} forwards, so add "
+                    f"{value}: '{{{{loop.{value}}}}}' under its inputs: and read "
+                    f"${env_var_name('INPUT_', value)}"
+                )
+            warnings.append(f"{where}: ${var} is empty here: {hint}")
+        elif base in own:
+            if own[base] in upstream or own[base] == step.name:
+                continue
+            warnings.append(
+                f"{where}: ${var} is empty here: {own[base]} is not in its "
+                "depends_on chain; add it as a dependency"
+            )
+        elif base.startswith("OUTPUT_"):
+            name = outer[base]
+            warnings.append(
+                f"{where}: ${var} is empty here: {name} is a task of the "
+                f"enclosing conduit; add {name}: '{{{{{name}.output}}}}' under "
+                f"{call.name}'s inputs: and read ${env_var_name('INPUT_', name)}"
+            )
+        else:
+            key = outer[base]
+            warnings.append(
+                f"{where}: ${var} comes from the environment, not from input "
+                f"{key}, because this inline body gets only what its call "
+                f"forwards; to use the input, add {key}: '{{{{inputs.{key}}}}}' "
+                f"under {call.name}'s inputs:"
+            )
+    return warnings
 
 
 def _is_conditional(task: TaskDefinition) -> bool:
@@ -379,6 +576,7 @@ def _check_one(
         conduit = atelier.store.read_conduit(name)
         parsed = validate_conduit(conduit)
         warnings = list(exhaustion_warnings(conduit, parsed).values())
+        warnings += _shell_value_warnings(conduit)
         # A selection that no longer fits the recipe, or names an agent this
         # machine has nothing registered for, is a failed row like any other.
         effective = atelier.bind_agents(conduit, agents) if agents else conduit

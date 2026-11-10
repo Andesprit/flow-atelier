@@ -33,6 +33,10 @@ _INLINE_NAME_RE = re.compile(r"^~inline~([A-Za-z0-9_-]+)~([A-Za-z0-9_]+)$")
 # references and the key `ATELIER_HARNESSES` registers can never disagree over
 # case or spacing.
 HARNESS_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# How much an agent may do without asking: everything (the default), read and
+# change files, or only read. Set per task, or for every task with
+# ATELIER_AGENT_PERMISSIONS. See docs/guide.md#security.
+AgentPermissions = Literal["full", "edits", "read-only"]
 
 
 def inline_conduit_name(parent: str, task: str) -> str:
@@ -132,6 +136,7 @@ class TaskDefinition(BaseModel):
     timeout: int | None = None
     interactive: bool = False
     session: str | None = None
+    permissions: AgentPermissions | None = None
     inputs: dict[str, Any] = Field(default_factory=dict)
     tasks: list[TaskDefinition] | None = None
 
@@ -254,6 +259,16 @@ class TaskDefinition(BaseModel):
                 raise ValueError("session requires a harness:<name> tool")
             if not self.session.strip():
                 raise ValueError("session must not be empty")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_permissions(self) -> TaskDefinition:
+        """Allow ``permissions`` only on a task that runs an agent.
+
+        :returns: the validated ``TaskDefinition`` instance.
+        """
+        if self.permissions is not None and not self.tool.startswith("harness:"):
+            raise ValueError("permissions requires a harness:<name> tool")
         return self
 
     @model_validator(mode="after")

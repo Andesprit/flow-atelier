@@ -26,7 +26,7 @@ from tests._shell import host_path, run_script, write_shim
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GUIDE = _REPO_ROOT / "docs" / "checking-the-team-before-a-run.md"
-_README = _REPO_ROOT / "README.md"
+_REFERENCE = _REPO_ROOT / "docs" / "guide.md"
 _FAKE_AGENT = _REPO_ROOT / "tests" / "fixtures" / "fake_acp_agent.py"
 _BASH_BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 # version, workspace, compose, check + probe, the gated run, read back.
@@ -185,7 +185,7 @@ def _flat(text: str) -> str:
 
 def test_readme_points_at_a_guide_that_exists():
     """The discovery section beside the compose quickstart resolves here."""
-    assert "(docs/checking-the-team-before-a-run.md)" in _README.read_text(
+    assert "(checking-the-team-before-a-run.md)" in _REFERENCE.read_text(
         encoding="utf-8"
     )
     assert _GUIDE.is_file()

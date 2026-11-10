@@ -15,7 +15,7 @@ does not give you:
 - `--again` starts a brand-new run with its own identity.
 
 New to Atelier? Install it and run the `hello` conduit first — see the
-[Quickstart](../README.md#quickstart).
+[Quickstart](guide.md#quickstart).
 
 ## Before you start
 
@@ -271,4 +271,4 @@ Remove the workspace whenever you like: `rm -rf "$tutorial_dir"`. Nothing
 outside it was changed.
 
 Next: swap the three tasks for your own commands, or add an AI step — see
-[Your first AI workflow](../README.md#your-first-ai-workflow-review-what-you-staged).
+[Your first AI workflow](guide.md#your-first-ai-workflow-review-what-you-staged).

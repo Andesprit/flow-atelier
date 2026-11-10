@@ -21,7 +21,7 @@ from tests._shell import bash, host_path, run_script, write_shim
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GUIDE = _REPO_ROOT / "docs" / "recovering-a-failed-workflow.md"
-_README = _REPO_ROOT / "README.md"
+_REFERENCE = _REPO_ROOT / "docs" / "guide.md"
 _FAKE_AGENT = _REPO_ROOT / "tests" / "fixtures" / "fake_acp_agent.py"
 _BASH_BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 # version, workspace + conduit, the failing run, diagnose, diagnose --json,
@@ -195,7 +195,7 @@ def test_the_report_is_read_before_the_repair(guide):
 
 
 def test_the_readme_points_at_the_guide():
-    """The README documents the command and links the walkthrough."""
-    readme = _README.read_text(encoding="utf-8")
-    assert "atelier diagnose" in readme
-    assert "docs/recovering-a-failed-workflow.md" in readme
+    """The reference guide documents the command and links the walkthrough."""
+    reference = _REFERENCE.read_text(encoding="utf-8")
+    assert "atelier diagnose" in reference
+    assert "(recovering-a-failed-workflow.md)" in reference

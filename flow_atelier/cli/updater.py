@@ -32,7 +32,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-OWNER = "LGuillermoAngaritaG"
+OWNER = "Andesprit"
 REPO = "flow-atelier"
 RELEASES_API = f"https://api.github.com/repos/{OWNER}/{REPO}/releases/latest"
 

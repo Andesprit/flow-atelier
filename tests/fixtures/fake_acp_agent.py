@@ -29,9 +29,11 @@ Script schema::
                 "barrier": null | {"dir": "...", "size": 2, "timeout": 10},
                 "write": null | {"path": "NOTES.md", "text": "..."},
                 "fail_auth": null | "login expired",  // after write, before chunks
+                "usage_limit": null | {"data": {...}, "meta": null | {...}},  // after chunks
                 "stop": "end_turn",
                 "ask_permission": null | {
                     "summary": "...",
+                    "kind": "execute",   // the ACP tool kind asked about
                     "options": [{"id": "allow", "label": "Allow"}]
                 }
             },
@@ -346,7 +348,7 @@ class FakeAgent:
             tool_call = ToolCallUpdate(
                 tool_call_id="tc-1",
                 title=ask.get("summary", "permission"),
-                kind="execute",
+                kind=ask.get("kind", "execute"),
                 status="pending",
                 raw_input=ask.get("raw_input"),
             )
@@ -386,6 +388,20 @@ class FakeAgent:
                     used=0,
                 ),
             )
+
+        # A plan out of usage: an optional rate-limit report the way
+        # claude-agent-acp sends one, then the turn fails with error data.
+        limit = turn.get("usage_limit")
+        if limit is not None:
+            if limit.get("meta") is not None:
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=UsageUpdate(
+                        session_update="usage_update", size=0, used=0,
+                        field_meta=limit["meta"],
+                    ),
+                )
+            raise RequestError.internal_error(limit.get("data"))
 
         usage_spec = turn.get("usage")
         usage = Usage(**usage_spec) if usage_spec is not None else None

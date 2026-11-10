@@ -2,13 +2,13 @@
 # install.sh — one-command installer for flow-atelier (Unix)
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/LGuillermoAngaritaG/flow-atelier/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Andesprit/flow-atelier/main/install.sh | bash
 #
 # Downloads the latest binary for the current platform to ~/.atelier/bin/
 # and adds it to PATH (idempotent).
 set -euo pipefail
 
-REPO="LGuillermoAngaritaG/flow-atelier"
+REPO="Andesprit/flow-atelier"
 INSTALL_DIR="$HOME/.atelier/bin"
 
 # --- Detect platform ---

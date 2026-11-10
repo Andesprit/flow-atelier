@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.progress import TaskStatus
@@ -17,6 +18,14 @@ class NestedFailure:
     iteration: int
     of: int
     reason: str
+    # The failed run's usage limit, so the top-level run can wait for it.
+    usage_limit: dict[str, Any] | None = None
+    # What the failed task printed (and a shell step's error text), so a
+    # loop's next try can see why this one failed.
+    output: str = ""
+    # A tool:hitl step failed, in this run or in one nested in it. A loop
+    # never counts that as a try, so the human is not asked again.
+    hitl: bool = False
 
     @property
     def selector(self) -> str:
@@ -24,8 +33,18 @@ class NestedFailure:
 
     @property
     def summary(self) -> str:
-        where = f", loop iteration {self.iteration}/{self.of}" if self.of > 1 else ""
+        where = loop_note(self.iteration, self.of)
         return f"{self.calling_task} -> {self.task} [{self.tool}]{where}: {self.reason}"
+
+
+def loop_note(iteration: int, of: int) -> str:
+    """Name the loop iteration a failure happened in, for a repeated call only.
+
+    :param iteration: the 1-based iteration.
+    :param of: the iteration count; ``1`` means the call does not repeat.
+    :returns: text like ``", loop iteration 2/5"``, or ``""``.
+    """
+    return f", loop iteration {iteration}/{of}" if of > 1 else ""
 
 
 def brief_failure_reason(text: str) -> str:
@@ -103,5 +122,15 @@ def latest_nested_failure(
             flow_id=flow_id, calling_task=calling_task, task=task_name,
             tool=tool, iteration=entry.iteration if entry else task.iteration,
             of=entry.of if entry else task.of, reason=reason,
+            usage_limit=entry.extra.get("usage_limit") if entry else None,
+            hitl=tool == "tool:hitl" or bool(entry and entry.extra.get("hitl_failed")),
+            # A shell step's stderr is its own error output. An agent's can
+            # hold an executor traceback, whose cause ``reason`` already gives.
+            output="\n".join(
+                part.strip() for part in (
+                    entry.output or entry.stdout,
+                    entry.stderr if tool == "tool:bash" else "",
+                ) if part.strip()
+            ) if entry else "",
         )
     return None

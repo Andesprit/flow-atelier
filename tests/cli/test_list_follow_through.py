@@ -19,7 +19,9 @@ DESCRIPTION = "Useful first sentence. " + "More detail about this conduit. " * 3
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(console, "width", 80)
+    # Patch the private field: restoring the ``width`` property would pin the
+    # shared console to one width for every later test.
+    monkeypatch.setattr(console, "_width", 80)
     directory = tmp_path / ".atelier/conduits" / NAME
     directory.mkdir(parents=True)
     (directory / "conduit.yaml").write_text(yaml.safe_dump({

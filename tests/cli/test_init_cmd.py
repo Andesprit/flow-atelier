@@ -119,3 +119,42 @@ def test_init_adds_explain_to_an_existing_setup(workdir, monkeypatch):
     result = CliRunner().invoke(app, ["init"])
     assert "already set up" not in result.stdout
     assert [t.tool for t in _explain(workdir).tasks] == ["harness:claude-code"]
+
+
+def _pair(workdir):
+    """Return the parsed pair conduit under ``workdir``."""
+    path = workdir / ".atelier" / "conduits" / "pair" / "conduit.yaml"
+    return Conduit.model_validate(yaml.safe_load(path.read_text()))
+
+
+def test_init_with_two_agents_pairs_them(workdir, monkeypatch):
+    """The preferred agent works in one session; the other supervises and reviews."""
+    _fake_clis(workdir, monkeypatch, "codex", "claude")
+    result = CliRunner().invoke(app, ["init"])
+    assert "atelier run pair" in result.stdout
+    conduit = _pair(workdir)
+    assert conduit.interaction.questions == "hybrid"
+    assert conduit.interaction.supervisor.tool == "harness:codex"
+    tasks = {t.name: (t.tool, t.session) for t in conduit.tasks}
+    assert tasks == {
+        "draft": ("harness:claude-code", "worker"),
+        "review": ("harness:codex", None),
+        "revise": ("harness:claude-code", "worker"),
+    }
+    assert conduit.inputs["goal"].default
+
+
+def test_init_with_one_agent_pairs_it_with_itself(workdir, monkeypatch):
+    """One agent CLI plays worker, supervisor and reviewer."""
+    _fake_clis(workdir, monkeypatch, "codex")
+    CliRunner().invoke(app, ["init"])
+    conduit = _pair(workdir)
+    assert conduit.interaction.supervisor.tool == "harness:codex"
+    assert {t.tool for t in conduit.tasks} == {"harness:codex"}
+
+
+def test_init_without_agents_writes_no_pair(workdir, monkeypatch):
+    """With no agent CLI on PATH, init writes no pair conduit."""
+    _fake_clis(workdir, monkeypatch)
+    CliRunner().invoke(app, ["init"])
+    assert not (workdir / ".atelier" / "conduits" / "pair").exists()

@@ -48,16 +48,17 @@ class HitlExecutor(ExecutorBase):
         preamble_lines.append(f"[hitl] Task '{task.name}' needs the following inputs:")
         preamble_text = "\n".join(preamble_lines) + "\n"
 
-        from flow_atelier.cli.rendering.multiline_input import multiline_input
+        from flow_atelier.cli.rendering.multiline_input import (
+            SUBMIT_HINT,
+            multiline_input,
+        )
 
         async with _STDIN_LOCK:
             print(preamble_text, file=sys.stdout, flush=True)
             for name, description in task.inputs.items():
                 prompt = f"  {name} ({description}): "
                 try:
-                    response = await multiline_input(
-                        prompt, hint="Alt+Enter to submit"
-                    )
+                    response = await multiline_input(prompt, hint=SUBMIT_HINT)
                 except EOFError:
                     # Input stream ran dry (e.g. a scripted run that didn't
                     # supply enough answers). Mirror the harness's friendly

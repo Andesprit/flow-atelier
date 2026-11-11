@@ -178,9 +178,12 @@ class TerminalPromptSink:
         if prompt and prompt.strip():
             self._console.print(f"[dim]{escape(prompt.strip())}[/dim]")
         if sys.stdin.isatty():
-            from flow_atelier.cli.rendering.multiline_input import multiline_input
+            from flow_atelier.cli.rendering.multiline_input import (
+                SUBMIT_HINT,
+                multiline_input,
+            )
 
-            answer = await multiline_input("› ", hint="Alt+Enter to submit")
+            answer = await multiline_input("› ", hint=SUBMIT_HINT)
         else:
             answer = await asyncio.to_thread(builtins.input)
             self._console.print(f"[green]›[/green] {escape(answer)}")

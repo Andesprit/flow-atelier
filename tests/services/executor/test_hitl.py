@@ -120,6 +120,34 @@ async def test_hitl_overwrite_collision(store, monkeypatch):
     assert ctx.inputs["confirm"] == "new"
 
 
+async def test_hitl_hint_says_enter_submits(store, monkeypatch):
+    """Each gate question shows the hint for the keys that really work.
+
+    :param store: filesystem store fixture.
+    :param monkeypatch: pytest monkeypatch fixture.
+    """
+    import flow_atelier.cli.rendering.multiline_input as _ml
+
+    hints: list[str] = []
+
+    async def fake_multiline_input(prompt: str, hint: str = "") -> str:
+        """Record the hint and answer at once.
+
+        :param prompt: prompt string (ignored).
+        :param hint: the hint shown above the prompt.
+        """
+        hints.append(hint)
+        return "yes"
+
+    monkeypatch.setattr(_ml, "multiline_input", fake_multiline_input)
+    fid = store.create_flow("hello", {})
+    ctx = FlowContext(flow_id=fid, store=store, inputs={})
+    result = await HitlExecutor().execute(_task(), "", ctx)
+    assert result.exit_code == 0
+    assert hints == [_ml.SUBMIT_HINT, _ml.SUBMIT_HINT]
+    assert _ml.SUBMIT_HINT.startswith("Enter to submit")
+
+
 async def test_concurrent_hitl_prompts_do_not_interleave(store, monkeypatch):
     """Two HITL tasks launched concurrently must not interleave their stdin
     prompts: the second session may only begin after the first fully ends.

@@ -12,6 +12,10 @@ import sys
 from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
 
+# The hint every caller shows above the prompt. It names the bindings below;
+# keep the two in step.
+SUBMIT_HINT = "Enter to submit · Alt+Enter for newline"
+
 
 def _make_key_bindings() -> KeyBindings:
     """Enter submits; Alt+Enter inserts a newline."""

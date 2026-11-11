@@ -403,13 +403,16 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
         console.print(f"  {escape(flags)}", soft_wrap=True)
         raise typer.Exit(code=2)
 
-    from flow_atelier.cli.rendering.multiline_input import multiline_input_sync
+    from flow_atelier.cli.rendering.multiline_input import (
+        SUBMIT_HINT,
+        multiline_input_sync,
+    )
 
     try:
         for key in missing:
             inputs[key] = multiline_input_sync(
                 f"  {key} ({conduit.inputs[key].description}): ",
-                hint="Enter to submit · Alt+Enter for newline",
+                hint=SUBMIT_HINT,
             )
     except KeyboardInterrupt:
         print()

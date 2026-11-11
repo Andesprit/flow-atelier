@@ -130,6 +130,38 @@ class TestTerminalPromptSink:
         # The TTY branch must NOT print the answer; only the prompt label.
         assert "typed live" not in stream.getvalue()
 
+    async def test_request_input_hint_says_enter_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The hint above an agent's question names the keys that really work.
+
+        Enter submits and Alt+Enter adds a newline; a hint that says
+        Alt+Enter submits leaves a person, or an agent driving the PTY, with
+        a newline instead of a sent answer.
+
+        :param monkeypatch: pytest monkeypatch fixture.
+        """
+        import sys as _sys
+
+        import flow_atelier.cli.rendering.multiline_input as _ml
+
+        hints: list[str] = []
+
+        def fake_multiline_input(prompt: str = "", hint: str = ""):
+            """Record the hint and answer at once.
+
+            :param prompt: cursor text (ignored).
+            :param hint: the hint shown above the prompt.
+            """
+            hints.append(hint)
+            return _coro("ok")
+
+        monkeypatch.setattr(_ml, "multiline_input", fake_multiline_input)
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        await TerminalPromptSink(out=io.StringIO()).request_input("reply?")
+        assert hints == [_ml.SUBMIT_HINT]
+        assert _ml.SUBMIT_HINT.startswith("Enter to submit")
+
     async def test_start_agent_turn_renders_styled_rule(self) -> None:
         """The agent-turn marker must be a horizontal rule with the
         'agent' label so the user can see when the agent starts speaking."""

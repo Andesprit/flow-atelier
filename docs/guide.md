@@ -1714,7 +1714,8 @@ Without the flag it runs until you stop it.
 
 Binds to `127.0.0.1:8000` by default; pass `--host 0.0.0.0` to expose
 on the LAN — which requires `ATELIER_API_TOKEN`, see [Security](#security).
-`--cors-origin` is repeatable.
+`--cors-origin <origin>` lets another page call the API, such as the Vite dev
+server at `http://localhost:5173`; it is repeatable.
 
 Conduits and flows resolve exactly as they do on the CLI — `./.atelier`
 first, then `~/.atelier` — so the conduits `atelier init` created in the
@@ -1764,7 +1765,12 @@ equivalent to a shell on that machine.
 **On loopback (the default).** `atelier serve` binds `127.0.0.1:8000` and needs
 no token. Three guards keep a web page you happen to visit from driving it:
 
-- **Origin.** CORS is restricted to localhost origins, never `*`.
+- **Origin.** Only pages this server served may call the API, plus origins you
+  name with `--cors-origin`, such as the Vite dev server. A page on any other
+  site or local port, such as another tool's local UI, gets `403`, whether or
+  not its request would need a CORS preflight. A client that sends no `Origin`,
+  such as the CLI or `curl`, is not a page and is let through. With
+  `ATELIER_API_TOKEN` set, the token does this job instead.
 - **Host.** Only `localhost`, `127.0.0.1`, and `::1` are accepted as the `Host`
 header. This is what stops DNS rebinding, where an attacker's page resolves
 its own hostname to `127.0.0.1` so the browser treats the request as
@@ -1774,9 +1780,13 @@ other `Host` get `400 Invalid host header`.
 site can open `ws://127.0.0.1:8000/...` with a loopback `Host`. So the
 WebSocket routes check the page's `Origin` themselves: they accept a local
 page, an origin passed with `--cors-origin`, or this server's own UI, and
-refuse any other with close code `1008` before the connection opens. A client
-that sends no `Origin`, such as a script, is not a browser page and is let
-through.
+refuse any other with close code `1008` before the connection opens. A page
+on another local port is refused too. A client that sends no `Origin`, such as
+a script, is not a browser page and is let through.
+
+These guards are for web pages. Any program running as you on the machine can
+still call the loopback API without a token. Set `ATELIER_API_TOKEN` when other
+users share the machine, or when a program you do not trust runs there.
 
 **Anywhere else.** Before binding to a non-loopback address, set
 `ATELIER_API_TOKEN`. Every REST request then needs
@@ -1800,6 +1810,22 @@ Binding a specific host also adds that host to the accepted `Host` values; a
 wildcard bind (`--host 0.0.0.0`) cannot know which names reach it, so it accepts
 any `Host` and relies on the token — which is why the token is mandatory there
 rather than merely advised.
+
+**A project's `.env` cannot choose what Atelier runs.** Atelier reads `.env`
+from the folder you run it in, and that folder may be a repository you just
+cloned. So the settings that decide what it executes, where it finds shared
+conduits, or which server and token it uses come only from your shell
+environment: the `ATELIER_*_LAUNCH_CMD` variables, `ATELIER_HARNESSES`,
+`ATELIER_GLOBAL_ATELIER_DIR`, `ATELIER_API_TOKEN` and `ATELIER_SERVE_URL`. A
+`.env` may lower `ATELIER_AGENT_PERMISSIONS` but not set it to `full`. Atelier
+names each setting it ignored on stderr.
+
+**Agent and shell steps.** Each agent and each shell step runs in its own
+process group on Linux and macOS. When a step is stopped or times out, Atelier
+ends the whole group, so the tools, servers and shells it started do not keep
+running; after an agent turn that failed, it also ends what the agent left
+behind. On Windows a shell step's process tree is ended, and for an agent only
+the agent itself. Steps inherit your environment, without `ATELIER_API_TOKEN`.
 
 **Tool arguments reach your terminal.** `atelier run` prints the argument that
 identifies each tool call — the bash command, the file path, the search

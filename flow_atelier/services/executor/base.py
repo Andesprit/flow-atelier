@@ -1,6 +1,7 @@
 """Abstract executor contract and FlowContext."""
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -11,6 +12,19 @@ from flow_atelier.schemas.conduit import AgentPermissions, TaskDefinition
 from flow_atelier.schemas.interaction import InteractionPolicy
 from flow_atelier.schemas.log import ExecutionResult, IntermediateStep
 from flow_atelier.services.store.base import StoreBase
+
+# Atelier's own secrets, which no agent or shell step needs. The API token
+# would let a step, or an agent it delegates to, drive the local server as
+# the person who started it.
+PRIVATE_ENV = frozenset({"ATELIER_API_TOKEN"})
+
+
+def child_environ() -> dict[str, str]:
+    """Return the environment an agent or shell step inherits.
+
+    :returns: this process's environment without :data:`PRIVATE_ENV`.
+    """
+    return {k: v for k, v in os.environ.items() if k not in PRIVATE_ENV}
 
 
 @dataclass

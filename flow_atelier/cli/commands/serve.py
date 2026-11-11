@@ -73,7 +73,9 @@ def serve_cmd(
     ),
     cors_origin: list[str] = typer.Option(
         [], "--cors-origin",
-        help="Allowed CORS origin (repeatable). Default = localhost only."
+        help="Another page's origin that may call the API, such as the Vite dev "
+        "server http://localhost:5173 (repeatable). Default: only pages this "
+        "server serves."
     ),
     log_level: str = typer.Option(
         "INFO", "--log-level",
@@ -91,8 +93,8 @@ def serve_cmd(
     :param host: bind host for the HTTP server.
     :param port: bind port (use 0 for an ephemeral port).
     :param reload_interval: seconds between schedule store rescans.
-    :param cors_origin: allowed CORS origins (defaults to localhost-only
-        origins when empty).
+    :param cors_origin: other pages' origins that may call the API; when
+        empty, only pages this server serves may.
     :param log_level: logging level for uvicorn and the daemon.
     :param idle_exit: minutes of idleness before the server stops itself;
         0 never stops.

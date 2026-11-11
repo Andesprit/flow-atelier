@@ -20,7 +20,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from flow_atelier import __version__
 from flow_atelier.core.atelier import Atelier
-from flow_atelier.services.api.base import ApiServerBase
+from flow_atelier.services.api.base import ApiServerBase, origin_permitted
 
 # Bundled SPA assets. Lives inside the package (flow_atelier/dist/) so it ships
 # in the wheel and is found both from a source checkout and an installed wheel.
@@ -96,6 +96,47 @@ class HostHeaderMiddleware:
         )
 
 
+class OriginGuardMiddleware:
+    """Refuse an HTTP request sent by a web page this server did not serve.
+
+    CORS only stops a page from *reading* a cross-origin response. A
+    ``fetch`` that needs no preflight, or any request the server acts on
+    before the browser checks the answer, still runs. Without a token, an
+    open page on another local port (a dev server, a tool's local UI) could
+    otherwise start shell commands here. Requests with no ``Origin`` (the
+    CLI, scripts) pass; see :func:`origin_permitted`.
+    """
+
+    def __init__(self, app: ASGIApp, cors_origins: Iterable[str]) -> None:
+        """Wrap ``app``, admitting pages from this server and ``cors_origins``.
+
+        :param app: the downstream ASGI application.
+        :param cors_origins: origins configured with ``--cors-origin``.
+        """
+        self.app = app
+        self.cors_origins = list(cors_origins)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Pass the request through when its ``Origin`` may use this server.
+
+        :param scope: ASGI connection scope.
+        :param receive: ASGI receive channel.
+        :param send: ASGI send channel.
+        """
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        if origin_permitted(headers.get("origin"), headers.get("host", ""), self.cors_origins):
+            await self.app(scope, receive, send)
+            return
+        await PlainTextResponse(
+            "Origin not allowed: start atelier serve with --cors-origin to admit "
+            "another page",
+            status_code=403,
+        )(scope, receive, send)
+
+
 class FastApiServer(ApiServerBase):
     """Default :class:`ApiServerBase` implementation."""
 
@@ -110,9 +151,9 @@ class FastApiServer(ApiServerBase):
         """Build the FastAPI app, attach CORS, and register all routes.
 
         :param atelier: facade exposed via ``app.state.atelier``
-        :param cors_origins: explicit CORS origins; ``None`` means
-            localhost-only origins (the API can run shell commands, so a
-            wildcard would let any webpage drive it cross-origin)
+        :param cors_origins: other pages' origins that may call the API;
+            ``None`` admits only pages this server served (the API can run
+            shell commands, so another page must never drive it)
         :param api_token: bearer token required on every request when set;
             ``None`` disables auth (local trust)
         :param allowed_hosts: accepted ``Host`` header values; ``None`` means
@@ -123,6 +164,9 @@ class FastApiServer(ApiServerBase):
         app.state.api_token = api_token or ""
         app.state.cors_origins = list(cors_origins or [])
 
+        # The bundled UI is served from this origin and needs no CORS. Only
+        # an origin named with --cors-origin, such as the Vite dev server,
+        # may call the API from another page.
         if cors_origins:
             app.add_middleware(
                 CORSMiddleware,
@@ -131,14 +175,10 @@ class FastApiServer(ApiServerBase):
                 allow_methods=["*"],
                 allow_headers=["*"],
             )
-        else:
-            app.add_middleware(
-                CORSMiddleware,
-                allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
-                allow_credentials=True,
-                allow_methods=["*"],
-                allow_headers=["*"],
-            )
+        # With a token, a page that does not have it is refused anyway, and a
+        # proxy in front of the server may not keep the Host the page used.
+        if not api_token:
+            app.add_middleware(OriginGuardMiddleware, cors_origins=list(cors_origins or []))
 
         # Added last, so it is the outermost layer: `add_middleware` prepends,
         # and the Host check has to run before CORS gets to answer a preflight

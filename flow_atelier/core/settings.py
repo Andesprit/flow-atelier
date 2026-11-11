@@ -1,12 +1,84 @@
 """Atelier runtime settings (env-driven)."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic.fields import FieldInfo
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from flow_atelier.schemas.conduit import HARNESS_NAME_RE, AgentPermissions
+
+# Settings that decide what Atelier executes, where it looks for shared
+# conduits, or which credentials and servers it uses. A `.env` file in the
+# working folder belongs to whatever repository is checked out there, so a
+# cloned repository could otherwise run its own command as the user before
+# any agent reads a file. These come from the real environment only.
+ENVIRONMENT_ONLY = frozenset({
+    "claude_launch_cmd",
+    "codex_launch_cmd",
+    "opencode_launch_cmd",
+    "copilot_launch_cmd",
+    "cursor_launch_cmd",
+    "harnesses",
+    "global_atelier_dir",
+    "api_token",
+    "serve_url",
+})
+
+# Keys already reported as ignored, so each is named once per process.
+_REPORTED: set[str] = set()
+
+
+class _ProjectDotEnv(PydanticBaseSettingsSource):
+    """The working folder's `.env`, without the settings it may not set.
+
+    It may lower ``agent_permissions`` but not raise it to ``full``.
+    """
+
+    def __init__(self, inner: PydanticBaseSettingsSource) -> None:
+        """Wrap the `.env` source pydantic-settings built.
+
+        :param inner: the dotenv source, which honours ``_env_file``.
+        """
+        super().__init__(inner.settings_cls)
+        self.inner = inner
+
+    def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
+        """Unused: values come from :meth:`__call__`.
+
+        :param field: the field.
+        :param field_name: the field's name.
+        :returns: no value.
+        """
+        return None, field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        """Return the `.env` values, dropping and reporting refused ones.
+
+        :returns: the values the working folder's `.env` may set.
+        """
+        values = dict(self.inner())
+        refused = sorted(key for key in values if key in ENVIRONMENT_ONLY)
+        if values.get("agent_permissions") == "full":
+            refused.append("agent_permissions")
+        for key in refused:
+            values.pop(key, None)
+            if key not in _REPORTED:
+                _REPORTED.add(key)
+                print(
+                    f"[flow-atelier] ignored ATELIER_{key.upper()} from ./.env: "
+                    "set it in your shell environment instead; the .env of the "
+                    "folder you run in cannot set it",
+                    file=sys.stderr,
+                )
+        return values
 
 
 class AtelierSettings(BaseSettings):
@@ -129,6 +201,31 @@ class AtelierSettings(BaseSettings):
             "the run; set this when you serve on another host or port."
         ),
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Read the working folder's `.env` through :class:`_ProjectDotEnv`.
+
+        :param settings_cls: this class.
+        :param init_settings: values passed to the constructor.
+        :param env_settings: the process environment.
+        :param dotenv_settings: the working folder's `.env`.
+        :param file_secret_settings: secrets files.
+        :returns: the sources, highest priority first.
+        """
+        return (
+            init_settings,
+            env_settings,
+            _ProjectDotEnv(dotenv_settings),
+            file_secret_settings,
+        )
 
     @field_validator("harnesses")
     @classmethod

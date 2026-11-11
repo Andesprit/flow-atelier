@@ -392,8 +392,15 @@ def test_ws_refuses_pages_from_other_sites(env, tmp_path):
                 pass
         assert refused.value.code == 1008
 
+        with pytest.raises(WebSocketDisconnect) as refused:
+            with client.websocket_connect(
+                "/ws/run-conduit", headers={"origin": "http://localhost:5173"}
+            ):
+                pass
+        assert refused.value.code == 1008
+
         with client.websocket_connect(
-            "/ws/run-conduit", headers={"origin": "http://localhost:5173"}
+            "/ws/run-conduit", headers={"origin": "http://127.0.0.1"}
         ) as ws:
             ws.send_text(run)
             _drain_until(ws, lambda e: e.get("type") == "flow_complete")

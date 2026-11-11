@@ -54,32 +54,57 @@ async def test_create_app_registers_cors(atelier):
     )
 
 
-async def test_create_app_default_cors_is_localhost_only(atelier):
-    """Verify the default CORS policy allows localhost origins only —
-    the API can run shell commands, so '*' would let any webpage drive it.
+async def test_only_this_server_s_own_pages_may_call_the_api(atelier):
+    """Another page, even on another local port, is refused; scripts and the UI are not.
+
+    The API runs shell commands, so a page on a dev server or another tool's
+    local UI must not drive it. CORS alone would only hide the answer.
 
     :param atelier: atelier fixture.
     """
-    server = FastApiServer()
-    app = server.create_app(atelier)
+    app = FastApiServer().create_app(atelier)
+    transport = httpx.ASGITransport(app=app)
+    run = {"name": "probe", "task": "true", "tool": "tool:bash"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        for origin in ("http://localhost:3000", "http://127.0.0.1:5173", "https://evil.example"):
+            refused = await client.post("/tasks/run", json=run, headers={"Origin": origin})
+            assert refused.status_code == 403, origin
+            preflight = await client.options("/tasks/run", headers={
+                "Origin": origin, "Access-Control-Request-Method": "POST",
+            })
+            assert preflight.headers.get("access-control-allow-origin") is None
+        assert (await client.get("/flows")).status_code == 200
+        own = await client.get("/flows", headers={"Origin": "http://127.0.0.1"})
+        assert own.status_code == 200
+
+
+async def test_a_cors_origin_may_call_the_api(atelier):
+    """``--cors-origin`` admits that page, such as the Vite dev server.
+
+    :param atelier: atelier fixture.
+    """
+    app = FastApiServer().create_app(atelier, cors_origins=["http://localhost:5173"])
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
-        ok = await client.options(
-            "/",
-            headers={
-                "Origin": "http://localhost:5173",
-                "Access-Control-Request-Method": "GET",
-            },
-        )
-        denied = await client.options(
-            "/",
-            headers={
-                "Origin": "http://example.com",
-                "Access-Control-Request-Method": "GET",
-            },
-        )
+        ok = await client.get("/flows", headers={"Origin": "http://localhost:5173"})
+        other = await client.get("/flows", headers={"Origin": "http://localhost:3000"})
+    assert ok.status_code == 200
     assert ok.headers.get("access-control-allow-origin") == "http://localhost:5173"
-    assert denied.headers.get("access-control-allow-origin") is None
+    assert other.status_code == 403
+
+
+async def test_with_a_token_the_origin_guard_steps_aside(atelier):
+    """A token already refuses pages without it, and a proxy may change Host.
+
+    :param atelier: atelier fixture.
+    """
+    app = FastApiServer().create_app(atelier, api_token="secret")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        resp = await client.get("/flows", headers={
+            "Origin": "https://atelier.example", "Authorization": "Bearer secret",
+        })
+    assert resp.status_code == 200
 
 
 async def test_forged_host_header_is_rejected(atelier):

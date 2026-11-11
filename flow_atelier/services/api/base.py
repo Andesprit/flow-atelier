@@ -10,8 +10,6 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket
 
 from flow_atelier.core.atelier import Atelier
 
-_LOOPBACK = {"localhost", "127.0.0.1", "::1"}
-
 
 class ApiServerBase(ABC):
     """Builds a FastAPI app bound to a single :class:`Atelier` instance."""
@@ -28,8 +26,8 @@ class ApiServerBase(ABC):
         """Return a configured :class:`FastAPI` instance.
 
         :param atelier: facade to bind via dependency injection
-        :param cors_origins: explicit CORS origins; ``None`` means
-            localhost-only origins
+        :param cors_origins: other pages' origins that may call the API;
+            ``None`` admits only pages this server served
         :param api_token: bearer token required on every request when set;
             ``None`` disables auth (local trust)
         :param allowed_hosts: accepted ``Host`` header values; ``None`` means
@@ -59,24 +57,40 @@ def require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="invalid or missing API token")
 
 
+def origin_permitted(origin: str | None, host: str, cors_origins: Iterable[str]) -> bool:
+    """Return whether a request that carries ``origin`` may use this server.
+
+    A client that sends no ``Origin``, such as the CLI, a script or ``curl``,
+    is not a browser page and passes. A page passes only when this server
+    served it (its origin's host and port are the request's ``Host``) or it
+    was named with ``--cors-origin``. Any other page, including one on
+    another local port, may not drive an API that runs shell commands.
+
+    :param origin: the request's ``Origin`` header, if any.
+    :param host: the request's ``Host`` header.
+    :param cors_origins: origins configured with ``--cors-origin``.
+    :returns: ``True`` when the request may proceed.
+    """
+    if not origin:
+        return True
+    if origin in cors_origins:
+        return True
+    return urlsplit(origin).netloc == host
+
+
 def origin_allowed(websocket: WebSocket) -> bool:
     """Return whether the page that opened ``websocket`` may use it.
 
     CORS does not apply to WebSockets, and the ``Host`` pin does not help
     either: a page on any site can open ``ws://127.0.0.1:8000/...`` and the
-    browser sends a loopback ``Host``. Only ``Origin`` names the page. A client
-    that sends none is not a browser page and passes; a page must be local, a
-    configured CORS origin, or served by this server.
+    browser sends a loopback ``Host``. Only ``Origin`` names the page; see
+    :func:`origin_permitted`.
 
     :param websocket: the incoming connection.
     :returns: ``True`` when the connection may proceed.
     """
-    origin = websocket.headers.get("origin")
-    if not origin:
-        return True
-    parts = urlsplit(origin)
-    if parts.hostname in _LOOPBACK:
-        return True
-    if origin in getattr(websocket.app.state, "cors_origins", []):
-        return True
-    return parts.netloc == websocket.headers.get("host", "")
+    return origin_permitted(
+        websocket.headers.get("origin"),
+        websocket.headers.get("host", ""),
+        getattr(websocket.app.state, "cors_origins", []),
+    )

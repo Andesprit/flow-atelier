@@ -58,6 +58,13 @@ To develop the UI against a backend on another port:
 VITE_BACKEND_URL=http://localhost:8000
 ```
 
+The backend only answers pages it served itself, so start it with the dev
+server's origin:
+
+```bash
+atelier serve --cors-origin http://localhost:5173
+```
+
 To develop against fixture data with no backend running at all:
 
 ```

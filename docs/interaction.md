@@ -131,14 +131,16 @@ atelier ask "$flow_id" --json
 atelier ask "$flow_id" --answer "Use the integration suite" --request-id "$request_id" --json
 ```
 
-The exact flow ID also identifies its first question, so the first reply can use
-just `--answer TEXT`. Pass the returned request ID for subsequent questions.
+For the first question, you can use the flow ID, a unique prefix, or `latest`
+with just `--answer TEXT`. Pass the returned request ID for subsequent questions.
 Reusing a consumed ID fails, including
 when the agent has already asked another question. The answer continues the
 original ACP session in its saved directory, with its harness, model, effort,
 permission level and turn timeout. The adapter must support ACP session resume
 or load for follow-ups. If it cannot restore that session, the command reports
-an error on stderr before sending the reply.
+an error on stderr before sending the reply. Starting an answer turn consumes
+the pending question. If the session is unavailable or the adapter crashes,
+you cannot retry that reply.
 
 A pending question has no deadline and holds no runner process. Cancel it with
 `atelier ask "$flow_id" --cancel --json`. During an active turn, use

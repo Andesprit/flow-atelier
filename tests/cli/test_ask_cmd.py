@@ -197,7 +197,7 @@ def test_read_and_answer_pending_session(machine_ask, tmp_path, reload):
     assert machine_ask(flow_id, "--request-id", "stale", "--answer", "wrong", success=False)["code"] == "no_pending_question"
     assert machine_ask(flow_id) == first
 
-    reply = [flow_id, "--answer", "blue {{inputs.literal}}"]
+    reply = ["latest", "--answer", "blue {{inputs.literal}}"]
     if reload == "load":
         reply += ["--request-id", first["request_id"]]
     result = machine_ask(*reply, script=script)
@@ -230,6 +230,37 @@ def test_direct_answer_and_legacy_progress(machine_ask, tmp_path):
     assert machine_ask(result["flow_id"]) == result
 
 
+def test_machine_ask_reports_engine_value_error_as_json(machine_ask, tmp_path):
+    script = {"reload": "resume", "turns": [{"chunks": ["Which one?"]}]}
+    first = machine_ask("Choose", "--path", ".", "--harness", "fake", script=script)
+    flow_id = first["flow_id"]
+    # Reading an invalid UTF-8 outputs file raises ValueError during engine resume.
+    (tmp_path / ".atelier" / "flows" / flow_id / "outputs.yaml").write_bytes(b"\xff")
+    error = machine_ask(flow_id[:-4], "--answer", "blue", script=script, success=False)
+    assert error["code"] == "ask_failed"
+    assert error["flow_id"] == flow_id
+    assert "decode" in error["message"]
+
+
+def test_pending_ask_status_and_diagnosis(machine_ask, tmp_path, monkeypatch):
+    monkeypatch.setenv("ATELIER_ATELIER_DIR", str(tmp_path / ".atelier"))
+    script = {"reload": "resume", "turns": [{"chunks": ["Which one?"]}]}
+    first = machine_ask("Choose", "--path", ".", "--harness", "fake", script=script)
+    flow_id = first["flow_id"]
+    read = f"atelier ask {flow_id} --json"
+    for command in ("status", "diagnose"):
+        shown = CliRunner().invoke(app, [command, flow_id])
+        assert shown.exit_code == 0, shown.output
+        assert "needs input" in shown.stdout and read in shown.stdout
+        assert "--resume" not in shown.stdout
+    report = CliRunner().invoke(app, ["diagnose", flow_id, "--json"])
+    data = json.loads(report.stdout)
+    assert data["observed"]["state"] == "needs_input"
+    commands = [step["command"] for step in data["next_steps"]]
+    assert read in commands
+    assert not any("--resume" in (command or "") for command in commands)
+
+
 def test_machine_ask_cannot_substitute_a_fresh_session(machine_ask, tmp_path):
     records = tmp_path / "protocol"
     records.mkdir()
@@ -244,6 +275,7 @@ def test_machine_ask_cannot_substitute_a_fresh_session(machine_ask, tmp_path):
         script=script, success=False,
     )
     assert failed["code"] == "session_unavailable"
+    assert machine_ask(question["flow_id"], "--answer", "do it", success=False)["code"] == "no_pending_question"
     assert sum(len(p.read_text().splitlines()) for p in records.glob("*.jsonl")) == 2
 
 

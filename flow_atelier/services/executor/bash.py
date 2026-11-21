@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import functools
 import logging
 import os
@@ -399,15 +398,17 @@ class BashExecutor(ExecutorBase):
             # gives up.
             start_new_session=True,
         ))
+        cancelled_at_spawn = None
         try:
             proc = await asyncio.shield(spawn)
-        except asyncio.CancelledError:
-            # Cancelled while asyncio still connects the shell's pipes: the
-            # shell may already run commands, and asyncio's own cleanup would
-            # kill the shell alone. Let the start finish, then kill the group.
-            with contextlib.suppress(Exception):
-                self._kill_process_group(await spawn)
-            raise
+        except asyncio.CancelledError as exc:
+            # The shell can already have printed. Connect its pipes so _stop
+            # can drain that output when it kills the group.
+            try:
+                proc = await spawn
+            except Exception:
+                raise exc from None
+            cancelled_at_spawn = exc
         # Streams are pumped incrementally (not via communicate()) so a
         # timeout can kill the process and still keep the partial output:
         # cancelling communicate() discards data it already buffered.
@@ -417,10 +418,12 @@ class BashExecutor(ExecutorBase):
         async def _pump(
             stream: asyncio.StreamReader, sink: bytearray, live: _LiveOutput
         ) -> None:
-            while chunk := await stream.read(65536):
-                sink.extend(chunk)
-                await live.feed(chunk)
-            await live.close()
+            try:
+                while chunk := await stream.read(65536):
+                    sink.extend(chunk)
+                    await live.feed(chunk)
+            finally:
+                await live.close()
 
         pumps = [
             asyncio.create_task(
@@ -441,6 +444,8 @@ class BashExecutor(ExecutorBase):
             await asyncio.wait(pumps)
 
         try:
+            if cancelled_at_spawn is not None:
+                raise cancelled_at_spawn
             await asyncio.wait_for(_exit_and_drain(), timeout=context.timeout)
             await asyncio.gather(*pumps)
         except TimeoutError:

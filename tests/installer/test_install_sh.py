@@ -156,9 +156,9 @@ def test_path_is_written_to_the_login_shells_rc(
     assert f"Added {home / '.atelier/bin'} to PATH in {rc}" in result.stdout
     assert "Open a new shell" in result.stdout
     if login_shell.endswith("/fish"):
-        assert 'set -gx PATH $PATH "$HOME/.atelier/bin"' in result.stdout.splitlines()
+        assert 'set -gx PATH "$HOME/.atelier/bin" $PATH' in result.stdout.splitlines()
     else:
-        assert 'export PATH="$PATH:$HOME/.atelier/bin"' in result.stdout.splitlines()
+        assert 'export PATH="$HOME/.atelier/bin:$PATH"' in result.stdout.splitlines()
     body = rc.read_text()
     assert expected_line in body
     assert str(home / ".atelier" / "bin") in body
@@ -174,7 +174,7 @@ def test_skips_new_shell_hint_when_install_dir_is_on_path(sandbox) -> None:
     result = _run(env, SHELL="/bin/bash", PATH=f"{env['PATH']}:{home / '.atelier/bin'}")
     assert result.returncode == 0, result.stderr
     assert "Open a new shell" not in result.stdout
-    assert 'export PATH="$PATH:$HOME/.atelier/bin"' not in result.stdout
+    assert 'export PATH="$HOME/.atelier/bin:$PATH"' not in result.stdout
     assert (home / ".bashrc").exists()
 
 

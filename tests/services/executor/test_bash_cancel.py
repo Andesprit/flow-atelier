@@ -132,14 +132,28 @@ async def test_timeout_covers_the_output_drain(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="bash ; syntax not supported in cmd.exe")
-async def test_cancel_still_records_the_last_output(tmp_path):
+async def test_cancel_still_records_the_last_output():
     """Output printed before the cancel reaches the step hook, unfinished line included."""
-    steps: list = []
-    pidfile = tmp_path / "shell.pid"
-    cmd = f"printf 'first\\npartial'; echo $$ > {pidfile}; sleep 30"
-    await _cancel_once_started(cmd, pidfile, _recording_ctx(steps))
+    recorded = []
+    first = asyncio.Event()
 
-    recorded = [s.text for _, s in steps if s.kind == "stdout"]
+    async def record(step):
+        recorded.append(step.text)
+        if step.text == "first":
+            first.set()
+            # Hold the pump until _stop cancels it with the partial line buffered.
+            await asyncio.Future()
+
+    ctx = _ctx()
+    ctx.on_step = record
+    cmd = "printf 'first\\npartial'; sleep 30"
+    run = asyncio.create_task(BashExecutor().execute(_task(cmd), cmd, ctx))
+    try:
+        await asyncio.wait_for(first.wait(), timeout=5)
+    finally:
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run
     assert recorded == ["first", "partial"]
 
 
@@ -238,8 +252,9 @@ async def test_a_cancel_while_the_pipes_connect_stops_the_group(tmp_path, monkey
 
     monkeypatch.setattr(base_subprocess.BaseSubprocessTransport, "_connect_pipes", late)
     pidfile, marker = tmp_path / "shell.pid", tmp_path / "marker"
-    cmd = f"echo $$ > {pidfile}; sleep 3; touch {marker}"
-    run = asyncio.create_task(BashExecutor().execute(_task(cmd), cmd, _ctx()))
+    cmd = f"printf partial; echo $$ > {pidfile}; sleep 3; touch {marker}"
+    steps = []
+    run = asyncio.create_task(BashExecutor().execute(_task(cmd), cmd, _recording_ctx(steps)))
     for _ in range(100):
         if pidfile.exists() and pidfile.read_text().strip():
             break
@@ -256,3 +271,4 @@ async def test_a_cancel_while_the_pipes_connect_stops_the_group(tmp_path, monkey
         if group_alive(pgid):
             os.killpg(pgid, signal.SIGKILL)
     assert not marker.exists()
+    assert [step.text for _, step in steps] == ["partial"]

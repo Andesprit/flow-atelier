@@ -116,12 +116,6 @@ if ! grep -qF "$INSTALL_DIR" "$SHELL_RC" 2>/dev/null; then
     echo "Added ${INSTALL_DIR} to PATH in ${SHELL_RC}"
 fi
 
-# --- Also update the current session so 'atelier' works immediately ---
-case ":${PATH}:" in
-    *":${INSTALL_DIR}:"*) ;;
-    *) export PATH="${PATH}:${INSTALL_DIR}" ;;
-esac
-
 # --- Warn if another 'atelier' is earlier on PATH ---
 FOUND="$(command -v atelier 2>/dev/null || true)"
 if [ -n "$FOUND" ] && [ "$FOUND" != "${INSTALL_DIR}/atelier" ]; then
@@ -133,3 +127,14 @@ fi
 
 echo ""
 echo "Installed atelier ${TAG} to ${INSTALL_DIR}/atelier"
+case ":${PATH}:" in
+    *":${INSTALL_DIR}:"*) ;;
+    *)
+        echo "Open a new shell, or run this command in your current shell:"
+        if [ "$LOGIN_SHELL" = "fish" ]; then
+            echo 'set -gx PATH $PATH "$HOME/.atelier/bin"'
+        else
+            echo 'export PATH="$PATH:$HOME/.atelier/bin"'
+        fi
+        ;;
+esac

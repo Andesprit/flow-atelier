@@ -116,10 +116,34 @@ container is stopped while the run is waiting.
 
 ## Reading a run afterwards
 
-Copy the flows back and use the usual commands:
+Use `atelier run --json` in a job script to capture the exact flow it started.
+Progress and recovery hints stream to stderr. Stdout contains one JSON object
+with `flow_id` and `status`, including when a task fails. A completed run
+exits 0, a failed run exits 1, and a run stopped by `atelier stop` exits 143.
+If the command rejects the request before execution starts, stdout is empty
+and stderr carries a JSON error.
+
+```bash
+rc=0
+result=$(atelier run "$CONDUIT" --json) || rc=$?
+if [ -n "$result" ]; then
+    printf '%s\n' "$result" >&2
+    flow_id=$(jq -er '.flow_id' <<<"$result")
+    if [ "$rc" -eq 0 ]; then
+        atelier outputs "$flow_id" --json
+    else
+        atelier diagnose "$flow_id"
+    fi
+fi
+exit "$rc"
+```
+
+`--resume` returns the resumed flow's ID. `--again` returns a new one.
+Save the returned ID with the job logs so you can inspect that run after
+copying the flows back.
 
 ```bash
 gcloud storage cp -r "gs://$BUCKET/flows" .atelier/
-atelier status latest
-atelier timing latest
+atelier status "$flow_id"
+atelier timing "$flow_id"
 ```

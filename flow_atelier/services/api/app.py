@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from anyio import create_task_group
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -167,7 +168,12 @@ class FastApiServer(ApiServerBase):
             async with daily_cleanup(
                 atelier.settings.global_atelier_dir, atelier.settings.cleanup_period_days
             ):
-                yield
+                async with create_task_group() as runs:
+                    app.state.mobile_runs = runs
+                    try:
+                        yield
+                    finally:
+                        runs.cancel_scope.cancel()
 
         app = FastAPI(title="flow-atelier", version=__version__, lifespan=lifespan)
 

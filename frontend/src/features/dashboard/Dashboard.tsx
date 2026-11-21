@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { ConduitPicker } from "@/features/dashboard/components/conduit-picker";
 import { InputForm } from "@/features/dashboard/components/input-form";
@@ -149,6 +149,9 @@ export default function Dashboard() {
           <h1 className="font-mono text-label uppercase tracking-[0.14em] text-foreground">
             run a conduit
           </h1>
+          <Link to="/launch" className="inline-flex min-h-11 items-center text-primary lg:hidden">
+            Mobile launcher
+          </Link>
           <div className="font-mono text-label uppercase tracking-[0.12em] text-muted-foreground">
             {/* An em dash, not 0: during a failure the count is unknown, and
                 "0 conduits" asserted something untrue. */}

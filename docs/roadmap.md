@@ -130,6 +130,10 @@ For Linux, verify the package signature or published checksum for the chosen for
 
 ## Phase 6. Mobile PWA
 
+The local launcher uses the project and global conduits on the serving machine.
+Mobile runner selection and exposed folder IDs follow Phase 5 pairing. Mobile
+chat and conversation reconnect follow the Phase 3 chat panel and Phase 5 relay.
+
 **Result.** Install the hosted dashboard on a phone, start a conduit on a chosen machine, chat with its local agent and get a completion notice when the app is closed.
 
 | PR | Change and engine work | Verify |

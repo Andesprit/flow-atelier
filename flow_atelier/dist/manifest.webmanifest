@@ -2,7 +2,7 @@
   "id": "/",
   "name": "Flow Atelier",
   "short_name": "Atelier",
-  "start_url": "/dashboard",
+  "start_url": "/launch",
   "scope": "/",
   "display": "standalone",
   "background_color": "#1a1611",

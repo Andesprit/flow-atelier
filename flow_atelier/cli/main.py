@@ -227,6 +227,9 @@ schedule_app = AtelierTyper(
 )
 app.add_typer(schedule_app, name="schedule")
 
+migrate_app = AtelierTyper(help="Migrate legacy project records.", no_args_is_help=True)
+app.add_typer(migrate_app, name="migrate")
+
 harness_app = AtelierTyper(
     help="Check and refresh ACP agents. Installing and logging in stay yours.",
     no_args_is_help=True,
@@ -254,6 +257,7 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     harness,
     init,
     logs,
+    migrate,
     outputs,
     plan,
     rm,

@@ -7,7 +7,7 @@ import logging
 import shutil
 from collections import defaultdict
 from collections.abc import AsyncIterator
-from contextlib import ExitStack, asynccontextmanager
+from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -71,6 +71,14 @@ def _expire_tree(tree: list[RunJournal], now: datetime, days: int) -> None:
         _remove_expired(path)
 
 
+def cleanup_lock(root: Path) -> AbstractContextManager[bool]:
+    """Serialize the tree scan with publication of migrated trees."""
+    lease = root / ".cleanup.lock"
+    if lease.is_symlink() or (lease.exists() and not lease.is_file()):
+        raise RunRecordError(f"invalid cleanup lease: {lease}")
+    return file_lock(lease, wait=False)
+
+
 def cleanup_runs(home: Path, days: int) -> None:
     """Keep a whole tree until every member has finished outside the retention window."""
     if days < 0:
@@ -79,10 +87,7 @@ def cleanup_runs(home: Path, days: int) -> None:
     if root.is_symlink() or not root.is_dir():
         return
     now = _now()
-    lease = root / ".cleanup.lock"
-    if lease.is_symlink() or (lease.exists() and not lease.is_file()):
-        raise RunRecordError(f"invalid cleanup lease: {lease}")
-    with file_lock(lease, wait=False) as acquired:
+    with cleanup_lock(root) as acquired:
         if not acquired:
             return
         children: dict[str | None, list[RunJournal]] = defaultdict(list)
@@ -99,7 +104,15 @@ def cleanup_runs(home: Path, days: int) -> None:
                     raise RunRecordError(f"ambiguous or linked run journal: {path}")
                 seen.add(path.stem)
                 journal = RunJournal(path)
-                children[journal.header()["parent_flow_id"]].append(journal)
+                header = journal.header()
+                # An interrupted publish may still be missing children.
+                if (
+                    header["parent_flow_id"] is None
+                    and "legacy_workspace_root" in header
+                    and (Path(header["store"]) / "flows" / path.stem).exists()
+                ):
+                    continue
+                children[header["parent_flow_id"]].append(journal)
         for parent in children[None]:
             tree = [parent]
             for journal in tree:

@@ -1592,6 +1592,11 @@ Open the dashboard from any project to see global history. Choose a target
 directory in the project filter, or use `atelier list flows --project .`.
 The API accepts the same filter at `GET /flows?project=<directory>`.
 Older records remain readable from the original project’s `.atelier/flows/` directory.
+From that project, run `atelier migrate runs --dry-run` to verify its run trees,
+then `atelier migrate runs` to publish the verified journals. Migration archives
+each verified source under `.atelier/migrated-runs/` and preserves its worktrees.
+Migrated runs retain their last heartbeat and finish time. The next cleanup can
+expire an already-old finished tree. Its source archive stays in the project.
 
 ## Commands
 

@@ -47,3 +47,15 @@ and replaced folder roots cannot be approved for a run. Host tools and the proje
 remain local execution dependencies. Conduits execute with their ordinary local process permissions.
 V1 launches with locally defined recipe defaults. Remote input and tool overrides are outside this
 version. Reapprove locally after a bundle edit.
+
+## Dispatch and recovery
+
+The runner commits the immutable job ID, folder, conduit and allocated local run ID to SQLite
+before acknowledging start. It retries a lost start acknowledgement with the same mapping.
+After acknowledgement it commits a start marker, keeps the verified bundles in
+`runner/runs/<job-id>/conduits/`, and starts the normal engine with the registered working directory.
+The local engine journal contains the full execution detail. A separate polling loop continues to
+send heartbeats during execution. The worker commits the outcome locally before reporting it.
+Repeating a claimed job reuses the mapping and returns the recorded outcome. If the process died
+after the start marker but before recording the outcome, the runner reports `unknown` and the
+operator can investigate the mapped local run. Automatic retries never execute that job again.

@@ -1,6 +1,6 @@
 """Local configuration and outbound runner loop."""
 
-import time
+import asyncio
 from pathlib import Path
 
 import typer
@@ -9,6 +9,7 @@ from flow_atelier.cli.main import AtelierTyper, app
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.services.runner.client import Client
 from flow_atelier.services.runner.local import Local
+from flow_atelier.services.runner.worker import Worker
 
 runner = AtelierTyper(help="Pair and run an outbound worker.", no_args_is_help=True)
 app.add_typer(runner, name="runner")
@@ -42,11 +43,7 @@ def start():
     """Poll for work and publish heartbeats until interrupted."""
     local = _local()
     client = Client(local.identity()["origin"])
-    while True:
-        try:
-            local.poll(client, claim=False)
-        except PermissionError:
-            raise typer.BadParameter("runner identity revoked or refused") from None
-        except (ConnectionError, TimeoutError):
-            pass
-        time.sleep(10)
+    try:
+        asyncio.run(Worker(local, client).serve())
+    except PermissionError:
+        raise typer.BadParameter("runner identity revoked or refused") from None

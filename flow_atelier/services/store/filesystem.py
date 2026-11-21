@@ -22,6 +22,8 @@ import os
 import shutil
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -673,6 +675,25 @@ class FilesystemStore(StoreBase):
     # synchronous: the files are tiny, writes are atomic-replace, and
     # crash-resume depends on state transitions hitting disk in order.
 
+    @contextmanager
+    def lock_ask(self, flow_id: str) -> Iterator[bool]:
+        """Exclude concurrent answers/cancellation; a crashed process releases its lock."""
+        with (self._flow_dir(flow_id) / ".ask.lock").open("a+b") as lock:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, PermissionError):
+                yield False
+                return
+            yield True
+
     def write_progress(self, flow_id: str, progress: Progress) -> None:
         """Atomically write ``progress.json`` for ``flow_id``.
 
@@ -681,7 +702,8 @@ class FilesystemStore(StoreBase):
         """
         path = self._flow_dir(flow_id) / "progress.json"
         tmp = path.with_suffix(f".json.tmp.{uuid.uuid4().hex}")
-        tmp.write_text(progress.model_dump_json(indent=2))
+        # Pending questions may contain characters outside the local Windows code page.
+        tmp.write_text(json.dumps(progress.model_dump(mode="json"), indent=2), encoding="ascii")
         _atomic_replace(tmp, path)
 
     def read_progress(self, flow_id: str) -> Progress:

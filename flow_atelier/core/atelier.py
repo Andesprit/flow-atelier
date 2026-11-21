@@ -569,6 +569,8 @@ class Atelier:
             task whose assignment is already fixed was named
         """
         prior = self.store.read_progress(flow_id)
+        if prior.pending_ask:
+            raise ValueError(f"flow is waiting for a reply: atelier ask {flow_id} --json")
         if prior.status not in (FlowStatus.failed, FlowStatus.running):
             raise ValueError(
                 f"can only resume failed or crashed flows, got {prior.status.value}"

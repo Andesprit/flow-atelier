@@ -429,10 +429,12 @@ or called `unknown`, never guessed from the current recipe — and whether its
 result is still saved. Every suggested command carries the run's full id and is
 printed for you to run: diagnose starts no agent and writes nothing.
 
-What it refuses to claim matters as much. A saved `running` status is only
-called *crashed* when the runner is provably gone on this machine; on another
-host, with no pid, or with a pid it cannot probe, the state stays uncertain and
-no resume is recommended. A stopped run is pointed at `atelier run --again`
+A runner saves a heartbeat every 15 seconds while it owns the run, including
+while a tool is silent or waiting for a person. A dead local PID or a heartbeat
+at least two minutes old shows as *crashed*. After a machine wakes, its next beat
+restores *running*. A saved agent question shows as *needs input* between turns.
+Resume requires the writer lock. Older records without heartbeats still use the
+local PID check. A stopped run is pointed at `atelier run --again`
 instead, and a completed one is told there is nothing to recover. Resume re-reads the conduit file as it stands
 now, so the report names any task that file has gained or lost since the run
 rather than promising the old shape will run again.
@@ -1935,6 +1937,13 @@ Use user settings for `cleanupPeriodDays` (default 30), `webhookSources`
 to these keys. Launch commands, `ATELIER_HARNESSES`, `ATELIER_GLOBAL_ATELIER_DIR`,
 `ATELIER_API_TOKEN` and `ATELIER_SERVE_URL` require the shell environment.
 Atelier names each rejected file setting on stderr and omits its value.
+
+The server and scheduler clean global run history on startup and every 24 hours.
+A run tree becomes eligible once every member has finished and its most recent
+finish is at least `cleanupPeriodDays` old. A value of `0` makes a finished
+tree eligible immediately at the next sweep. Negative values are rejected.
+Cleanup removes journal records, tool steps and saved outputs. Active writers,
+pending questions, unmigrated project records and project worktrees are kept.
 
 **Agent and shell steps.** Each agent and each shell step runs in its own
 process group on Linux and macOS. When a step is stopped or times out, Atelier

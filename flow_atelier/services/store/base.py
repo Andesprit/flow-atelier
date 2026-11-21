@@ -169,6 +169,10 @@ class StoreBase(ABC):
         """
         ...
 
+    def write_heartbeat(self, flow_id: str, progress: Progress) -> None:
+        """Persist the owner's current heartbeat."""
+        self.write_progress(flow_id, progress)
+
     @abstractmethod
     def read_progress(self, flow_id: str) -> Progress:
         """Return the ``Progress`` snapshot for ``flow_id``.

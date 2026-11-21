@@ -14,6 +14,7 @@ export interface RunTask {
 export interface RunView {
   flowId: string;
   conduitName: string;
+  displayStatus?: string;
   /** running | completed | failed | stopped */
   status: string;
   startedAt: string | null;

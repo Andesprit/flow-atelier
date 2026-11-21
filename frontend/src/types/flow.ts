@@ -5,6 +5,6 @@ export interface PriorFlow {
   startedAt: number;
   finishedAt?: number;
   duration?: number;
-  status: "running" | "done" | "failed" | "cancelled";
+  status: "running" | "done" | "failed" | "cancelled" | "crashed" | "waiting";
   author?: string;
 }

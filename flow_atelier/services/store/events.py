@@ -147,7 +147,7 @@ class RunJournal:
                         or data["steps"] != "steps.jsonl"
                     ):
                         raise ValueError("invalid run header")
-                elif kind not in {"progress", "outputs", "input", "log", "sessions"}:
+                elif kind not in {"progress", "outputs", "input", "log", "sessions", "heartbeat"}:
                     raise ValueError(f"unknown event type {kind!r}")
                 if not isinstance(data, dict):
                     raise ValueError("expected event object")
@@ -171,6 +171,8 @@ class RunJournal:
         for event, data in self.rows():
             if event == "created":
                 value = data.get(kind, {})
+            elif event == "heartbeat" and kind == "progress":
+                value["heartbeat_at"] = data["at"]
             elif event == kind:
                 value = data
         return value

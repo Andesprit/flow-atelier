@@ -22,7 +22,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 
-from flow_atelier.modules.liveness import is_crashed, is_runner_alive
+from flow_atelier.modules.liveness import heartbeat_stale, is_crashed, is_runner_alive
 from flow_atelier.modules.loop_report import LoopPass, loop_passes, unmet_loop_messages
 from flow_atelier.modules.nested_failure import NestedFailure, latest_nested_failure
 from flow_atelier.schemas.conduit import Conduit
@@ -277,9 +277,8 @@ def _observe(progress: Progress) -> Observation:
     """Classify the runner's present state without ever guessing.
 
     ``failed``, ``stopped`` and ``completed`` are the run's own verdict on
-    itself. A saved ``running`` is only called ``crashed`` when the local pid is
-    provably gone, and only ``running`` when it is provably alive; everything in
-    between — another host, no pid, an unprobeable pid — stays uncertain.
+    itself. A missing local process or stale heartbeat indicates a crash.
+    A fresh or legacy record with an unprobeable PID stays uncertain.
 
     :param progress: the flow's progress snapshot.
     :returns: the state, how certain it is, and the reason in words.
@@ -312,6 +311,8 @@ def _observe(progress: Progress) -> Observation:
             state="crashed",
             certainty="proven",
             note=(
+                "the runner has missed its two-minute heartbeat deadline"
+                if heartbeat_stale(progress) else
                 f"saved status is still running, but runner pid {progress.runner_pid} "
                 "is gone on this host — the process died without recording a failure"
             ),

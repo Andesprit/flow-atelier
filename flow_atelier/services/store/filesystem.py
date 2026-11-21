@@ -194,7 +194,10 @@ class FilesystemStore(StoreBase):
                  else (root / project_folder(project)).glob(pattern))
         for path in paths:
             journal = RunJournal(path)
-            header = journal.header()
+            try:
+                header = journal.header()
+            except FileNotFoundError:
+                continue  # Cleanup can retire a journal after glob discovered it.
             if project is None or header["project"] == str(project.resolve()):
                 yield journal, header
 
@@ -849,6 +852,13 @@ class FilesystemStore(StoreBase):
         # Pending questions may contain characters outside the local Windows code page.
         tmp.write_text(json.dumps(progress.model_dump(mode="json"), indent=2), encoding="ascii")
         _atomic_replace(tmp, path)
+
+    def write_heartbeat(self, flow_id: str, progress: Progress) -> None:
+        if journal := self.journal(flow_id):
+            assert progress.heartbeat_at is not None
+            journal.append("heartbeat", {"at": progress.heartbeat_at.isoformat()})
+        else:
+            self.write_progress(flow_id, progress)
 
     def read_progress(self, flow_id: str) -> Progress:
         """Load and return the ``Progress`` snapshot for ``flow_id``.

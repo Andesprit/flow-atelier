@@ -188,6 +188,7 @@ def list_flows_cmd(
                 "project": str(directory),
                 "conduit": conduit_name,
                 "status": progress.status.value,
+                "display_status": display_status(progress),
                 "crashed": is_crashed(progress),
                 "started_at": progress.started_at,
                 "finished_at": progress.finished_at,

@@ -733,6 +733,7 @@ class Engine:
                 for t in conduit.tasks
             },
             started_at=prior.started_at if resume_from and prior.pending_ask else _now(),
+            heartbeat_at=datetime.fromisoformat(_now()),
             runner_pid=os.getpid(),
             runner_host=socket.gethostname(),
             run_path=run_path,
@@ -742,6 +743,18 @@ class Engine:
             workspaces=workspaces,
         )
         self.store.write_progress(flow_id, progress)
+
+        # A quiet tool or human prompt still owns its writer lease.
+        loop = asyncio.get_running_loop()
+
+        def heartbeat() -> None:
+            nonlocal timer
+            timer = loop.call_later(15, heartbeat)
+            progress.heartbeat_at = datetime.fromisoformat(_now())
+            self.store.write_heartbeat(flow_id, progress)
+
+        timer = loop.call_later(15, heartbeat)
+        locks.callback(lambda: timer.cancel())
 
         # Mutable runtime state
         statuses: dict[str, TaskStatus] = {
@@ -1691,10 +1704,8 @@ class Engine:
         """Find the most recent resumable child flow for a conduit.
 
         Matches a ``failed`` child unconditionally, and a ``running`` child only
-        when its runner is *provably* dead (:func:`is_crashed`) — a child left
-        ``running`` is either an orphan from a crashed parent (resumable) or a
-        flow still in flight, and picking up a live one would drive the same
-        child directory from two engines at once. A child is considered only
+        when it looks crashed (:func:`is_crashed`). The child must acquire
+        its writer lease before it can execute. A child is considered only
         when it was spawned by the same parent step (``invoking_task``), so a
         parent with two distinct steps invoking the same sub-conduit resumes the
         child belonging to the step being re-run rather than the most recent
@@ -1738,8 +1749,7 @@ class Engine:
                 )
                 return None if counted else fid
             if p.status == FlowStatus.running:
-                # A still-live child must not be double-driven; only resume one
-                # whose runner is provably dead.
+                # The child's writer lease arbitrates a stale but still-owned run.
                 return fid if is_crashed(p) else None
             return None  # most recent child for this step already completed
         return None

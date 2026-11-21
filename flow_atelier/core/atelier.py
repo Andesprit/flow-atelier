@@ -27,7 +27,7 @@ from flow_atelier.modules.engine import (
     validate_conduit,
 )
 from flow_atelier.modules.flow_view import build_flow_view, build_task_log
-from flow_atelier.modules.liveness import is_runner_alive
+from flow_atelier.modules.liveness import display_status, is_runner_alive
 from flow_atelier.modules.workspace import (
     check_record,
     check_selectors,
@@ -1196,7 +1196,7 @@ class Atelier:
                 continue
             try:
                 progress = self.store.read_progress(flow_id)
-                status = progress.status.value
+                status = display_status(progress)
                 started_at = progress.started_at
                 finished_at = progress.finished_at
             except RunRecordError:

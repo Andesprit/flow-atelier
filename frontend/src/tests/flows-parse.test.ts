@@ -18,6 +18,11 @@ describe("parseTs", () => {
 });
 
 describe("toPriorStatus", () => {
+  it("preserves a crashed run and a saved question in history", () => {
+    expect(toPriorStatus("crashed")).toBe("crashed");
+    expect(toPriorStatus("needs_input")).toBe("waiting");
+  });
+
   it("keeps a run that is still going as running", () => {
     expect(toPriorStatus("running")).toBe("running");
   });

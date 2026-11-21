@@ -1,19 +1,11 @@
-"""Derive a ``crashed`` display sense for flows whose runner process died.
-
-A flow that is hard-killed (SIGKILL, OOM, reboot, lid-close) never runs the
-engine's failure handler, so its ``progress.json`` stays frozen at
-``status: running`` forever. These helpers reclassify such a flow as
-``crashed`` for display only — never mutating the persisted status — and only
-when the runner is *provably* dead on this same host. Every uncertain case
-(foreign host, missing pid, live pid, permission error) stays ``running``, so a
-genuinely-live or remote flow is never false-accused.
-"""
+"""Derive run liveness from the saved heartbeat and a local process probe."""
 from __future__ import annotations
 
 import os
 import socket
 import sys
 from enum import Enum
+from time import time
 
 from flow_atelier.schemas.progress import FlowStatus, Progress
 
@@ -76,32 +68,25 @@ def _win_pid_state(pid: int) -> _PidState:
         kernel32.CloseHandle(handle)
 
 
-def is_crashed(progress: Progress) -> bool:
-    """Return True only when a ``running`` flow's local runner is provably dead.
+def heartbeat_stale(progress: Progress) -> bool:
+    return progress.heartbeat_at is not None and time() - progress.heartbeat_at.timestamp() >= 120
 
-    :param progress: the flow's progress snapshot.
-    :returns: True iff status is ``running``, the runner pid/host are recorded,
-        the host matches this machine, and a liveness probe proves the pid is
-        gone. Any other case returns False (treated as still running).
-    """
-    if progress.status != FlowStatus.running:
+
+def is_crashed(progress: Progress) -> bool:
+    """A missed heartbeat or a provably dead local PID marks an unparked run crashed."""
+    if progress.status != FlowStatus.running or progress.pending_ask:
         return False
+    if heartbeat_stale(progress):
+        return True
     if progress.runner_pid is None:
         return False
     if progress.runner_host != socket.gethostname():
         return False
-    # Pid still present, owned by another user, or an unclassifiable probe
-    # error — stay conservative and report still running.
     return _pid_state(progress.runner_pid) is _PidState.dead
 
 
 def is_runner_alive(progress: Progress) -> bool:
     """Return True only when a ``running`` flow's local runner is provably alive.
-
-    The precise inverse of :func:`is_crashed`: that proves the runner *dead*,
-    this proves it *alive*. The large "unknown" middle (foreign host, missing
-    pid, dead pid, permission error) returns False from both, so a genuinely
-    crashed-but-unprovable or cross-host flow stays resumable.
 
     :param progress: the flow's progress snapshot.
     :returns: True iff status is ``running``, the runner pid/host are recorded,
@@ -118,11 +103,9 @@ def is_runner_alive(progress: Progress) -> bool:
 
 
 def display_status(progress: Progress) -> str:
-    """Return the display status string, mapping a dead runner to ``crashed``.
-
-    :param progress: the flow's progress snapshot.
-    :returns: ``"crashed"`` when :func:`is_crashed`, else the raw status value.
-    """
+    """Classify the saved progress for a human or dashboard without changing it."""
+    if progress.status == FlowStatus.running and progress.pending_ask:
+        return "needs_input"
     return "crashed" if is_crashed(progress) else progress.status.value
 
 

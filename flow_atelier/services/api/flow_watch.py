@@ -5,6 +5,7 @@ from typing import Any
 
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.modules.flow_view import build_task_log, task_log_update
+from flow_atelier.modules.liveness import display_status
 from flow_atelier.schemas.api import FlowView, TaskLogView
 from flow_atelier.schemas.log import LogEntry, StepRecord
 
@@ -30,6 +31,7 @@ class FlowWatcher:
         self._flow_id = flow_id
         self._signature = atelier.flow_files_signature(flow_id)
         self._look_again = False
+        self._progress = atelier.get_status(flow_id)
         self.view: FlowView = atelier.get_flow_view(flow_id)
         self.log: TaskLogView | None = None
         self._task: str | None = None
@@ -64,7 +66,8 @@ class FlowWatcher:
         :raises FileNotFoundError: if the flow was deleted
         """
         signature = self._atelier.flow_files_signature(self._flow_id)
-        if signature == self._signature and not self._look_again:
+        liveness_changed = display_status(self._progress) != self.view.display_status
+        if signature == self._signature and not self._look_again and not liveness_changed:
             return []
         progress_changed = signature[0] != self._signature[0]
         # A sub-run's folder appears just before the engine records which
@@ -73,7 +76,8 @@ class FlowWatcher:
         self._signature = signature
 
         envelopes: list[dict[str, Any]] = []
-        if progress_changed:
+        if progress_changed or liveness_changed:
+            self._progress = self._atelier.get_status(self._flow_id)
             view = self._atelier.get_flow_view(self._flow_id)
             if view != self.view:
                 self.view = view

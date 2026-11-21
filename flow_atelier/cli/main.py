@@ -269,6 +269,7 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     plan,
     rm,
     run,
+    runner,
     schedule,
     scheduler,
     schema,

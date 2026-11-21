@@ -85,21 +85,21 @@ class AtelierCommand(TyperCommand):
     """Format usage errors on both sides of Click's argument parser."""
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
-        if "--json" not in args:
+        if "--json" not in args and "--jsonl" not in args:
             return super().parse_args(ctx, args)
         try:
             return super().parse_args(ctx, args.copy())
         except click.UsageError as exc:
-            # Ask Click whether --json was a flag, an option value or a
+            # Ask Click whether the format was a flag, an option value or a
             # positional after "--", even if a preceding option was invalid.
             probe = click.Context(self, resilient_parsing=True, ignore_unknown_options=True)
             options, _, _ = self.make_parser(probe).parse_args(args)
-            if options.get("json_mode"):
+            if options.get("json_mode") or options.get("jsonl"):
                 raise _usage_error(exc) from exc
             raise
 
     def invoke(self, ctx: click.Context) -> object:
-        machine = ctx.params.get("json_mode")
+        machine = ctx.params.get("json_mode") or ctx.params.get("jsonl")
         streaming = self.name == "run" or ctx.params.get("follow")
         with json_diagnostics() if machine and not streaming else nullcontext():
             try:

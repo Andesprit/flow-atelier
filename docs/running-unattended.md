@@ -147,3 +147,35 @@ gcloud storage cp -r "gs://$BUCKET/flows" .atelier/
 atelier status "$flow_id"
 atelier timing "$flow_id"
 ```
+
+## Streaming a run's logs
+
+From a checkout with access to the flow's live store, capture each recorded
+step as it arrives, including steps from a task that stops before it returns.
+
+```bash
+atelier logs "$flow_id" --jsonl --follow > run.jsonl
+```
+
+The stream replays existing records first. Each stdout line is one JSON
+object. A `step` carries `task`, `iteration` and a nested `step` with the
+event details. An `entry` carries the completed iteration's result, including
+its exit code and collected output. Steps appear as separate records only.
+Read the top-level `kind` to distinguish them.
+
+The last line has `kind: "end"`, the resolved `flow_id` and a `status`.
+The reader exits 0 when the flow is `completed`, `failed`, `stopped` or `crashed`.
+Ctrl-C ends the reader with status `interrupted` and exit code 130. The
+flow keeps running. An invalid request writes a JSON error to stderr and
+leaves stdout empty. During follow, warnings also appear on stderr as they occur.
+A stream that encounters a read error can end before its final record.
+
+Omit `--follow` to take a snapshot. Its end record reports the observed
+status, even for an empty flow (`running` while active, `unknown` if the
+progress file is missing). Use `--task NAME` to select a task or `--show
+steps` to select only step records. The default is `--show all`. Selecting
+`stdout` or `stderr` includes matching live steps and that channel from
+completed entries. `--show output` selects the completed task output.
+For a snapshot, `--last N` keeps the last N matching data records plus the
+end record. For an array of completed log entries, use `atelier logs
+"$flow_id" --json`.

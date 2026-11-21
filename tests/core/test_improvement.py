@@ -3,11 +3,13 @@ import asyncio
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from distlib.scripts import ScriptMaker
 
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.schemas.log import ExecutionResult
@@ -18,6 +20,12 @@ from flow_atelier.services.executor.harness import AcpHarnessExecutor
 
 def git(repo, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+
+
+def fake_command(tmp_path, name, code):
+    # ScriptMaker emits a native .exe on Windows so CreateProcess finds the fixture.
+    (tmp_path / name).write_text("#!python\n" + code, encoding="utf-8", newline="\n")
+    ScriptMaker(str(tmp_path), str(tmp_path / "bin")).make(name)
 
 
 class Agent(ExecutorBase):
@@ -58,8 +66,9 @@ def repo(tmp_path, monkeypatch):
         monkeypatch.setenv(key, value)
     config = project / "docs/improvement"
     config.mkdir(parents=True)
-    (config / "latency.sh").write_text('cat value\n')
-    (config / "test.sh").write_text('test "$(cat value)" != 50\n')
+    (project / ".gitattributes").write_text("*.sh text eol=lf\n")
+    (config / "latency.sh").write_text('cat value\n', newline="\n")
+    (config / "test.sh").write_text('test "$(cat value)" != 50\n', newline="\n")
     (project / "docs/improvement-log.md").write_text("# Decisions\nPrior observation\n")
     (project / "value").write_text("100")
     git(project, "add", ".")
@@ -70,16 +79,25 @@ def repo(tmp_path, monkeypatch):
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    gh = bin_dir / "gh"
-    gh.write_text('#!/bin/sh\ncase "$1 $2" in\n'
-                  '"pr list") echo \'[{"headRefName":"atelier/improvements/open","title":"Other idea","url":"test"}]\';;\n'
-                  '"pr create") [ ! -f "$GH_RECORD.block" ] || exit 2; '
-                  'echo "$@" >> "$GH_RECORD"; echo "https://example.test/pr/1";;\n'
-                  '*) exit 21;;\nesac\n')
-    gh.chmod(0o755)
+    fake_command(tmp_path, "gh", """import json, os, sys
+from pathlib import Path
+
+record = Path(os.environ["GH_RECORD"])
+if sys.argv[1:3] == ["pr", "list"]:
+    print(json.dumps([{"headRefName":"atelier/improvements/open","title":"Other idea","url":"test"}]))
+elif sys.argv[1:3] == ["pr", "create"]:
+    if record.with_suffix(".block").exists():
+        sys.exit(2)
+    with record.open("a", encoding="utf-8") as stream:
+        print(" ".join(sys.argv[1:]), file=stream)
+    print("https://example.test/pr/1")
+else:
+    sys.exit(21)
+""")
     record = tmp_path / "publication"
     monkeypatch.setenv("GH_RECORD", str(record))
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+    assert Path(shutil.which("gh")).parent == bin_dir
     atelier = Atelier(base_dir=tmp_path / "launcher/.atelier")
     agent = Agent()
     atelier.executors["harness:codex"] = agent
@@ -89,7 +107,7 @@ def repo(tmp_path, monkeypatch):
 
 def install_drivers(project, files):
     for name, content in files.items():
-        (project / "docs/improvement" / name).write_text(content)
+        (project / "docs/improvement" / name).write_text(content, newline="\n")
     git(project, "add", "docs/improvement")
     git(project, "commit", "-m", "Define fixed checks")
     git(project, "push", "origin", "main")
@@ -191,7 +209,7 @@ async def test_installed_recipe_runs_through_shell_cli_and_acp(repo, tmp_path, m
     project, remote, _, _, _ = repo
     fixture = Path(__file__).resolve().parents[1] / "fixtures/fake_acp_agent.py"
     cli = tmp_path / "bin/atelier"
-    cli.write_text(f'#!/bin/sh\nexec {shlex.quote(to_bash_path(sys.executable))} -m flow_atelier.main "$@"\n')
+    cli.write_text(f'#!/bin/sh\nexec {shlex.quote(to_bash_path(sys.executable))} -m flow_atelier.main "$@"\n', newline="\n")
     cli.chmod(0o755)
     monkeypatch.setenv("PYTHONPATH", str(fixture.parents[2]))
     for name, mode, turn in [
@@ -315,7 +333,7 @@ async def test_ux_requires_keyboard_access_and_fixed_lighthouse_report(repo, tmp
 
     project, _, _, atelier, _ = repo
     lighthouse = tmp_path / "bin/lighthouse"
-    lighthouse.write_text("#!/bin/sh\necho '{\"categories\":{\"performance\":{\"score\":0.9},\"accessibility\":{\"score\":1.0}}}'\n")
+    lighthouse.write_text("#!/bin/sh\necho '{\"categories\":{\"performance\":{\"score\":0.9},\"accessibility\":{\"score\":1.0}}}'\n", newline="\n")
     lighthouse.chmod(0o755)
     install_drivers(project, {"ux.sh": f"""lighthouse > "$1"
 steps=4; keyboard=true
@@ -347,9 +365,7 @@ async def test_python_metrics_without_a_project_adapter(repo, tmp_path):
         "vulture": ("app.py:7: unreachable code (100% confidence)", 3),
     }
     for name, (output, code) in reports.items():
-        tool = tmp_path / "bin" / name
-        tool.write_text(f"#!/bin/sh\necho '{output}'\nexit {code}\n")
-        tool.chmod(0o755)
+        fake_command(tmp_path, name, f"print({output!r})\nraise SystemExit({code})\n")
     result = await propose(atelier, active(atelier, project), project, "clean-code")
     assert result["initial"] == {"complexity": 2, "function_length": 4, "duplication": 0,
                                  "dead_code": 1, "lint_warnings": 1, "type_warnings": 3}

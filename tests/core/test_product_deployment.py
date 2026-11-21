@@ -14,6 +14,10 @@ from flow_atelier.core.atelier import Atelier
 from flow_atelier.schemas.log import ExecutionResult
 from flow_atelier.services.executor.base import ExecutorBase
 
+deployment_host = pytest.mark.skipif(
+    sys.platform not in {"darwin", "linux"}, reason="release snapshots require a POSIX product host"
+)
+
 
 class Agent(ExecutorBase):
     def __init__(self, role):
@@ -49,6 +53,7 @@ def target_config():
     }
 
 
+@deployment_host
 @pytest.mark.parametrize("answer", ["DEPLOY", "decline", "changed after approval"])
 async def test_cloud_target_approval_and_source_binding(
     tmp_path,
@@ -291,6 +296,7 @@ def test_targets_are_user_only_and_source_paths_stay_in_project(
             DeploymentTarget(**{**target_config, **fields})
 
 
+@deployment_host
 def test_release_source_refuses_private_or_linked_files(tmp_path):
     from flow_atelier.services.executor.deployment import _snapshot
 
@@ -316,6 +322,7 @@ def test_unsupported_sandbox_refuses_to_launch(tmp_path, monkeypatch):
         cloud_sandbox.cloud_sandbox(["fixture-agent"], {}, tmp_path, tmp_path)
 
 
+@deployment_host
 async def test_adapter_requires_persisted_human_gate_and_reuses_receipt(
     tmp_path, target_config, monkeypatch
 ):
@@ -414,3 +421,16 @@ async def test_concurrent_product_steps_preserve_new_workspace(tmp_path, monkeyp
         await entered.wait()
         await asyncio.gather(first, step())
     assert list(tmp_path.iterdir()) == []
+
+@pytest.mark.parametrize("action", ["prepare", "plan", "deploy"])
+async def test_unsupported_deployment_host_refuses_before_preparing_files(tmp_path, monkeypatch, action):
+    from flow_atelier.services.executor.base import FlowContext
+
+    atlas = Atelier()
+    run = atlas.store.create_flow("idea-to-product", {}, project=tmp_path)
+    context = FlowContext(flow_id=run, store=atlas.store, working_dir=tmp_path,
+                          inputs={"deployment_target": "staging"})
+    monkeypatch.setattr(sys, "platform", "win32")
+    with pytest.raises(ValueError, match="macOS or Linux"):
+        await atlas.executors["tool:product-deployment"]._execute(action, context)
+    assert not (tmp_path / "atelier_events.py").exists()

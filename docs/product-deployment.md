@@ -72,9 +72,11 @@ runtime. The deployment references the secret by name and version.
 
 The builder, shell test and reviewer run under macOS Seatbelt or Linux
 Bubblewrap. The wrapper masks local Google Cloud, AWS, Azure and Kubernetes
-configuration and drops cloud credential environment variables. Writes are
-limited to the project, step scratch space and existing local agent homes. Install
-`bwrap` on Linux. A host without an available sandbox refuses these steps.
+configuration and drops cloud credential environment variables. Builders can write
+source files and disposable scratch space. Git metadata and persistent agent
+configuration are protected. Install `bwrap` on Linux. Hosts without a supported
+sandbox refuse these steps. Product deployment requires macOS or Linux for secure
+source snapshots.
 
 After tests and independent review pass, the second human gate shows the
 project, region, service, source digest, deployment identity and runtime

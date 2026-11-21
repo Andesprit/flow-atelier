@@ -9,6 +9,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 from contextlib import ExitStack, suppress
 from pathlib import Path
@@ -216,6 +217,8 @@ class DeploymentExecutor(ExecutorBase):
         label = context.inputs.get("deployment_target", "")
         if action in {"prepare", "plan"} and not label:
             return BUILD_ONLY
+        if sys.platform not in {"darwin", "linux"}:
+            raise ValueError("Product deployment requires a macOS or Linux product host")
         if not re.fullmatch(r"[a-z][a-z0-9-]{0,39}", label):
             raise ValueError("Invalid deployment target")
         targets = self.settings.deployment_targets

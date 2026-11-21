@@ -189,7 +189,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.4" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.7" },
-    { name = "typer", specifier = ">=0.12" },
+    { name = "typer", specifier = ">=0.19.0" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "tzlocal", specifier = ">=5.2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.46.0" },

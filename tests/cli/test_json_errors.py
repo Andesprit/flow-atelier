@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from enum import StrEnum
+from typing import Literal
 
 import pytest
 import typer
@@ -201,17 +201,12 @@ def test_literal_json_argument_keeps_human_usage_errors(tmp_path, monkeypatch, a
     assert not result.stderr.lstrip().startswith("{")
 
 
-class Mode(StrEnum):
-    short = "short"
-    long = "long"
-
-
 def test_choice_error_names_allowed_values():
     app = AtelierTyper()
 
     @app.command()
     def example(
-        mode: Mode = typer.Option(Mode.short),
+        mode: Literal["short", "long"] = typer.Option("short"),
         json_mode: bool = typer.Option(False, "--json"),
     ) -> None:
         raise AssertionError("invalid choices must be rejected before invocation")

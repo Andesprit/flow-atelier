@@ -351,7 +351,8 @@ class BashExecutor(ExecutorBase):
                 await _LiveOutput(context.on_step, StepKind.stderr).feed(
                     "".join(f"{note}\n" for note in notes).encode()
                 )
-            result = await self._run(args, {**inherited, **values}, context)
+            env = {**inherited, **values, "ATELIER_FLOW_ID": context.flow_id}
+            result = await self._run(args, env, context)
         if script is not None:
             # bash names its script in its own error lines. The temp path is
             # new on every try, so keep it out of the result: the same failure

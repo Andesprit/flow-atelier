@@ -1,0 +1,10 @@
+name: meetings-to-tasks
+description: Reserved for the meetings-to-tasks workflow in roadmap slice 2.10.
+tasks:
+  - setup:
+      description: Report workflow availability
+      tool: tool:bash
+      task: |
+        echo 'meetings-to-tasks is pending roadmap slice 2.10.' >&2
+        exit 1
+

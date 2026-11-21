@@ -24,6 +24,7 @@ AGENTS.md
 .agents/
 .nodeterm/
 .atelier/
+!flow_atelier/packages/platform/.atelier/
 
 # Frontend (React/Vite) — tooling & local build artifacts under frontend/.
 # NOTE: flow_atelier/dist/ is intentionally NOT ignored — it is the committed

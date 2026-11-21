@@ -54,7 +54,7 @@ def _expire_tree(tree: list[RunJournal], now: datetime, days: int) -> None:
             if journal.side.is_symlink():
                 raise RunRecordError(f"linked run directory: {journal.side}")
             journal.side.mkdir(exist_ok=True)
-            for name in (".writer.lock", ".ask.lock"):
+            for name in (".writer.lock", ".ask.lock", ".notify.lock"):
                 path = journal.side / name
                 if path.is_symlink() or (path.exists() and not path.is_file()):
                     raise RunRecordError(f"invalid run lease: {path}")

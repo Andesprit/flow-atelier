@@ -2087,3 +2087,62 @@ Set `ATELIER_GLOBAL_ATELIER_DIR` in the process environment to relocate the
 entire global store. A run header records the full resolved project path.
 The folder name replaces each non-alphanumeric character with a hyphen, so
 two projects can share a folder while retaining their separate identities.
+
+## Install the platform recipe bundle
+
+`atelier install builtin:platform --no-project` installs the bundled version
+in the global conduit store. The manifest lists `error-to-pr`,
+`idea-to-product`, `continuous-improvement` and `meetings-to-tasks`. Version
+1 reserves those names. Each starter exits with the roadmap slice that will
+provide its implementation. The package creates no schedules.
+
+A project's own conduit takes precedence. Reinstalling skips existing files.
+Use `atelier update platform --force` only when you intend to replace them.
+
+To share instructions between harnesses, add a `stepInstructions` entry to
+your user settings. Use the target project's resolved absolute path as the
+key and list the rule files relative to that directory.
+
+```json
+{
+  "stepInstructions": {
+    "project_rules": {"/absolute/path/to/repo": ["CLAUDE.md", "docs/review.md"]},
+    "skills": ["code-review"]
+  }
+}
+```
+
+Harness tasks receive the selected rule text for that project and the text
+of each selected `~/.claude/skills/<name>/SKILL.md`. A skill directory can
+be a symlink. Only user-level settings can select these files. An unreadable
+selection stops the conduit before its harness starts and names the file.
+
+## Send a WhatsApp run summary
+
+Set `notificationProvider` to `"twilio"` and `notificationRecipient` to the
+opted-in recipient's E.164 number in your user `~/.atelier/settings.json`.
+Save the following fields in `~/.atelier/twilio.json` and restrict this file
+to your OS user. The sender reads it locally when you invoke `atelier notify`.
+
+```json
+{
+  "account_sid": "AC...",
+  "auth_token": "...",
+  "sender": "+12025550111",
+  "content_sid": "HX..."
+}
+```
+
+Use a registered WhatsApp sender and an approved text template with three
+variables in order: run ID, short status and space-separated PR links (or
+`None`). After a run, use `atelier notify RUN_ID --link URL`. A trusted final
+shell step can use `atelier notify "$ATELIER_FLOW_ID" --status "drafts ready"
+--link "$OUTPUT_PUBLISH"`. Repeat `--link` for multiple PRs. Only canonical
+`https://github.com/OWNER/REPO/pull/NUMBER` links go into the summary. Local
+artifacts remain in run outputs.
+
+`atelier logs RUN_ID` shows each attempt. An accepted message has a Twilio
+message SID. The sender retries a rate limit once. If it persists, invoke
+`atelier notify RUN_ID` later to reuse the saved summary. A timeout, ambiguous
+provider response or interrupted submission leaves delivery uncertain.
+Check Twilio's message history before explicitly using `--retry-uncertain`.

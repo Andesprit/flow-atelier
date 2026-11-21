@@ -17,6 +17,7 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from flow_atelier.core.step_instructions import StepInstructions
 from flow_atelier.schemas.conduit import HARNESS_NAME_RE, AgentPermissions
 
 # Settings that decide what Atelier executes, where it looks for shared
@@ -36,7 +37,10 @@ ENVIRONMENT_ONLY = frozenset({
     "serve_url",
 })
 
-USER_FILE_ONLY = frozenset({"webhook_sources", "webhook_secrets", "run_caps"})
+USER_FILE_ONLY = frozenset({
+    "webhook_sources", "webhook_secrets", "run_caps",
+    "notification_recipient", "notification_provider",
+})
 
 # New fields are user-only until explicitly allowed in project files.
 PROJECT_KEYS = frozenset({
@@ -128,8 +132,6 @@ class AtelierSettings(BaseSettings):
     default_timeout: PositiveInt = 3600
     default_max_concurrency: PositiveInt = 3
     cleanup_period_days: int = Field(default=30, ge=0)
-    notification_recipient: str | None = None
-    notification_provider: str | None = None
     dictaria_account: str | None = None
     webhook_sources: dict[str, dict[str, str]] = Field(
         default_factory=dict, description="Per-source project and conduit for signed errors.",
@@ -219,6 +221,7 @@ class AtelierSettings(BaseSettings):
             '"gemini-acp"]}\'. A name matching a bundled harness overrides it.'
         ),
     )
+    step_instructions: StepInstructions = Field(default_factory=StepInstructions)
     done_marker: str = "[ATELIER_DONE]"
     api_token: str = Field(
         # Empty, never a literal: a shipped default token is a published
@@ -239,6 +242,12 @@ class AtelierSettings(BaseSettings):
             "commands print <serve_url>/runs/<flow_id> when this server can load "
             "the run; set this when you serve on another host or port."
         ),
+    )
+    notification_recipient: str | None = Field(
+        default=None, description="Fixed WhatsApp recipient in E.164 format."
+    )
+    notification_provider: str | None = Field(
+        default=None, description="Set to twilio to enable the local WhatsApp sender."
     )
 
     @classmethod

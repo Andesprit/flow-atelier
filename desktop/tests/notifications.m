@@ -5,6 +5,18 @@ void open_run(const char *id) {}
 bool window_visible(void) { return false; }
 void quit_status(int status) {}
 static bool allowQuit;
+static bool decision, appKitDecision;
+void quit_decided(bool quit, bool appKit) { decision = quit; appKitDecision = appKit; }
+@interface TestApplication : NSObject
+@property(nonatomic) NSUInteger replies;
+@property(nonatomic) BOOL answer;
+@end
+@implementation TestApplication
+- (void)replyToApplicationShouldTerminate:(BOOL)answer {
+    self.replies++;
+    self.answer = answer;
+}
+@end
 bool confirm_quit(void) { return allowQuit; }
 @interface TestAppDelegate : NSObject
 @end
@@ -17,7 +29,17 @@ int main(void) {
         assert(installQuitHandler(delegate));
         // Cocoa calls this selector directly for Command-Q and Dock Quit.
         id<NSApplicationDelegate> appDelegate = (id)delegate;
-        assert([appDelegate applicationShouldTerminate:NSApp] == NSTerminateCancel);
+        TestApplication *app = [TestApplication new];
+        assert([appDelegate applicationShouldTerminate:(id)app] == NSTerminateLater);
+        assert(app.replies == 0);
+        finish_quit(false);
+        assert(app.replies == 1 && !app.answer && !decision && appKitDecision);
+        assert([appDelegate applicationShouldTerminate:(id)app] == NSTerminateLater);
+        finish_quit(true);
+        assert(app.replies == 2 && app.answer && decision && appKitDecision);
+        // A tray-only quit does not reply to a previous AppKit request.
+        finish_quit(true);
+        assert(app.replies == 2 && decision && !appKitDecision);
         allowQuit = true;
         assert([appDelegate applicationShouldTerminate:NSApp] == NSTerminateNow);
         NSDictionary *first = @{@"flow_id": @"a", @"finished_at": @"earlier", @"status": @"completed"};

@@ -13,6 +13,7 @@ static WINDOW: OnceLock<(tauri::WebviewWindow, tauri::Url)> = OnceLock::new();
 extern "C" {
     fn start_notices(port: u16, token: *const c_char) -> bool;
     fn check_quit();
+    fn finish_quit(quit: bool);
 }
 
 static CHECKING_QUIT: AtomicBool = AtomicBool::new(false);
@@ -37,18 +38,25 @@ extern "C" fn confirm_quit() -> bool {
 }
 
 #[no_mangle]
+extern "C" fn quit_decided(quit: bool, appkit_request: bool) {
+    if quit {
+        QUITTING.store(true, Ordering::Relaxed);
+        if !appkit_request {
+            if let Some((window, _)) = WINDOW.get() {
+                window.app_handle().exit(0);
+            }
+        }
+    } else {
+        CHECKING_QUIT.store(false, Ordering::Relaxed);
+    }
+}
+
+#[no_mangle]
 extern "C" fn quit_status(status: i32) {
     let Some((window, _)) = WINDOW.get() else {
         return;
     };
-    let finish = move |quit| {
-        if quit {
-            QUITTING.store(true, Ordering::Relaxed);
-            window.app_handle().exit(0);
-        } else {
-            CHECKING_QUIT.store(false, Ordering::Relaxed);
-        }
-    };
+    let finish = |quit| unsafe { finish_quit(quit) };
     if status == 0 {
         finish(true);
         return;

@@ -5,6 +5,7 @@ Nothing outside ``flow_atelier.cli`` should import from this module.
 from __future__ import annotations
 
 import difflib
+import json
 import time
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,25 @@ err_console = Console(stderr=True)
 # speak up only during genuine silence (npx cold start, a long tool call,
 # a tool:bash task that emits no steps at all).
 _last_activity: float = time.monotonic()
+
+
+def cli_error(
+    code: str, message: str, *, exit_code: int = 1, json_mode: bool = False,
+    out: Console = err_console, hint: str = "", **details: object,
+) -> typer.Exit:
+    """Return the exit to raise. Machine errors are one JSON object on stderr.
+
+    Use a stable snake_case code and plain text. Optional fields such as
+    ``candidates`` and ``allowed`` belong to the nested ``error`` object.
+    Human callers can select their existing console and add a recovery hint.
+    """
+    if json_mode:
+        typer.echo(json.dumps({"error": {"code": code, "message": message, **details}}), err=True)
+    else:
+        out.print(escape(message), style="red", soft_wrap=True)
+        if hint:
+            out.print(escape(hint), style="dim", soft_wrap=True)
+    return typer.Exit(code=exit_code)
 
 
 def mark_activity() -> None:
@@ -214,7 +234,7 @@ def _latest_flow_id(atelier: Atelier) -> str | None:
     return max(atelier.list_flows(), key=_started, default=None)
 
 
-def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
+def _resolve_flow_id(atelier: Atelier, candidate: str, *, json_mode: bool = False) -> str:
     """Resolve ``candidate`` to a full flow id, supporting git-style prefixes.
 
     - ``latest`` → the most recently started top-level flow. The resolved id
@@ -232,14 +252,18 @@ def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
 
     :param atelier: Atelier instance used to enumerate known flows.
     :param candidate: full flow id or unique prefix supplied by the user.
+    :param json_mode: emit machine errors and suppress the alias announcement.
     :returns: the resolved full flow id.
     """
     if candidate == "latest":
         latest = _latest_flow_id(atelier)
         if latest is None:
-            console.print("[red]unknown flow:[/red] latest — no flows recorded yet")
-            raise typer.Exit(code=1)
-        typer.echo(f"latest: {latest}", err=True)
+            raise cli_error(
+                "unknown_flow", "unknown flow: latest — no flows recorded yet",
+                json_mode=json_mode, out=console, flow_id=candidate,
+            )
+        if not json_mode:
+            typer.echo(f"latest: {latest}", err=True)
         return latest
     all_flows = atelier.list_flows()
     if candidate in all_flows:
@@ -259,17 +283,17 @@ def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
     if len(matches) == 1:
         return matches[0]
     if len(matches) == 0:
-        console.print(
-            f"[red]unknown flow:[/red] {escape(candidate)}"
-            " — try 'atelier list flows' or 'latest'"
+        raise cli_error(
+            "unknown_flow", f"unknown flow: {candidate} — try 'atelier list flows' or 'latest'",
+            json_mode=json_mode, out=console, flow_id=candidate,
         )
-        raise typer.Exit(code=1)
-    console.print(f"[red]ambiguous flow id:[/red] {candidate} matches:")
-    for m in matches[:10]:
-        console.print(f"  - {m}")
+    hint = "\n".join(f"  - {fid}" for fid in matches[:10])
     if len(matches) > 10:
-        console.print(f"  … and {len(matches) - 10} more")
-    raise typer.Exit(code=1)
+        hint += f"\n  … and {len(matches) - 10} more"
+    raise cli_error(
+        "ambiguous_flow_id", f"ambiguous flow id: {candidate} matches:",
+        json_mode=json_mode, out=console, hint=hint, flow_id=candidate, candidates=matches,
+    )
 
 
 def _parse_iso(ts: str | None) -> datetime | None:

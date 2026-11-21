@@ -8,7 +8,11 @@ import os
 import re
 import sys
 
+import click
 import typer
+from typer.core import TyperCommand
+
+from flow_atelier.cli._shared import cli_error
 
 
 def _use_utf8_streams() -> None:
@@ -47,6 +51,50 @@ def _help_from_doc(doc: str) -> str:
     return _DOC_FIELDS_RE.sub("", inspect.cleandoc(doc)).rstrip().replace("``", "`")
 
 
+def _usage_error(exc: click.UsageError) -> typer.Exit:
+    """Include the offending parameter and its choices when Click knows them."""
+    details: dict[str, object] = {}
+    if isinstance(exc, click.BadParameter):
+        if exc.param is not None:
+            details["parameter"] = exc.param.opts[0]
+            if isinstance(exc.param.type, click.Choice):
+                details["allowed"] = list(exc.param.type.choices)
+        elif exc.param_hint:
+            details["parameter"] = exc.param_hint
+    elif isinstance(exc, (click.BadOptionUsage, click.NoSuchOption)):
+        details["parameter"] = exc.option_name
+    return cli_error(
+        "invalid_arguments", exc.format_message(), exit_code=exc.exit_code, json_mode=True,
+        **details,
+    )
+
+
+class AtelierCommand(TyperCommand):
+    """Format usage errors on both sides of Click's argument parser."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if "--json" not in args:
+            return super().parse_args(ctx, args)
+        try:
+            return super().parse_args(ctx, args.copy())
+        except click.UsageError as exc:
+            # Ask Click whether --json was a flag, an option value or a
+            # positional after "--", even if a preceding option was invalid.
+            probe = click.Context(self, resilient_parsing=True, ignore_unknown_options=True)
+            options, _, _ = self.make_parser(probe).parse_args(args)
+            if options.get("json_mode"):
+                raise _usage_error(exc) from exc
+            raise
+
+    def invoke(self, ctx: click.Context) -> object:
+        try:
+            return super().invoke(ctx)
+        except click.UsageError as exc:
+            if ctx.params.get("json_mode"):
+                raise _usage_error(exc) from exc
+            raise
+
+
 class AtelierTyper(typer.Typer):
     """Typer that keeps Sphinx field lists out of ``--help``.
 
@@ -69,6 +117,7 @@ class AtelierTyper(typer.Typer):
             # call, so writing to it would leak the first function's help text
             # onto every later one if a decorator object is reused.
             cmd_kwargs = dict(kwargs)
+            cmd_kwargs.setdefault("cls", AtelierCommand)
             if cmd_kwargs.get("help") is None and fn.__doc__:
                 cmd_kwargs["help"] = _help_from_doc(fn.__doc__)
             return super(AtelierTyper, self).command(*args, **cmd_kwargs)(fn)
@@ -112,9 +161,8 @@ def _root(
 
     :param version: eager flag handled by :func:`_version_callback`.
     """
-    # Click runs this callback before rendering a subcommand's --help, and
-    # an update tip has no place in help output.
-    if "--help" in sys.argv:
+    # The update tip would add prose to help output or a JSON error on stderr.
+    if "--help" in sys.argv or "--json" in sys.argv:
         return
 
     from flow_atelier.cli.updater import start_background_update_check

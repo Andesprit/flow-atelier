@@ -174,6 +174,7 @@ def test_wait_exits_1_for_an_unsuccessful_run(workdir, monkeypatch, status):
     assert result.exit_code == 1
     assert result.stdout == ""
     assert f"flow {flow_id} {status.value}" in result.stderr
+    assert result.stderr.split("→", 1)[1].splitlines()[0] == f" atelier diagnose {flow_id}"
     assert f"atelier status {flow_id}" in result.stderr
     assert f"atelier logs {flow_id}" in result.stderr
 
@@ -188,6 +189,7 @@ def test_wait_exits_1_and_offers_resume_when_the_runner_died(workdir, monkeypatc
     assert result.exit_code == 1
     assert result.stdout == ""
     assert f"flow {flow_id} crashed" in result.stderr
+    assert result.stderr.split("→", 1)[1].splitlines()[0] == f" atelier diagnose {flow_id}"
     assert f"atelier run --resume {flow_id}" in result.stderr
 
 
@@ -239,6 +241,25 @@ def test_wait_exits_130_on_ctrl_c(workdir, monkeypatch):
     assert result.stdout == ""
     assert "interrupted" in result.stderr
     assert "keeps running" in result.stderr
+
+
+@pytest.mark.parametrize(("interrupt", "code", "exit_code"), [
+    (False, "wait_timeout", 124), (True, "interrupted", 130),
+])
+def test_json_wait_errors_after_polling(workdir, monkeypatch, interrupt, code, exit_code):
+    flow_id = _seed()
+
+    def on_sleep(_n):
+        if interrupt:
+            raise KeyboardInterrupt
+
+    _use_clock(monkeypatch, on_sleep)
+    result = CliRunner().invoke(app, ["wait", "latest", "--timeout", "1", "--json"])
+    assert result.exit_code == exit_code
+    assert result.stdout == ""
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == code
+    assert error["flow_id"] == flow_id
 
 
 def test_wait_polls_progress_and_nothing_else(workdir, monkeypatch):
@@ -365,6 +386,13 @@ def test_wait_fails_cleanly_on_an_invalid_child_record(workdir, monkeypatch):
     assert result.exit_code == 1
     assert f"invalid progress record for {child}" in result.stderr
     assert result.exception is None or isinstance(result.exception, SystemExit)
+
+    result = CliRunner().invoke(app, ["wait", child, "--json"])
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "invalid_progress"
+    assert error["flow_id"] == child
 
 
 def test_wait_fails_cleanly_when_the_run_is_deleted_mid_wait(workdir, monkeypatch):

@@ -5,7 +5,7 @@ inputs:
     description: Git project with an origin remote and a main branch.
     default: "."
   goal:
-    description: Measurement goal.
+    description: Choose latency, cost, clean-code or ux.
     default: latency
   schedule:
     description: Trigger label recorded with the experiment. Set recurring runs with atelier schedule.

@@ -40,7 +40,12 @@ from flow_atelier.schemas.flow import new_flow_id, parse_flow_id
 from flow_atelier.schemas.log import LogEntry, StepRecord
 from flow_atelier.schemas.progress import Progress
 from flow_atelier.services.store.base import ConduitSource, StoreBase
-from flow_atelier.services.store.events import RunJournal, file_lock, project_folder
+from flow_atelier.services.store.events import (
+    AmbiguousFlowId,
+    RunJournal,
+    file_lock,
+    project_folder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -199,10 +204,28 @@ class FilesystemStore(StoreBase):
             except FileNotFoundError:
                 pass
             else:
-                raise ValueError(f"ambiguous flow id: {flow_id} has a local and global record")
+                raise AmbiguousFlowId(f"ambiguous flow id: {flow_id} has local and global records")
         if len(matches) > 1:
-            raise ValueError(f"ambiguous flow id: {flow_id}")
+            raise AmbiguousFlowId(f"ambiguous flow id: {flow_id}")
         return matches[0] if matches else None
+
+    def flow_files_signature(self, flow_id: str) -> tuple[tuple[int, int] | None, ...]:
+        """Return change tokens for progress, logs, steps and child runs."""
+        if journal := self.journal(flow_id):
+            paths = (journal.path, journal.path, journal.side / "steps.jsonl", journal.path.parent)
+        else:
+            directory = self._flow_dir(flow_id)
+            names = ("progress.json", "logs.jsonl", "steps.jsonl", "flows")
+            paths = tuple(directory / n for n in names)
+        found: list[tuple[int, int] | None] = []
+        for path in paths:
+            try:
+                st = path.stat()
+            except FileNotFoundError:
+                found.append(None)
+            else:
+                found.append((st.st_mtime_ns, st.st_size))
+        return tuple(found)
 
     def parent_flow_id(self, flow_id: str) -> str | None:
         if journal := self.journal(flow_id):
@@ -210,9 +233,9 @@ class FilesystemStore(StoreBase):
         holder = self._flow_dir(flow_id).parent.parent
         return None if holder == self.base_dir else holder.name
 
-    def list_project_flows(self, project: Path) -> list[str]:
+    def list_project_flows(self, project: Path | None = None) -> list[str]:
         ids = [j.path.stem for j, h in self._journals(project) if h["parent_flow_id"] is None]
-        if project.resolve() == self.base_dir.resolve().parent:
+        if project is None or project.resolve() == self.base_dir.resolve().parent:
             ids.extend(FilesystemStore(self.base_dir).list_flows())
         return sorted(ids)
 

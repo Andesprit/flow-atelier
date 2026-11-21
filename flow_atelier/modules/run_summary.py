@@ -66,6 +66,7 @@ def build_summary(atelier: Any, flow_id: str) -> RunSummary:
     """
     from flow_atelier.cli.rendering.render import _redact
 
+    atelier = atelier.for_flow(flow_id)
     store = atelier.store
     try:
         before = store.read_progress(flow_id)

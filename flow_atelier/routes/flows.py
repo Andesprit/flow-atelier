@@ -95,9 +95,8 @@ def _not_here(flow_id: str, atelier: Atelier) -> str:
     base = atelier.store.base_dir.resolve()
     where = base.parent if base.name == ".atelier" else base
     return (
-        f"No run {flow_id} in {where}. This server only reads the runs of that "
-        "project: check the id, or list the project's runs with `atelier list flows` "
-        "there. A run of another project needs `atelier serve` started in that project."
+        f"No run {flow_id} in global history or the legacy store at {where}. "
+        "Check the ID with `atelier list flows`. For a legacy run, open its original project."
     )
 
 

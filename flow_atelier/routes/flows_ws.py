@@ -12,6 +12,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from flow_atelier.services.api.base import get_atelier, origin_allowed
 from flow_atelier.services.api.flow_watch import FlowWatcher
+from flow_atelier.services.store.events import RunRecordError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -55,7 +56,7 @@ async def watch_flow_ws(websocket: WebSocket, flow_id: str) -> None:
     await websocket.accept()
     try:
         watcher = FlowWatcher(get_atelier(websocket), flow_id)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, RunRecordError) as e:
         await websocket.send_json({"type": "error", "message": str(e)})
         await websocket.close()
         return
@@ -100,7 +101,7 @@ async def watch_flow_ws(websocket: WebSocket, flow_id: str) -> None:
             await asyncio.sleep(TICK_SECONDS)
             try:
                 await _guarded(watcher.poll)
-            except FileNotFoundError as e:
+            except (FileNotFoundError, RunRecordError) as e:
                 await websocket.send_json({"type": "error", "message": str(e)})
                 return
 

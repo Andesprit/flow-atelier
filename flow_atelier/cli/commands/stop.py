@@ -37,7 +37,7 @@ def _other_running_progresses(atelier: Atelier, flow_id: str) -> list:
     :returns: progress snapshots of all other flows (unreadable ones skipped).
     """
     others = []
-    for fid in atelier.list_flows():
+    for fid in atelier.store.list_project_flows():
         if fid == flow_id:
             continue
         try:

@@ -619,7 +619,7 @@ def run_cmd(
         # Surface a malformed conduit with a readable message before resuming,
         # so a YAML or schema error does not reach the generic `flow failed:`
         # handler as a raw exception.
-        _load_conduit(atelier, parse_flow_id(flow_id)[0], json_mode=json_mode)
+        _load_conduit(atelier.for_flow(flow_id), parse_flow_id(flow_id)[0], json_mode=json_mode)
         if not json_mode:
             console.print(_render_orchestration_msg(f"resuming flow {flow_id}"))
         # No `[i/total]` on resume: the counter numbers the tasks this resume
@@ -643,7 +643,9 @@ def run_cmd(
 
     if again_from is not None:
         flow_id = _resolve_flow_id(atelier, again_from, json_mode=json_mode)
-        conduit = _load_conduit(atelier, parse_flow_id(flow_id)[0], json_mode=json_mode)
+        conduit = _load_conduit(
+            atelier.for_flow(flow_id), parse_flow_id(flow_id)[0], json_mode=json_mode
+        )
         overrides = _parse_inputs(inputs_raw)
         overrides.update(_parse_input_files(input_files_raw, overrides))
         if conduit is not None:

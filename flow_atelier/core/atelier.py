@@ -5,6 +5,7 @@ import logging
 import subprocess
 import sys
 from collections.abc import Container, Mapping, Sequence
+from copy import copy
 from pathlib import Path
 from typing import Any
 
@@ -139,6 +140,21 @@ class Atelier:
             agent_permissions=self.settings.agent_permissions,
         )
         self.schedule_store = ScheduleStore(self.settings.global_atelier_dir)
+
+    def for_flow(self, flow_id: str) -> Atelier:
+        """Use the run's original recipe store while keeping this caller's executors."""
+        journal = self.store.journal(flow_id)
+        if not journal:
+            return self
+        base = Path(journal.header()["store"])
+        if base == self.store.base_dir.resolve():
+            return self
+        scoped = copy(self)
+        scoped.settings = self.settings.model_copy(update={"atelier_dir": base})
+        scoped.store = FilesystemStore(base, self.store.global_dir)
+        scoped.engine = copy(self.engine)
+        scoped.engine.store = scoped.store
+        return scoped
 
     def _register_harnesses(self, sink: PromptSink) -> None:
         """Register a ``harness:<name>`` executor for every known ACP agent.
@@ -568,6 +584,7 @@ class Atelier:
         :raises BindingError: a saved or requested selection is unusable, or a
             task whose assignment is already fixed was named
         """
+        self = self.for_flow(flow_id)
         prior = self.store.read_progress(flow_id)
         if prior.pending_ask:
             raise ValueError(f"flow is waiting for a reply: atelier ask {flow_id} --json")
@@ -767,6 +784,7 @@ class Atelier:
         :raises WorkspaceError: an inherited or requested worktree selection,
             the source checkout or a destination directory is unusable
         """
+        self = self.for_flow(flow_id)
         conduit_name, _, _ = parse_flow_id(flow_id)
         conduit = self.store.read_conduit(conduit_name)
         inputs = {**self.store.read_input(flow_id), **(overrides or {})}
@@ -1232,6 +1250,7 @@ class Atelier:
         :returns: the run page's map
         :raises FileNotFoundError: if no flow with that id exists
         """
+        self = self.for_flow(flow_id)
         parent_flow_id = self.store.parent_flow_id(flow_id)
         try:
             conduit_name, _, _ = parse_flow_id(flow_id)
@@ -1257,21 +1276,7 @@ class Atelier:
             that order; ``None`` for one not written yet
         :raises FileNotFoundError: if no flow with that id exists
         """
-        if journal := self.store.journal(flow_id):
-            paths = (journal.path, journal.path, journal.side / "steps.jsonl", journal.path.parent)
-        else:
-            directory = self.store._flow_dir(flow_id)
-            names = ("progress.json", "logs.jsonl", "steps.jsonl", "flows")
-            paths = tuple(directory / n for n in names)
-        found: list[tuple[int, int] | None] = []
-        for path in paths:
-            try:
-                st = path.stat()
-            except FileNotFoundError:
-                found.append(None)
-            else:
-                found.append((st.st_mtime_ns, st.st_size))
-        return tuple(found)
+        return self.store.flow_files_signature(flow_id)
 
     def task_sub_runs(self, flow_id: str, task: str) -> list[tuple[str, str]]:
         """Return the sub-runs ``task`` started in ``flow_id``, as ``(started_at, flow_id)``.

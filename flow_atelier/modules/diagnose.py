@@ -846,7 +846,7 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
             unavailable.append(
                 "saved outputs — none recorded, so no result can be reread"
             )
-    conduit, recipe = _read_recipe(atelier, conduit_name, progress)
+    conduit, recipe = _read_recipe(atelier.for_flow(flow_id), conduit_name, progress)
     current_tools = (
         {t.name: t.tool for t in conduit.tasks} if conduit is not None else {}
     )

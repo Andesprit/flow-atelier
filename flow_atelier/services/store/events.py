@@ -13,6 +13,14 @@ from typing import Any, BinaryIO
 from flow_atelier.schemas.flow import parse_flow_id
 
 
+class RunRecordError(ValueError):
+    """A run has an unreadable or incompatible event record."""
+
+
+class AmbiguousFlowId(RunRecordError):
+    """Multiple records claim the same run ID."""
+
+
 def project_folder(project: Path) -> str:
     return "".join(c if c.isalnum() else "-" for c in str(project.resolve()))
 
@@ -79,7 +87,7 @@ class RunJournal:
         with file_lock(self.side / ".append.lock", wait=True), self.path.open("r+b") as stream:
             sequence = _repair_tail(stream)
             if not sequence:
-                raise ValueError(f"{self.path}: missing run header")
+                raise RunRecordError(f"{self.path}: missing run header")
             if kind in {"outputs", "log"}:
                 data = self._pack(kind, data, sequence)
             stream.write(_line(kind, data))
@@ -135,6 +143,7 @@ class RunJournal:
                         or data["conduit"] != parse_flow_id(self.path.stem)[0]
                         or not Path(data["project"]).is_absolute()
                         or project_folder(Path(data["project"])) != self.path.parent.name
+                        or not Path(data["store"]).is_absolute()
                         or data["steps"] != "steps.jsonl"
                     ):
                         raise ValueError("invalid run header")
@@ -143,7 +152,7 @@ class RunJournal:
                 if not isinstance(data, dict):
                     raise ValueError("expected event object")
             except (ValueError, TypeError, KeyError) as exc:
-                raise ValueError(f"{self.path} line {number}: {exc}") from exc
+                raise RunRecordError(f"{self.path} line {number}: {exc}") from exc
             yield kind, data
 
     def rows(self) -> Iterator[tuple[str, dict[str, Any]]]:
@@ -154,7 +163,7 @@ class RunJournal:
         with self.path.open("rb") as stream:
             first = next(self._rows(stream), None)
         if first is None:
-            raise ValueError(f"{self.path}: missing run header")
+            raise RunRecordError(f"{self.path}: missing run header")
         return first[1]
 
     def latest(self, kind: str) -> dict[str, Any]:
@@ -186,7 +195,7 @@ class RunJournal:
                 or not path.name.isdecimal()
                 or not (self.side / path).resolve().is_relative_to(self.side.resolve())
             ):
-                raise ValueError(f"{self.path}: invalid output reference {relative!r}")
+                raise RunRecordError(f"{self.path}: invalid output reference {relative!r}")
             result[key] = (self.side / path).read_bytes().decode("utf-8")
         return result
 

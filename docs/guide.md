@@ -1948,9 +1948,14 @@ Project settings can set `defaultTimeout`, `defaultMaxConcurrency`,
 and `agentPermissions` (which they can lower to `edits` or `read-only`).
 Both JSON files also accept the equivalent snake_case names.
 
-User settings can set `cleanupPeriodDays` (default 30). Both project files
-reject changes to it. Launch commands, `ATELIER_HARNESSES`, `ATELIER_ATELIER_DIR`,
-`ATELIER_GLOBAL_ATELIER_DIR`,
+See [Receive signed application errors](error-webhooks.md) to set up the separate error receiver and HTTPS relay.
+
+Use user settings for `cleanupPeriodDays` (default 30), `webhookSources`
+(source ID to configuration), `webhookSecrets` (source ID to secret),
+`errorPrProjects`, `deploymentTargets`, `meetingRepositories`, `draftCiDisabledRepositories`,
+`notificationRecipient`, `notificationProvider`, `dictariaAccount`, `dictariaUrl`, `dictariaAliases` and
+`runCaps` (run category to positive limit). Both project files reject changes
+to these keys. Launch commands, `ATELIER_HARNESSES`, `ATELIER_ATELIER_DIR`, `ATELIER_GLOBAL_ATELIER_DIR`,
 `ATELIER_API_TOKEN` and `ATELIER_SERVE_URL` require the shell environment.
 Atelier names each rejected file setting on stderr and omits its value.
 
@@ -2099,3 +2104,92 @@ The folder name replaces each non-alphanumeric character with a hyphen, so
 two projects can share a folder while retaining their separate identities.
 Encoded names longer than 160 UTF-8 bytes use a SHA-256 digest of the full
 project path. Existing unshortened folders remain readable.
+
+## Install the platform recipe bundle
+
+`atelier install builtin:platform --no-project` installs version 3 in the global
+conduit store. It includes `error-to-pr`,
+`idea-to-product`, `continuous-improvement` and `meetings-to-tasks`.
+Configure the Dictaria account and test a
+manual poll before enabling its five-minute schedule. [Meeting intake setup](meetings-to-tasks.md)
+For application errors, configure a signed webhook source. [Error-to-PR setup](error-webhooks.md#error-to-pr)
+
+A project's own conduit takes precedence. Reinstalling skips existing files.
+Use `atelier update platform --force` only when you intend to replace them.
+
+To share instructions between harnesses, add a `stepInstructions` entry to
+your user settings. Use the target project's resolved absolute path as the
+key and list the rule files relative to that directory.
+
+```json
+{
+  "stepInstructions": {
+    "project_rules": {"/absolute/path/to/repo": ["CLAUDE.md", "docs/review.md"]},
+    "skills": ["code-review"]
+  }
+}
+```
+
+Harness tasks receive the selected rule text for that project and the text
+of each selected `~/.claude/skills/<name>/SKILL.md`. A skill directory can
+be a symlink. Only user-level settings can select these files. An unreadable
+selection stops the conduit before its harness starts and names the file.
+
+### Idea to product
+
+For staging or production, see [approved Cloud Run deployments](product-deployment.md).
+
+Use an existing directory as the target path. Start the CLI in that directory,
+or select it as the dashboard run path. An empty directory works for a new
+product. Supply a phrase or paste a paragraph, spec or PRD as the `idea`.
+
+```sh
+cd /path/to/target
+atelier run idea-to-product --input 'idea=Build a reading list'
+atelier run idea-to-product --input-file idea=/path/to/prd.md --input 'test_command=make test'
+```
+
+Codex drafts a spec with observable acceptance criteria and a test command.
+An explicit `test_command` overrides the proposal. Review the spec and the
+effective command, then type `APPROVE` to allow edits and test execution.
+Declining ends the run. In a new project, the builder creates the test entry
+point named in the approved spec.
+
+Each of the three allowed attempts runs Claude Code as builder. A passing
+shell test starts the independent Codex review. Failed tests and requested
+changes go back to the next builder attempt. A passing test and an exact
+`PASS` from review release the final `atelier notify` step. Configure the
+sender below before running the recipe. Agent overrides for `attempt.build`
+and `attempt.review` must still name different harnesses.
+
+For fixed-workload experiments, see [Continuous improvement](continuous-improvement.md).
+
+## Send a WhatsApp run summary
+
+Set `notificationProvider` to `"twilio"` and `notificationRecipient` to the
+opted-in recipient's E.164 number in your user `~/.atelier/settings.json`.
+Save the following fields in `~/.atelier/twilio.json` and restrict this file
+to your OS user. The sender reads it locally when you invoke `atelier notify`.
+
+```json
+{
+  "account_sid": "AC...",
+  "auth_token": "...",
+  "sender": "+12025550111",
+  "content_sid": "HX..."
+}
+```
+
+Use a registered WhatsApp sender and an approved text template with three
+variables in order: run ID, short status and space-separated PR links (or
+`None`). After a run, use `atelier notify RUN_ID --link URL`. A trusted final
+shell step can use `atelier notify "$ATELIER_FLOW_ID" --status "drafts ready"
+--link "$OUTPUT_PUBLISH"`. Repeat `--link` for multiple PRs. Only canonical
+`https://github.com/OWNER/REPO/pull/NUMBER` links go into the summary. Local
+artifacts remain in run outputs.
+
+`atelier logs RUN_ID` shows each attempt. An accepted message has a Twilio
+message SID. The sender retries a rate limit once. If it persists, invoke
+`atelier notify RUN_ID` later to reuse the saved summary. A timeout, ambiguous
+provider response or interrupted submission leaves delivery uncertain.
+Check Twilio's message history before explicitly using `--retry-uncertain`.

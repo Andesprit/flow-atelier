@@ -64,8 +64,11 @@ from flow_atelier.services.executor.acp_registry import (
 )
 from flow_atelier.services.executor.bash import BashExecutor
 from flow_atelier.services.executor.conduit import ConduitExecutor
+from flow_atelier.services.executor.deployment import DeploymentExecutor
+from flow_atelier.services.executor.error_pr import ErrorPrExecutor
 from flow_atelier.services.executor.harness import AcpHarnessExecutor
 from flow_atelier.services.executor.hitl import HitlExecutor
+from flow_atelier.services.executor.meeting_task import MeetingTaskExecutor
 from flow_atelier.services.executor.prompt_sink import PromptSink, TerminalPromptSink
 from flow_atelier.services.package import (
     InstallReport,
@@ -80,6 +83,7 @@ from flow_atelier.services.package import (
     write_lockfile,
 )
 from flow_atelier.services.scheduler.store import ScheduleStore
+from flow_atelier.services.store.claims import EventClaims
 from flow_atelier.services.store.events import RunRecordError
 from flow_atelier.services.store.filesystem import FilesystemStore
 
@@ -132,6 +136,9 @@ class Atelier:
             "tool:bash": BashExecutor(),
             "tool:hitl": HitlExecutor(),
             "tool:conduit": ConduitExecutor(),
+            "tool:error-to-pr": ErrorPrExecutor(self.settings),
+            "tool:meeting-task": MeetingTaskExecutor(self.settings),
+            "tool:product-deployment": DeploymentExecutor(self.settings),
         }
         self._register_harnesses(sink)
         self.engine = Engine(
@@ -141,6 +148,7 @@ class Atelier:
             loop_history_entry_chars=self.settings.loop_history_entry_chars,
             usage_limit_max_wait=self.settings.usage_limit_max_wait,
             agent_permissions=self.settings.agent_permissions,
+            step_instructions=self.settings.step_instructions.render,
         )
         self.schedule_store = ScheduleStore(self.settings.global_atelier_dir)
 
@@ -174,7 +182,9 @@ class Atelier:
 
         :param sink: :class:`PromptSink` shared by every harness executor.
         """
-        def make(argv: list[str], env: dict[str, str] | None = None) -> AcpHarnessExecutor:
+        def make(
+            argv: list[str], env: dict[str, str] | None = None, *, native_codex: bool = False
+        ) -> AcpHarnessExecutor:
             """Build a harness executor for ``argv``.
 
             :param argv: the agent's launch command.
@@ -185,6 +195,7 @@ class Atelier:
                 sink=sink,
                 done_marker=self.settings.done_marker,
                 env=env,
+                native_codex=native_codex,
             )
 
         self.registry = load_registry(
@@ -192,11 +203,15 @@ class Atelier:
             self.settings.global_atelier_dir / INSTALL_DIRNAME,
         )
         for agent_id, spec in self.registry.items():
-            self.executors[f"harness:{agent_id}"] = make(list(spec.argv), spec.env)
+            self.executors[f"harness:{agent_id}"] = make(
+                list(spec.argv), spec.env, native_codex=spec.id == "codex-acp",
+            )
         for alias, target in LEGACY_HARNESS_ALIASES.items():
             spec = self.registry.get(target)
             if spec is not None:
-                self.executors[f"harness:{alias}"] = make(list(spec.argv), spec.env)
+                self.executors[f"harness:{alias}"] = make(
+                    list(spec.argv), spec.env, native_codex=spec.id == "codex-acp",
+                )
         launch_overrides = {
             "claude-code": self.settings.claude_launch_cmd,
             "codex": self.settings.codex_launch_cmd,
@@ -469,6 +484,8 @@ class Atelier:
         stoppable: bool = False,
         agents: Mapping[str, str] | None = None,
         worktrees: Sequence[str] | None = None,
+        *,
+        flow_id: str | None = None,
     ) -> str:
         """Start a new flow for the named conduit.
 
@@ -500,6 +517,7 @@ class Atelier:
             current HEAD before any task starts. The mapping is recorded on the
             flow so a later resume continues in the same directories. Omit it
             and every task shares one working directory, as before.
+        :param flow_id: run ID reserved by a durable event claim.
         :returns: the newly created flow id
         :raises BindingError: a selection names no reachable harness task of
             the conduit, or an agent nothing is registered for
@@ -520,7 +538,8 @@ class Atelier:
         self.require_agent_ready(agents)
         # The destination is named after the flow, so the id has to exist
         # before the checkouts do. The engine takes it as given.
-        flow_id = new_flow_id(name) if worktrees else None
+        if worktrees and flow_id is None:
+            flow_id = new_flow_id(name)
         spaces = (
             self._new_workspaces(conduit, list(worktrees), flow_id, wd, inputs)
             if worktrees
@@ -539,6 +558,17 @@ class Atelier:
             task_agents=agents,
             workspaces=spaces,
         )
+
+    def _replay_conduit(self, flow_id: str, name: str) -> Conduit:
+        if name == "meeting-task":
+            task_id = self.store.read_input(flow_id).get("task_id")
+            if isinstance(task_id, str):
+                queue = EventClaims(self.settings.global_atelier_dir, "meeting-tasks")
+                claim = queue.lookup(task_id)
+                if claim and claim.run_id == flow_id:
+                    # The queue owns the fixed sandbox recipe and this assignment's stable run ID.
+                    raise ValueError("Retry this claimed task by running meetings-to-tasks")
+        return self.store.read_conduit(name)
 
     async def resume_flow(
         self,
@@ -604,7 +634,7 @@ class Atelier:
                 "this host; refusing to resume to avoid a double-run"
             )
         conduit_name, _, _ = parse_flow_id(flow_id)
-        conduit = self.store.read_conduit(conduit_name)
+        conduit = self._replay_conduit(flow_id, conduit_name)
         requested = normalize_bindings(dict(agents or {}))
         # Every gate below asks about the work this resume will hand to an
         # executor. A completed task is not re-run: its agent is a record of who
@@ -792,7 +822,7 @@ class Atelier:
         """
         self = self.for_flow(flow_id)
         conduit_name, _, _ = parse_flow_id(flow_id)
-        conduit = self.store.read_conduit(conduit_name)
+        conduit = self._replay_conduit(flow_id, conduit_name)
         inputs = {**self.store.read_input(flow_id), **(overrides or {})}
         prior = self.store.read_progress(flow_id)
         conduit, effective = self._inherit_agents(
@@ -989,9 +1019,15 @@ class Atelier:
         :param force: overwrite colliding conduits.
         :returns: an :class:`InstallReport` of what was installed/skipped.
         """
-        src = resolve_source(source)
-        cache_root = self.settings.global_atelier_dir / "cache"
-        repo_dir = fetch_source(src, cache_root, ref)
+        if source == "builtin:platform":
+            if ref:
+                raise PackageError("--ref applies only to git packages")
+            repo_dir = Path(__file__).resolve().parents[1] / "packages" / "platform"
+        else:
+            src = resolve_source(source)
+            cache_root = self.settings.global_atelier_dir / "cache"
+            repo_dir = fetch_source(src, cache_root, ref)
+            source = src.location
         manifest = read_package(repo_dir)
         conduit_base = (
             self.settings.atelier_dir if project else self.settings.global_atelier_dir
@@ -1002,13 +1038,20 @@ class Atelier:
             conduit_root=conduit_root,
             scope="project" if project else "global", force=force,
         )
+        previous = read_lockfile(self._lockfile_path()).get(manifest.name, {})
+        owned = set(report.conduits_installed)
+        if (previous.get("source") == source and previous.get("scope") == report.scope
+                and (not project or previous.get("root") == str(conduit_root.resolve()))):
+            owned.update(set(report.conduits_skipped).intersection(previous.get("conduits", [])))
         write_lockfile(
             self._lockfile_path(),
             manifest.name,
             {
-                "source": src.location,
+                "source": source,
+                "version": manifest.version,
+                "root": str(conduit_root.resolve()),
                 "ref": ref or "",
-                "conduits": report.conduits_installed,
+                "conduits": sorted(owned),
                 "scope": report.scope,
             },
         )
@@ -1037,8 +1080,8 @@ class Atelier:
             project=entry.get("scope") == "project",
             force=force,
         )
-        # install_package wrote the lockfile with only what it (re)installed;
-        # union with prior ownership so skipped-but-owned items aren't dropped.
+        # Updates retain ownership of previously installed conduits even when
+        # the newer manifest omits them, so uninstall can still clean them up.
         merged_conduits = sorted(
             set(entry.get("conduits", [])) | set(report.conduits_installed)
         )

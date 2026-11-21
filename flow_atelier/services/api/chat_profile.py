@@ -8,11 +8,10 @@ import shutil
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 
 from flow_atelier.services.api.chat_cli import sandbox
 from flow_atelier.services.executor.acp_registry import INSTALL_DIRNAME, installed_executable
-from flow_atelier.services.store.events import file_lock
+from flow_atelier.services.executor.login_files import replace_private, write_back_login
 
 PACKAGES = ("@agentclientprotocol/claude-agent-acp@0.62.0", "@agentclientprotocol/codex-acp@1.1.7")
 
@@ -38,13 +37,6 @@ def check_login(executor):
         raise ValueError("Set CLAUDE_CODE_OAUTH_TOKEN from claude setup-token before starting chat")
 
 
-def _replace_private(path: Path, data: bytes):
-    with NamedTemporaryFile(dir=path.parent, delete_on_close=False) as tmp:
-        tmp.write(data)
-        tmp.close()
-        os.replace(tmp.name, path)
-
-
 @contextmanager
 def _login(source: Path | None, destination: Path):
     if destination.parent.resolve() != destination.parent:
@@ -54,9 +46,9 @@ def _login(source: Path | None, destination: Path):
         destination.unlink(missing_ok=True)
         yield
         return
-    source = source.resolve()
-    original = source.read_bytes()
-    _replace_private(destination, original)
+    real = source.resolve()
+    original = real.read_bytes()
+    replace_private(destination, original)
     try:
         yield
     finally:
@@ -66,17 +58,7 @@ def _login(source: Path | None, destination: Path):
             and destination.is_file()
             and destination.stat().st_nlink == 1
         ):
-            refreshed = destination.read_bytes()
-            if refreshed != original:
-                if not isinstance(json.loads(refreshed), dict):
-                    raise ValueError("Invalid refreshed adapter credentials")
-                with file_lock(source.with_suffix(".atelier.lock"), wait=True):
-                    if (
-                        source.is_file()
-                        and source.resolve() == source
-                        and source.read_bytes() == original
-                    ):
-                        _replace_private(source, refreshed)
+            write_back_login(source, real, original, destination.read_bytes())
 
 
 @contextmanager
@@ -131,7 +113,7 @@ def launch(executor, workspace: str):
             "sandbox_mode": "read-only",
             "mcp_servers": {},
         }
-        _replace_private(
+        replace_private(
             home / "config.toml",
             (
                 'sandbox_mode = "read-only"\nweb_search = "disabled"\n[features]\n'

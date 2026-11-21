@@ -838,7 +838,7 @@ export function HitlSection({
                 >
                   {f.name}
                 </label>
-                <div className="font-mono text-label text-muted-foreground">
+                <div className="whitespace-pre-wrap break-words font-mono text-label text-muted-foreground">
                   {f.description}
                 </div>
                 <input

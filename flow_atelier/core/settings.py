@@ -6,17 +6,20 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, PositiveInt, field_validator
+from pydantic import BaseModel, Field, PositiveInt, SecretStr, field_validator
 from pydantic.alias_generators import to_snake
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
     DotEnvSettingsSource,
+    EnvSettingsSource,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
 
+from flow_atelier.core.step_instructions import StepInstructions
 from flow_atelier.schemas.conduit import HARNESS_NAME_RE, AgentPermissions
+from flow_atelier.schemas.deployment import DeploymentTarget
 
 # Settings that decide what Atelier executes, where it looks for shared
 # conduits, or which credentials and servers it uses. A `.env` file in the
@@ -34,6 +37,13 @@ ENVIRONMENT_ONLY = frozenset({
     "global_atelier_dir",
     "api_token",
     "serve_url",
+})
+
+USER_FILE_ONLY = frozenset({
+    "webhook_sources", "webhook_secrets", "run_caps",
+    "dictaria_account", "dictaria_aliases", "dictaria_url",
+    "meeting_repositories", "draft_ci_disabled_repositories",
+    "notification_recipient", "notification_provider", "error_pr_projects", "deployment_targets",
 })
 
 # New fields are user-only until explicitly allowed in project files.
@@ -104,6 +114,15 @@ class _FileSettings(PydanticBaseSettingsSource):
         return values
 
 
+class ErrorPrProject(BaseModel):
+    """Trusted repository destination and test commands for one application."""
+
+    repository: str = Field(pattern=r"^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$")
+    test_file: str
+    regression: list[str] = Field(min_length=1)
+    suite: list[str] = Field(min_length=1)
+
+
 class AtelierSettings(BaseSettings):
     """Configuration shared by the CLI, server and scheduler."""
 
@@ -126,6 +145,20 @@ class AtelierSettings(BaseSettings):
     default_timeout: PositiveInt = 3600
     default_max_concurrency: PositiveInt = 3
     cleanup_period_days: int = Field(default=30, ge=0)
+    dictaria_account: str | None = None
+    dictaria_aliases: list[str] = Field(default_factory=list)
+    dictaria_url: str | None = None
+    draft_ci_disabled_repositories: list[str] = Field(default_factory=list)
+    meeting_repositories: dict[str, str] = Field(default_factory=dict)
+    webhook_sources: dict[str, dict[str, str]] = Field(
+        default_factory=dict, description="Per-source project and conduit for signed errors.",
+    )
+    webhook_secrets: dict[str, SecretStr] = Field(
+        default_factory=dict, description="Per-source HMAC keys from user settings.",
+    )
+    run_caps: dict[str, PositiveInt] = Field(
+        default_factory=dict, description="Machine-wide concurrent event runs by category.",
+    )
     loop_history_limit: int = Field(
         default=10,
         description=(
@@ -205,6 +238,9 @@ class AtelierSettings(BaseSettings):
             '"gemini-acp"]}\'. A name matching a bundled harness overrides it.'
         ),
     )
+    error_pr_projects: dict[str, ErrorPrProject] = Field(default_factory=dict)
+    deployment_targets: dict[str, dict[str, DeploymentTarget]] = Field(default_factory=dict)
+    step_instructions: StepInstructions = Field(default_factory=StepInstructions)
     done_marker: str = "[ATELIER_DONE]"
     api_token: str = Field(
         # Empty, never a literal: a shipped default token is a published
@@ -226,13 +262,19 @@ class AtelierSettings(BaseSettings):
             "the run; set this when you serve on another host or port."
         ),
     )
+    notification_recipient: str | None = Field(
+        default=None, description="Fixed WhatsApp recipient in E.164 format."
+    )
+    notification_provider: str | None = Field(
+        default=None, description="Set to twilio to enable the local WhatsApp sender."
+    )
 
     @classmethod
     def settings_customise_sources(
         cls,
         settings_cls: type[BaseSettings],
         init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
+        env_settings: EnvSettingsSource,
         dotenv_settings: DotEnvSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
@@ -245,11 +287,19 @@ class AtelierSettings(BaseSettings):
         :param file_secret_settings: secrets files.
         :returns: the sources, highest priority first.
         """
+        # Drop user-file-only values before the environment source decodes its JSON.
+        for key in USER_FILE_ONLY:
+            name = env_settings.env_prefix + key
+            env_settings.env_vars.pop(name if env_settings.case_sensitive else name.lower(), None)
+
+        def other_file_secrets() -> dict[str, Any]:
+            return {k: v for k, v in file_secret_settings().items() if k not in USER_FILE_ONLY}
+
         return (
             init_settings,
             env_settings,
             _FileSettings(dotenv_settings),
-            file_secret_settings,
+            other_file_secrets,
         )
 
     @field_validator("harnesses")

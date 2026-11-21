@@ -300,11 +300,20 @@ async def test_reconnected_codex_must_report_read_only(tmp_path, monkeypatch, re
         await session.close()
 
 
-@pytest.mark.parametrize("case", ["unchanged", "refreshed", "concurrent", "symlink"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "unchanged", "refreshed", "concurrent", "symlink", "logout",
+        pytest.param(
+            "product", marks=pytest.mark.skipif(os.name != "posix", reason="POSIX product sandbox")
+        ),
+    ],
+)
 def test_chat_credential_refresh(tmp_path, monkeypatch, case):
     from types import SimpleNamespace
 
     from flow_atelier.services.api import chat_profile
+    from flow_atelier.services.executor.cloud_sandbox import product_login
 
     monkeypatch.setattr(chat_profile, "sandbox", lambda *_args, **_kw: [])
     monkeypatch.setattr(chat_profile.shutil, "which", lambda _: sys.executable)
@@ -327,6 +336,15 @@ def test_chat_credential_refresh(tmp_path, monkeypatch, case):
             scratch.write_text(fresh)
         if case == "concurrent":
             auth.write_text('{"refresh_token":"another-login"}')
+        elif case == "product":
+            product = tmp_path / "product"
+            product.mkdir()
+            env = {"CODEX_HOME": str(auth.parent)}
+            with product_login("harness:codex", ["codex-acp"], env, product):
+                (product / ".codex/auth.json").write_text('{"refresh_token":"another-login"}')
+        elif case == "logout":
+            auth.unlink()
+            auth.parent.rmdir()
     if case == "refreshed":
         with chat_profile.launch(
             SimpleNamespace(launch_cmd=["/adapter/.bin/codex-acp"]), str(root)
@@ -335,8 +353,10 @@ def test_chat_credential_refresh(tmp_path, monkeypatch, case):
         assert auth.read_text() == fresh
         if os.name == "posix":
             assert auth.stat().st_mode & 0o077 == 0
-    elif case == "concurrent":
+    elif case in {"concurrent", "product"}:
         assert json.loads(auth.read_text())["refresh_token"] == "another-login"
+    elif case == "logout":
+        assert not auth.parent.exists()
     else:
         assert auth.read_text() == stale and auth.stat().st_mtime_ns == original.st_mtime_ns
 

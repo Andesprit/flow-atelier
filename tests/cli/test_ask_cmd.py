@@ -311,12 +311,12 @@ def test_ask_can_cancel_a_pending_turn(machine_ask, tmp_path):
     assert machine_ask(flow_id, "--answer", "here", "--request-id", first["request_id"], success=False)["code"] == "no_pending_question"
 
 
-@pytest.mark.parametrize(("turn", "message"), [
-    ({"delay_before": 5}, "timeout"),
-    ({"usage_limit": {"data": {"errorKind": "rate_limit"}}}, "usage limit"),
+@pytest.mark.parametrize(("turn", "timeout", "message"), [
+    ({"delay_before": 5}, "1", "timeout"),
+    ({"usage_limit": {"data": {"errorKind": "rate_limit"}}}, "10", "usage limit"),
 ])
-def test_machine_ask_bounds_active_execution(machine_ask, turn, message):
-    error = machine_ask("Help", "--path", ".", "--harness", "fake", "--timeout", "1",
+def test_machine_ask_bounds_active_execution(machine_ask, turn, timeout, message):
+    error = machine_ask("Help", "--path", ".", "--harness", "fake", "--timeout", timeout,
                         script={"turns": [turn]}, success=False)
     assert message in error["message"]
     assert machine_ask(error["flow_id"])["status"] == "failed"

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from flow_atelier.modules.liveness import is_crashed
 from flow_atelier.schemas.progress import FlowStatus, Progress
+from flow_atelier.services.store.claims import expire_claim
 from flow_atelier.services.store.events import RunJournal, RunRecordError, file_lock
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ def _remove_expired(path: Path) -> None:
     journal.header()
     if journal.side.is_symlink() or path.with_suffix(".jsonl").exists():
         raise RunRecordError(f"conflicting expired record: {path}")
+    expire_claim(path.parents[2], path.stem)
     if journal.side.exists():
         shutil.rmtree(journal.side)
     path.unlink()
@@ -58,7 +60,7 @@ def _expire_tree(tree: list[RunJournal], now: datetime, days: int) -> None:
             if journal.side.is_symlink():
                 raise RunRecordError(f"linked run directory: {journal.side}")
             journal.side.mkdir(exist_ok=True)
-            for name in (".writer.lock", ".ask.lock"):
+            for name in (".writer.lock", ".ask.lock", ".notify.lock"):
                 path = journal.side / name
                 if path.is_symlink() or (path.exists() and not path.is_file()):
                     raise RunRecordError(f"invalid run lease: {path}")
@@ -89,10 +91,22 @@ def cleanup_runs(home: Path, days: int) -> None:
     """Keep a whole tree until every member has finished outside the retention window."""
     if days < 0:
         raise ValueError("cleanup period must be non-negative")
+    now = _now()
+    meetings = home / "meetings"
+    if meetings.is_dir() and not meetings.is_symlink():
+        for account in meetings.iterdir():
+            if account.is_symlink() or not account.is_dir():
+                continue
+            with file_lock(account / ".poll.lock", wait=False) as acquired:
+                if acquired:
+                    for raw in account.glob("*/meeting.json"):
+                        if raw.parent.is_symlink() or raw.is_symlink() or not raw.is_file():
+                            continue
+                        if now.timestamp() - raw.stat().st_mtime >= days * DAY_SECONDS:
+                            raw.unlink()
     root = home / "projects"
     if root.is_symlink() or not root.is_dir():
         return
-    now = _now()
     with cleanup_lock(root) as acquired:
         if not acquired:
             return

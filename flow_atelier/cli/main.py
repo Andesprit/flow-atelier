@@ -227,6 +227,9 @@ schedule_app = AtelierTyper(
 )
 app.add_typer(schedule_app, name="schedule")
 
+errors_app = AtelierTyper(help="Manage incoming error reports.", no_args_is_help=True)
+app.add_typer(errors_app, name="errors")
+
 migrate_app = AtelierTyper(help="Migrate legacy project records.", no_args_is_help=True)
 app.add_typer(migrate_app, name="migrate")
 
@@ -254,16 +257,21 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     compose,
     create,
     diagnose,
+    errors,
+    experiment,
     harness,
     history,
     init,
     logs,
+    meetings,
     migrate,
+    notify,
     outputs,
     plan,
     recipe,
     rm,
     run,
+    runner,
     schedule,
     scheduler,
     schema,

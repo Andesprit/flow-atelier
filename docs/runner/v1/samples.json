@@ -1,0 +1,43 @@
+{
+  "Pair": {},
+  "Identity": {
+    "id": "11111111111111111111111111111111",
+    "token": "example-only-runner-token"
+  },
+  "Poll": {
+    "folders": [
+      {
+        "id": "22222222222222222222222222222222",
+        "label": "Manuals",
+        "conduits": [
+          "build"
+        ]
+      }
+    ],
+    "claim": true
+  },
+  "Dispatch": {
+    "job": {
+      "id": "33333333333333333333333333333333",
+      "folder": "22222222222222222222222222222222",
+      "conduit": "build"
+    },
+    "after": 0
+  },
+  "Result": {
+    "job": "33333333333333333333333333333333",
+    "status": "completed"
+  },
+  "Ack": {},
+  "Records": {
+    "records": [
+      {
+        "sequence": 1,
+        "job": "33333333333333333333333333333333",
+        "folder": "22222222222222222222222222222222",
+        "kind": "event",
+        "status": "started"
+      }
+    ]
+  }
+}

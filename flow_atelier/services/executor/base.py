@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,14 +19,33 @@ from flow_atelier.services.store.base import StoreBase
 # would let a step, or an agent it delegates to, drive the local server as
 # the person who started it.
 PRIVATE_ENV = frozenset({"ATELIER_API_TOKEN"})
+PUBLISHER_ENV = frozenset({
+    "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+    "GH_CONFIG_DIR", "SSH_AUTH_SOCK", "SSH_ASKPASS", "GIT_ASKPASS", "GIT_SSH_COMMAND",
+})
+_dropped_credential_env: ContextVar[frozenset[str]] = ContextVar(
+    "dropped_credential_env", default=frozenset(),
+)
 
 
-def child_environ() -> dict[str, str]:
+@contextmanager
+def drop_credential_env(*names: str) -> Iterator[None]:
+    """Exclude named credentials from child environments in this async context."""
+    token = _dropped_credential_env.set(_dropped_credential_env.get().union(names))
+    try:
+        yield
+    finally:
+        _dropped_credential_env.reset(token)
+
+
+def child_environ(source: Mapping[str, str] | None = None) -> dict[str, str]:
     """Return the environment an agent or shell step inherits.
 
-    :returns: this process's environment without :data:`PRIVATE_ENV`.
+    :returns: this process's environment minus private and context-excluded credentials.
     """
-    return {k: v for k, v in os.environ.items() if k not in PRIVATE_ENV}
+    excluded = PRIVATE_ENV | _dropped_credential_env.get()
+    source = os.environ if source is None else source
+    return {k: v for k, v in source.items() if k not in excluded}
 
 
 @dataclass

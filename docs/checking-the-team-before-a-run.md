@@ -30,6 +30,26 @@ What a passing probe proves is startup, and only startup. It is not a
 promise about authentication at prompt time, about quota, about your access
 to a particular model, or about the quality of what comes back.
 
+### Reading authoring warnings
+
+Suppose one agent outlines a memo and a second task on the same agent turns
+that outline into the memo. If the memo is the one checkable result, put
+both instructions and the required skills in one task. Keep a handoff when
+it buys clean context, parallel work, an independent test or review, or a
+change of permissions or agent. The checker flags simple serial handoffs so
+you can decide whether the extra session earns its cost.
+
+In a loop with an agent and a shell check, `until: output.match(PASS)`
+can match any child’s output. An agent quoting “PASS” can end the loop if
+the shell reports failure with `make test || echo FAIL`, because `echo`
+returns success. Use `make test && echo PASS` to preserve a failing exit
+status. Atelier skips the predicate on a failed attempt. Set
+`on_exhaust: fail` when downstream work requires a passing check.
+
+Warnings appear under the conduit in the terminal and in its optional
+`warnings` array with `--json`. They leave the check’s exit status alone.
+Add `--recursive` to inspect recipes called by name.
+
 ## Before you start
 
 Two agents you are already logged into. The guide uses `claude-code` and

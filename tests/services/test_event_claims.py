@@ -1,10 +1,13 @@
 import asyncio
 import multiprocessing
+from pathlib import Path
 
 import pytest
 
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.services.store.claims import ClaimQueueFull, EventClaims
+from flow_atelier.services.store.events import project_folders
+from flow_atelier.services.store.filesystem import FilesystemStore
 from flow_atelier.services.store.retention import cleanup_runs
 
 
@@ -29,6 +32,29 @@ def test_two_processes_claim_one_id(tmp_path):
     first, second = results.get(timeout=1), results.get(timeout=1)
     assert first == second
     assert first.status == "queued"
+
+
+def test_restart_recovers_old_folder_alongside_unreadable_claim(tmp_path, caplog):
+    home = tmp_path / "home"
+    project = Path(tmp_path.anchor) / ("p" * 85) / ("q" * 85)
+    claims = EventClaims(home, "errors")
+    store = FilesystemStore(tmp_path / ".atelier", home)
+    for key in ("broken", "previous"):
+        run = claims.claim(key, project, "demo", {}).run_id
+        claims.start_reserved(run)
+        store.create_flow("demo", {}, project=project, flow_id=run)
+        journal = store.journal(run)
+        if key == "broken":
+            journal.path.write_bytes(b"bad header\n")
+        else:
+            old = journal.path.parent.parent / project_folders(str(project))[1]
+            old.mkdir()
+            journal.path.rename(old / journal.path.name)
+
+    claims._recover()
+    assert claims.lookup("previous").status == "interrupted"
+    assert claims.lookup("broken").run_id in caplog.text
+    assert claims.take() is None
 
 
 async def test_restart_drains_bounded_queue_preserving_ids(tmp_path):

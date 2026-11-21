@@ -1233,8 +1233,9 @@ class Atelier:
                 status = display_status(progress)
                 started_at = progress.started_at
                 finished_at = progress.finished_at
-            except RunRecordError:
-                raise
+            except RunRecordError as exc:
+                self.store.warn_record(flow_id, exc)
+                continue
             except (FileNotFoundError, ValueError):
                 status = "unknown"
                 started_at = None

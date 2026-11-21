@@ -160,12 +160,14 @@ def test_rejected_settings_keep_trusted_values_and_report_sources(
     project = tmp_path / ".atelier/settings.json"
     project.parent.mkdir()
     trusted = {
-        "cleanupPeriodDays": 45, "webhookSources": {"app": {"project": "/app"}},
+        "cleanupPeriodDays": 45, "agentPermissions": "read-only",
+        "webhookSources": {"app": {"project": "/app"}},
         "webhookSecrets": {"app": "private-value"}, "notificationRecipient": "+123",
         "notificationProvider": "twilio", "dictariaAccount": "my-account",
-        "runCaps": {"errors": 2}, "agentPermissions": "read-only",
+        "runCaps": {"errors": 2},
     }
-    shell_only = {"apiToken": "private-value", "claudeLaunchCmd": ["ignored-command"]}
+    shell_only = {"apiToken": "private-value", "claudeLaunchCmd": ["ignored-command"],
+                  "atelierDir": "private-value"}
     user.write_text(json.dumps(trusted | shell_only))
     refused = {**dict.fromkeys(trusted | shell_only, "private-value"),
                "cleanupPeriodDays": 0, "agentPermissions": "edits"}
@@ -177,6 +179,7 @@ def test_rejected_settings_keep_trusted_values_and_report_sources(
     monkeypatch.setenv("ATELIER_CLAUDE_LAUNCH_CMD", '["trusted-command"]')
     s = AtelierSettings()
     assert s.cleanup_period_days == 45
+    assert s.atelier_dir == tmp_path / ".atelier"
     assert s.webhook_sources == trusted["webhookSources"]
     assert s.webhook_secrets["app"].get_secret_value() == "private-value"
     assert s.notification_recipient == "+123"

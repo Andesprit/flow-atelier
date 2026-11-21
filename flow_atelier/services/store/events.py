@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import json
 import os
+import shutil
 import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,8 +25,54 @@ class AmbiguousFlowId(RunRecordError):
     """Multiple records claim the same run ID."""
 
 
+def project_folders(recorded: str) -> tuple[str, ...]:
+    """Valid folder names for an already resolved project recorded in a journal."""
+    encoded = "".join(c if c.isalnum() else "-" for c in recorded)
+    if len(encoded.encode("utf-8")) <= 160:
+        return (encoded,)
+    digest = hashlib.sha256(recorded.encode("utf-8")).hexdigest()
+    return (f"project-{digest}", encoded)
+
+
 def project_folder(project: Path) -> str:
-    return "".join(c if c.isalnum() else "-" for c in str(project.resolve()))
+    return project_folders(str(project.resolve()))[0]
+
+
+def _windows_lock(fd: int, *, wait: bool) -> None:
+    import msvcrt
+
+    while True:
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                raise
+            if not wait:
+                raise BlockingIOError(str(exc)) from exc
+            time.sleep(0.05)
+
+
+def publish_file(source: Path, destination: Path) -> None:
+    """Publish once, including on filesystems without hard links."""
+    try:
+        os.link(source, destination)
+    except OSError as exc:
+        if exc.errno not in (
+            errno.ENOTSUP,
+            errno.EOPNOTSUPP,
+            errno.ENOSYS,
+            errno.EXDEV,
+            errno.EPERM,
+        ) and getattr(exc, "winerror", None) not in (1, 50):
+            raise
+        with source.open("rb") as src, destination.open("xb") as dst:
+            try:
+                shutil.copyfileobj(src, dst)
+            except BaseException:
+                dst.close()
+                destination.unlink()
+                raise
 
 
 @contextmanager
@@ -31,10 +81,8 @@ def file_lock(path: Path, *, wait: bool) -> Iterator[bool]:
     with path.open("a+b") as lock:
         try:
             if os.name == "nt":
-                import msvcrt
-
                 lock.seek(0)
-                msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK, 1)
+                _windows_lock(lock.fileno(), wait=wait)
             else:
                 import fcntl
 
@@ -80,7 +128,7 @@ class RunJournal:
         with tempfile.NamedTemporaryFile(dir=self.path.parent, delete_on_close=False) as tmp:
             tmp.write(_line("created", header))
             tmp.close()
-            os.link(tmp.name, self.path)
+            publish_file(Path(tmp.name), self.path)
 
     def append(self, kind: str, data: dict[str, Any]) -> None:
         self.side.mkdir(exist_ok=True)
@@ -142,7 +190,11 @@ class RunJournal:
                         or data["flow_id"] != self.path.stem
                         or data["conduit"] != parse_flow_id(self.path.stem)[0]
                         or not Path(data["project"]).is_absolute()
-                        or project_folder(Path(data["project"])) != self.path.parent.name
+                        or self.path.parent.name not in project_folders(data["project"])
+                        or not (
+                            data["parent_flow_id"] is None
+                            or isinstance(data["parent_flow_id"], str)
+                        )
                         or not Path(data["store"]).is_absolute()
                         or data["steps"] != "steps.jsonl"
                     ):

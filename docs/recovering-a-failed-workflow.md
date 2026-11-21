@@ -179,10 +179,10 @@ agent for the unfinished work. The child's raw traceback remains available in
   you edited or renamed tasks since the run, the shape that runs is the
   current one. The report says so, and names any task the file gained or lost.
 - **That a run is safe to resume, when it might still be going.** A saved
-  `running` status is only called *crashed* when the runner process is
-  provably gone on this machine. On another host, with no pid recorded, or
-  with a pid that cannot be probed, the state stays uncertain and no resume is
-  recommended — resuming a run that is in fact alive runs the work twice.
+  `running` status shows as *crashed* when the local runner PID has exited or
+  its last heartbeat is at least two minutes old. A stalled runner can recover
+  after waking. Resume requires exclusive ownership of the writer lease. Older
+  records without heartbeats rely on the local PID check.
 - **What a stopped run would do next.** Resume does not take a stopped or
   completed flow. A stopped run is pointed at `atelier run --again <id>`, which
   starts a fresh run of the same recipe and inputs; a completed run is told

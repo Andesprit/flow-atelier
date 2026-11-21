@@ -24,12 +24,14 @@ import socket
 import time
 import uuid
 from collections.abc import Iterator
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from flow_atelier.modules.liveness import is_runner_alive
 from flow_atelier.schemas.conduit import (
     CONDUIT_NAME_RE,
     Conduit,
@@ -43,8 +45,10 @@ from flow_atelier.services.store.base import ConduitSource, StoreBase
 from flow_atelier.services.store.events import (
     AmbiguousFlowId,
     RunJournal,
+    RunRecordError,
     file_lock,
     project_folder,
+    project_folders,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,6 +115,9 @@ class FilesystemStore(StoreBase):
         # entries are tiny and bounded by process lifetime, so that's fine.
         self._log_locks: dict[str, asyncio.Lock] = {}
         self._flow_paths: dict[str, Path] = {}
+        self._journal_paths: dict[str, tuple[Path, ...]] = {}
+        self._bucket_versions: dict[Path, int] = {}
+        self._warned_records: set[str] = set()
 
     # ------------------------------------------------------------------ paths
 
@@ -185,26 +192,55 @@ class FilesystemStore(StoreBase):
         return conduit_dir / "conduit.yaml" if conduit_dir is not None else None
 
     def _journals(
-        self, project: Path | None = None, pattern: str = "*.jsonl"
+        self, projects: tuple[Path, ...] = (), pattern: str = "*.jsonl"
     ) -> Iterator[tuple[RunJournal, dict[str, Any]]]:
         if self.global_dir is None:
             return
         root = self.global_dir / "projects"
-        paths = (root.glob(f"*/{pattern}") if project is None
-                 else (root / project_folder(project)).glob(pattern))
-        for path in paths:
-            journal = RunJournal(path)
-            try:
-                header = journal.header()
-            except FileNotFoundError:
-                continue  # Cleanup can retire a journal after glob discovered it.
-            if project is None or header["project"] == str(project.resolve()):
-                yield journal, header
+        recorded = {str(path) for path in projects}
+        names = {name for path in recorded for name in project_folders(path)}
+        for folder in root.glob("*/"):
+            if names and folder.name not in names:
+                continue
+            for path in folder.glob(pattern):
+                journal = RunJournal(path)
+                try:
+                    header = journal.header()
+                except FileNotFoundError:
+                    continue
+                except (RunRecordError, OSError) as exc:
+                    self.warn_record(str(path), exc)
+                    continue
+                if not recorded or header["project"] in recorded:
+                    yield journal, header
+
+    def warn_record(self, record: str, error: Exception) -> None:
+        if record not in self._warned_records:
+            self._warned_records.add(record)
+            logger.warning("Skipping unreadable run %s: %s", record, error)
 
     def journal(self, flow_id: str) -> RunJournal | None:
         if not self._safe_flow_id(flow_id):
             raise FileNotFoundError(f"flow not found: {flow_id}")
-        matches = [j for j, _ in self._journals(pattern=f"{flow_id}.jsonl")]
+        if self.global_dir is None:
+            return None
+        # New, moved or retired journals can change which IDs are unique.
+        versions = {}
+        for folder in (self.global_dir / "projects").glob("*/"):
+            try:
+                versions[folder] = folder.stat().st_mtime_ns
+            except FileNotFoundError:
+                continue
+        if versions != self._bucket_versions:
+            self._journal_paths.clear()
+            self._bucket_versions = versions
+        matches = self._journal_paths.get(flow_id)
+        if matches is None:
+            matches = tuple(
+                path for folder in versions if (path := folder / f"{flow_id}.jsonl").is_file()
+            )
+            if matches:
+                self._journal_paths[flow_id] = matches
         if matches and (self.base_dir / "flows").is_dir():
             try:
                 self._flow_dir(flow_id)
@@ -214,7 +250,15 @@ class FilesystemStore(StoreBase):
                 raise AmbiguousFlowId(f"ambiguous flow id: {flow_id} has local and global records")
         if len(matches) > 1:
             raise AmbiguousFlowId(f"ambiguous flow id: {flow_id}")
-        return matches[0] if matches else None
+        if not matches:
+            return None
+        journal = RunJournal(matches[0])
+        try:
+            journal.header()
+        except FileNotFoundError:
+            self._journal_paths.pop(flow_id, None)
+            return None
+        return journal
 
     def flow_files_signature(self, flow_id: str) -> tuple[tuple[int, int] | None, ...]:
         """Return change tokens for progress, logs, steps and child runs."""
@@ -245,16 +289,17 @@ class FilesystemStore(StoreBase):
     ) -> dict[str, Path]:
         """Scan global headers and this store's pre-migration top-level records."""
         found: dict[str, Path] = {}
-        for journal, header in self._journals(project):
+        ambiguous = set()
+        targets = (Path(os.path.abspath(project)), project.resolve()) if project is not None else ()
+        for journal, header in self._journals(targets):
             if header["parent_flow_id"] or (conduit_name and header["conduit"] != conduit_name):
                 continue
             run = journal.path.stem
             if run in found:
-                raise AmbiguousFlowId(f"ambiguous flow id: {run}")
+                ambiguous.add(run)
             found[run] = Path(header["project"])
         legacy = FilesystemStore(self.base_dir)
         origin = self.base_dir.resolve().parent
-        target = project.resolve() if project is not None else None
         for run in legacy.list_flows(conduit_name):
             directory = origin
             try:
@@ -264,10 +309,13 @@ class FilesystemStore(StoreBase):
             else:
                 if progress.run_path:
                     directory = (origin / progress.run_path).resolve()
-            if target is None or target == directory:
+            if not targets or directory in targets:
                 if run in found:
-                    raise AmbiguousFlowId(f"ambiguous flow id: {run}")
+                    ambiguous.add(run)
                 found[run] = directory
+        for run in ambiguous:
+            found.pop(run, None)
+            self.warn_record(run, AmbiguousFlowId(f"ambiguous flow id: {run}"))
         return dict(sorted(found.items()))
 
     def list_project_flows(self, project: Path | None = None) -> list[str]:
@@ -279,8 +327,10 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :raises FileNotFoundError: if the id is malformed or no such flow exists
         """
-        if flow_id in self._flow_paths:
-            return self._flow_paths[flow_id]
+        if cached := self._flow_paths.get(flow_id):
+            if cached.is_dir():
+                return cached
+            self._flow_paths.pop(flow_id)
         # Rejected as "not found" rather than as a distinct error: to every
         # caller a malformed id names no flow, and the routes already map
         # FileNotFoundError to a 404. This also keeps the rglob below from
@@ -636,28 +686,42 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :returns: True if deleted, False if it didn't exist
         """
-        if journal := self.journal(flow_id):
-            for child in self.list_child_flows(flow_id):
-                self.delete_flow(child)
-            journal.path.unlink()
-            if journal.side.exists():
-                shutil.rmtree(journal.side)
-            return True
-        try:
-            flow_dir = self._flow_dir(flow_id)
-        except FileNotFoundError:
-            return False
-        for child in self.list_child_flows(flow_id):
-            self.delete_flow(child)
-        shutil.rmtree(flow_dir)
-        # Evict the flow itself and any cached children that lived under it,
-        # so no stale handles survive in the path/lock caches.
-        self._flow_paths.pop(flow_id, None)
-        self._log_locks.pop(flow_id, None)
-        for cached_id, cached_path in list(self._flow_paths.items()):
-            if cached_path.is_relative_to(flow_dir):
-                self._flow_paths.pop(cached_id, None)
-                self._log_locks.pop(cached_id, None)
+        tree = [flow_id]
+        directories = []
+        records = []
+        with ExitStack() as locks:
+            for run in tree:
+                try:
+                    directory = self._lock_dir(run)
+                except FileNotFoundError:
+                    if run == flow_id:
+                        return False
+                    raise
+                for lease in (".writer.lock", ".ask.lock"):
+                    if not locks.enter_context(file_lock(directory / lease, wait=False)):
+                        raise RunRecordError(f"active writer: {run}")
+                journal = self.journal(run)
+                if journal is None:
+                    # Legacy versions ran without a writer lease.
+                    try:
+                        progress = self.read_progress(run)
+                    except (FileNotFoundError, ValueError):
+                        pass
+                    else:
+                        if is_runner_alive(progress):
+                            raise RunRecordError(f"active writer: {run}")
+                records.append(journal.path if journal else directory / "progress.json")
+                directories.append(directory)
+                tree.extend(self.list_child_flows(run))
+            # Make every record unavailable before releasing the leases. Windows
+            # requires closing the lease handles before removing their directories.
+            for record in records:
+                record.unlink(missing_ok=True)
+        for run, directory in reversed(list(zip(tree, directories, strict=True))):
+            shutil.rmtree(directory)
+            self._flow_paths.pop(run, None)
+            self._log_locks.pop(run, None)
+            self._journal_paths.pop(run, None)
         return True
 
     # ------------------------------------------------------------------ logs

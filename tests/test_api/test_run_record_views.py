@@ -16,6 +16,7 @@ from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.log import IntermediateStep, StepRecord
 from flow_atelier.services.api.app import FastApiServer
 from tests._runs import legacy_record
+from tests._shell import host_path
 
 
 @pytest.mark.parametrize("legacy", [True, False])
@@ -73,4 +74,4 @@ async def test_view_watch_and_recover_a_run(tmp_path, monkeypatch, legacy):
     assert await recover("--resume") == run
     again = await recover("--again")
     assert again != run
-    assert dashboard.get_outputs(again)["build"].strip() == str(target)
+    assert host_path(dashboard.get_outputs(again)["build"].strip(), dict(os.environ)) == target

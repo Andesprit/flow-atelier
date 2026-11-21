@@ -15,7 +15,9 @@ from typing import Any
 
 from flow_atelier.schemas.conduit import CONDUIT_NAME_RE
 from flow_atelier.schemas.flow import new_flow_id
-from flow_atelier.services.store.events import RunJournal, file_lock, project_folder
+from flow_atelier.schemas.progress import Progress
+from flow_atelier.services.store.events import RunRecordError, file_lock
+from flow_atelier.services.store.filesystem import FilesystemStore
 
 logger = logging.getLogger(__name__)
 DATABASE = "event-claims.sqlite3"
@@ -154,17 +156,25 @@ class EventClaims:
                 "SELECT run_id, project FROM claims WHERE category=? AND status='running'",
                 (self.category,),
             ).fetchall():
-                folder = self.home / "projects" / project_folder(Path(row["project"]))
-                journal = RunJournal(folder / (row["run_id"] + ".jsonl"))
+                run_id = row["run_id"]
+                store = FilesystemStore(Path(row["project"]) / ".atelier", self.home)
                 try:
-                    progress = journal.latest("progress")
+                    journal = store.journal(run_id)
+                    if journal is None:
+                        raise FileNotFoundError(run_id)
+                    if journal.header()["project"] != row["project"]:
+                        raise RunRecordError("journal belongs to a different project")
+                    progress = Progress.model_validate(journal.latest("progress"))
                 except FileNotFoundError:
-                    retired = journal.path.with_suffix(".expired").exists()
+                    retired = any((self.home / "projects").glob(f"*/{run_id}.expired"))
                     status = "history_expired" if retired else "queued"
+                except (OSError, ValueError) as exc:
+                    logger.warning("Cannot recover event run %s (%s)", run_id, type(exc).__name__)
+                    continue
                 else:
-                    status = progress["status"]
+                    status = progress.status.value
                     if status == "running":
-                        status = "pending" if progress.get("pending_ask") else "interrupted"
+                        status = "pending" if progress.pending_ask else "interrupted"
                 db.execute(
                     """UPDATE claims SET status=?, inputs=CASE WHEN ?='queued' THEN inputs END
                        WHERE run_id=?""", (status, status, row["run_id"]),

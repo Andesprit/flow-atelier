@@ -11,6 +11,7 @@ from flow_atelier.cli.main import app
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.progress import FlowStatus
+from flow_atelier.services.store.events import RunRecordError
 
 
 def _is_running(atelier: Atelier, flow_id: str) -> bool:
@@ -32,7 +33,7 @@ def _is_running(atelier: Atelier, flow_id: str) -> bool:
 def rm_cmd(
     flow_id: str = typer.Argument(..., help="Flow id to delete (unique prefix or 'latest' ok)."),
     force: bool = typer.Option(
-        False, "--force", help="Delete even if the flow is still running."
+        False, "--force", help="Include abandoned running records. Active writers are protected."
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip the confirmation prompt."
@@ -60,7 +61,8 @@ def rm_cmd(
 
     if progress.status == FlowStatus.running and not force:
         raise cli_error(
-            "flow_running", f"flow is still running: {flow_id} (pass --force to delete anyway)",
+            "flow_running", f"flow is still running: {flow_id} "
+            "(stop its writer first, or pass --force for an abandoned run)",
             json_mode=json_mode, out=console, flow_id=flow_id,
         )
     if json_mode and not yes:
@@ -73,7 +75,10 @@ def rm_cmd(
         console.print("aborted")
         raise typer.Exit(code=1)
 
-    deleted = atelier.delete_flow(flow_id)
+    try:
+        deleted = atelier.delete_flow(flow_id)
+    except RunRecordError as exc:
+        raise cli_error("run_busy", str(exc), json_mode=json_mode, flow_id=flow_id) from exc
     if json_mode:
         typer.echo(json.dumps({"flow_id": flow_id, "deleted": deleted}))
         return
@@ -92,7 +97,7 @@ def prune_cmd(
         None, "--keep", help="Keep the N most-recent flows; prune the rest."
     ),
     force: bool = typer.Option(
-        False, "--force", help="Include running flows (off by default)."
+        False, "--force", help="Include abandoned running records. Active writers are protected."
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip the confirmation prompt."
@@ -161,7 +166,10 @@ def prune_cmd(
             console.print("aborted")
             raise typer.Exit(code=1)
 
-    deleted = [fid for fid in to_delete if atelier.delete_flow(fid)]
+    try:
+        deleted = [fid for fid in to_delete if atelier.delete_flow(fid)]
+    except RunRecordError as exc:
+        raise cli_error("run_busy", str(exc), json_mode=json_mode) from exc
     if json_mode:
         typer.echo(json.dumps({"deleted": deleted}))
     else:

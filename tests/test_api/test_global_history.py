@@ -55,9 +55,11 @@ async def test_history_in_a_third_project_identifies_the_actual_target(tmp_path,
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api), base_url="http://localhost"
     ) as client:
-        response = await client.get("/flows")
+        rows = (await client.get("/flows")).json()
+        assert [row["flow_id"] for row in rows] == runs[1:]
+        response = await client.get(f"/flows/{runs[0]}")
     assert response.status_code == 422
     assert runs[0] in response.json()["detail"]
     result = CliRunner().invoke(app, ["list", "flows", "--json"])
-    assert result.exit_code == 1
-    assert runs[0] in json.loads(result.stderr)["error"]["message"]
+    assert result.exit_code == 0
+    assert [row["flow_id"] for row in json.loads(result.stdout)] == runs[1:]

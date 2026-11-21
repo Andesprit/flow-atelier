@@ -16,11 +16,15 @@ import yaml
 from flow_atelier.modules.liveness import is_crashed, is_runner_alive
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.progress import FlowStatus
-from flow_atelier.services.store.events import RunJournal, file_lock, project_folder
+from flow_atelier.services.store.events import RunJournal, file_lock, project_folder, publish_file
 from flow_atelier.services.store.filesystem import FilesystemStore, _load_flow_yaml
 from flow_atelier.services.store.retention import cleanup_lock
 
 _LOCKS = (".writer.lock", ".ask.lock")
+
+
+class ArchiveError(ValueError):
+    """The journals were published but the legacy source could not be archived."""
 
 
 def _leases(directory: Path, locks: ExitStack, dry_run: bool) -> None:
@@ -220,7 +224,7 @@ def migrate_tree(old: FilesystemStore, home: Path, root: str, *, dry_run: bool) 
                     journal.side.rename(dest.side)
                     _leases(dest.side, locks, False)
                 if not dest.path.exists():
-                    os.link(journal.path, dest.path)
+                    publish_file(journal.path, dest.path)
                 if _digest(dest.path) != _digest(journal.path) or _side_bytes(dest.side) != payload:
                     raise ValueError(f"published bytes differ at {dest.path}")
             cleanup.close()
@@ -229,5 +233,10 @@ def migrate_tree(old: FilesystemStore, home: Path, root: str, *, dry_run: bool) 
                 # Windows cannot rename the source with its lease handles open.
                 # Published IDs already reject local writers as ambiguous.
                 source_locks.close()
-            source.rename(retired)
+            try:
+                source.rename(retired)
+            except OSError as exc:
+                raise ArchiveError(
+                    f"{root}: published; source not archived ({exc}); rerun atelier migrate runs"
+                ) from exc
         return [j.path.stem for j in staged]

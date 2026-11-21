@@ -32,6 +32,7 @@ ENVIRONMENT_ONLY = frozenset({
     "copilot_launch_cmd",
     "cursor_launch_cmd",
     "harnesses",
+    "atelier_dir",
     "global_atelier_dir",
     "api_token",
     "serve_url",
@@ -46,7 +47,7 @@ USER_FILE_ONLY = frozenset({
 
 # New fields are user-only until explicitly allowed in project files.
 PROJECT_KEYS = frozenset({
-    "atelier_dir", "default_timeout", "default_max_concurrency", "done_marker",
+    "default_timeout", "default_max_concurrency", "done_marker",
     "loop_history_limit", "loop_history_entry_chars", "usage_limit_max_wait", "agent_permissions",
 })
 _REPORTED: set[tuple[str, str]] = set()

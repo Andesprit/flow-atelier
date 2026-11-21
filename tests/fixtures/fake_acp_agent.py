@@ -22,6 +22,7 @@ Script schema::
         "reload": null | "resume" | "load",
         "reload_fails": null | "session not found",
         "replay": ["text an earlier turn said"],
+        "resumed_turns": null | [{"chunks": ["restored session answer"]}],
         "turns": [
             {
                 "chunks": ["text ", "more text"],
@@ -127,6 +128,7 @@ class FakeAgent:
         reload: str | None = None,
         reload_fails: str | None = None,
         replay: list[str] | None = None,
+        resumed_turns: list[dict[str, Any]] | None = None,
     ) -> None:
         """Initialize the fake agent with a scripted turn list.
 
@@ -149,6 +151,7 @@ class FakeAgent:
         :param replay: message chunks ``load_session`` replays before answering.
         """
         self._turns = list(turns)
+        self._resumed_turns = resumed_turns
         self._modes_spec = modes
         self._models_spec = models
         self._efforts_spec = efforts
@@ -448,6 +451,8 @@ class FakeAgent:
         self._log("load_session", cwd=cwd, session_id=session_id)
         if self._reload_fails:
             raise RequestError(-32002, self._reload_fails)
+        if self._resumed_turns is not None:
+            self._turns = self._resumed_turns
         for text in self._replay:
             await self._echo(session_id, text)
         return LoadSessionResponse()
@@ -558,6 +563,8 @@ class FakeAgent:
         self._log("resume_session", cwd=cwd, session_id=session_id)
         if self._reload_fails:
             raise RequestError(-32002, self._reload_fails)
+        if self._resumed_turns is not None:
+            self._turns = self._resumed_turns
         return ResumeSessionResponse()
 
     async def close_session(self, *args, **kwargs):
@@ -605,6 +612,7 @@ async def _main() -> None:
         reload=script.get("reload"),
         reload_fails=script.get("reload_fails"),
         replay=script.get("replay"),
+        resumed_turns=script.get("resumed_turns"),
     )
     # `session/set_model` is unstable in ACP; the real adapters serve it, so
     # the fake must opt in to be routed the request at all.

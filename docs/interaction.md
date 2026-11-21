@@ -112,3 +112,37 @@ A task's `permissions` level (`full`, `edits` or `read-only`, see
 level does not allow is rejected without asking a human or the supervisor.
 With `edits` or `read-only`, Atelier also picks a read-only harness mode when
 one is offered, so the human or the supervisor is still asked about edits.
+
+## Ask from a script
+
+Start with an explicit working directory. With `--json`, each invocation exits
+as soon as the agent finishes its answer or asks a follow-up question.
+
+```sh
+atelier ask "Help me choose a test strategy" --path . --harness codex --json
+```
+
+A finished turn returns `{"flow_id":"…","status":"completed","answer":"…"}`.
+A follow-up returns `{"flow_id":"…","status":"needs_input","question":"…","request_id":"…"}`.
+Read the turn again or answer it in a later process from the same project store.
+
+```sh
+atelier ask "$flow_id" --json
+atelier ask "$flow_id" --answer "Use the integration suite" --request-id "$request_id" --json
+```
+
+The exact flow ID also identifies its first question, so the first reply can use
+just `--answer TEXT`. Pass the returned request ID for subsequent questions.
+Reusing a consumed ID fails, including
+when the agent has already asked another question. The answer continues the
+original ACP session in its saved directory, with its harness, model, effort,
+permission level and turn timeout. The adapter must support ACP session resume
+or load for follow-ups. If it cannot restore that session, the command reports
+an error on stderr before sending the reply.
+
+A pending question has no deadline and holds no runner process. Cancel it with
+`atelier ask "$flow_id" --cancel --json`. During an active turn, use
+`atelier stop "$flow_id"`. The optional `--timeout SECONDS` on the initial ask
+bounds active execution on each invocation. While waiting, `atelier status
+"$flow_id" --json` includes the saved question under `pending_ask`, and
+`atelier wait` continues to treat the flow as running.

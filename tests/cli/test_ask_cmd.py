@@ -217,6 +217,16 @@ def test_read_and_answer_pending_session(machine_ask, tmp_path, reload):
     assert len(prompts) == 2 and any(p.startswith("blue {{inputs.literal}}") for p in prompts)
 
 
+@pytest.mark.parametrize(("args", "expected"), [([], 20), (["--timeout", "30"], 30)])
+def test_ask_uses_project_timeout_unless_explicit(machine_ask, tmp_path, args, expected):
+    store = project_store(tmp_path)
+    store.base_dir.mkdir()
+    (store.base_dir / "settings.json").write_text('{"defaultTimeout": 20}')
+    result = machine_ask("Help", "--path", ".", "--harness", "fake", *args,
+                         script={"reload": "resume", "turns": [{"chunks": ["Where?"]}]})
+    assert store.read_progress(result["flow_id"]).pending_ask.timeout == expected
+
+
 def test_direct_answer_and_legacy_progress(machine_ask, tmp_path):
     result = machine_ask(
         "Say hello", "--path", ".", "--harness", "fake",

@@ -95,14 +95,18 @@ class FilesystemStore(StoreBase):
         self,
         base_dir: Path | str,
         global_dir: Path | str | None = None,
+        *,
+        conduit_defaults: dict[str, int] | None = None,
     ):
         """Initialise the filesystem store with project and optional global dirs.
 
         :param base_dir: project-level ``.atelier/`` directory
         :param global_dir: optional user-level directory for shared conduits
+        :param conduit_defaults: timeout and concurrency to inherit when a recipe omits them
         """
         self.base_dir = Path(base_dir)
         self.global_dir: Path | None = Path(global_dir) if global_dir else None
+        self._conduit_defaults = conduit_defaults or {}
         # Both caches grow with distinct flow ids and are never pruned;
         # entries are tiny and bounded by process lifetime, so that's fine.
         self._log_locks: dict[str, asyncio.Lock] = {}
@@ -321,6 +325,14 @@ class FilesystemStore(StoreBase):
 
     # ------------------------------------------------------------------ conduits
 
+    def parse_conduit(self, data: Any) -> Conduit:
+        """Validate a recipe with this project's defaults, retaining which fields it supplied."""
+        if not isinstance(data, dict):
+            return Conduit.model_validate(data)
+        conduit = Conduit.model_validate(self._conduit_defaults | data)
+        conduit.model_fields_set.difference_update(self._conduit_defaults.keys() - data.keys())
+        return conduit
+
     def read_conduit(self, name: str) -> Conduit:
         """Load conduit ``name`` from the project store, falling back to global.
 
@@ -351,7 +363,7 @@ class FilesystemStore(StoreBase):
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
         except yaml.YAMLError as e:
             raise ValueError(f"{name}: invalid YAML — {e}") from e
-        conduit = Conduit.model_validate(data)
+        conduit = self.parse_conduit(data)
         if conduit.name != name:
             raise ValueError(
                 f"conduit.yaml name {conduit.name!r} != folder name {name!r}"
@@ -396,13 +408,7 @@ class FilesystemStore(StoreBase):
 
         :param conduit: validated conduit to persist (overwrites if present)
         """
-        conduit_dir = self._conduit_dir(conduit.name)
-        conduit_dir.mkdir(parents=True, exist_ok=True)
-        payload = conduit.model_dump(mode="json", by_alias=True, exclude_none=True)
-        path = self._conduit_yaml(conduit.name)
-        tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
-        tmp.write_text(yaml.safe_dump(payload, sort_keys=False))
-        _atomic_replace(tmp, path)
+        self._write_recipe(self._conduit_yaml(conduit.name), conduit)
 
     def write_conduit_global(self, conduit: Conduit) -> None:
         """Persist ``conduit`` under the global ``~/.atelier/conduits/<name>/``.
@@ -416,9 +422,20 @@ class FilesystemStore(StoreBase):
                 "global conduit directory is not available "
                 "(home directory may be read-only)"
             )
-        conduit_dir.mkdir(parents=True, exist_ok=True)
-        path = conduit_dir / "conduit.yaml"
-        payload = conduit.model_dump(mode="json", by_alias=True, exclude_none=True)
+        self._write_recipe(conduit_dir / "conduit.yaml", conduit)
+
+    @staticmethod
+    def conduit_definition(conduit: Conduit) -> dict[str, Any]:
+        """Keep editable recipe fields, omitting the response path and inherited limits."""
+        inherited = {"timeout", "max_concurrency"} - conduit.model_fields_set
+        return conduit.model_dump(
+            mode="json", by_alias=True, exclude_none=True,
+            exclude=inherited | {"run_path"},
+        )
+
+    def _write_recipe(self, path: Path, conduit: Conduit) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = self.conduit_definition(conduit)
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
         tmp.write_text(yaml.safe_dump(payload, sort_keys=False))
         _atomic_replace(tmp, path)

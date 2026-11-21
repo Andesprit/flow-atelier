@@ -24,6 +24,8 @@ async def test_view_watch_and_recover_a_run(tmp_path, monkeypatch, legacy):
     for path in (source, target, elsewhere):
         path.mkdir()
     monkeypatch.chdir(source)
+    (source / ".atelier").mkdir()
+    (source / ".atelier/settings.json").write_text('{"defaultTimeout": 47}')
     origin = Atelier()
     recipe = Conduit.model_validate(dict(name="build", description="build", tasks=[
         dict(name="build", description="original task", tool="tool:bash",
@@ -39,6 +41,7 @@ async def test_view_watch_and_recover_a_run(tmp_path, monkeypatch, legacy):
     else:
         monkeypatch.chdir(elsewhere)
     dashboard = Atelier()
+    assert dashboard.for_flow(run).store.read_conduit("build").timeout == 47
     status = CliRunner().invoke(app, ["status", run, "--json"])
     assert status.exit_code == 0
     assert json.loads(status.stdout)["status"] == "failed"

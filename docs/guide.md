@@ -1915,14 +1915,26 @@ wildcard bind (`--host 0.0.0.0`) cannot know which names reach it, so it accepts
 any `Host` and relies on the token — which is why the token is mandatory there
 rather than merely advised.
 
-**A project's `.env` cannot choose what Atelier runs.** Atelier reads `.env`
-from the folder you run it in, and that folder may be a repository you just
-cloned. So the settings that decide what it executes, where it finds shared
-conduits, or which server and token it uses come only from your shell
-environment: the `ATELIER_*_LAUNCH_CMD` variables, `ATELIER_HARNESSES`,
-`ATELIER_GLOBAL_ATELIER_DIR`, `ATELIER_API_TOKEN` and `ATELIER_SERVE_URL`. A
-`.env` may lower `ATELIER_AGENT_PERMISSIONS` but not set it to `full`. Atelier
-names each setting it ignored on stderr.
+**Settings precedence.** An explicit CLI option wins, followed by the process
+environment, project `.atelier/settings.json`, the working directory's `.env`,
+user `~/.atelier/settings.json`, and built-in defaults. Both JSON files are
+optional. For example, `{"defaultTimeout": 120, "defaultMaxConcurrency": 2}`
+sets defaults for recipes that omit those fields. A shared recipe inherits the
+current project's defaults. The shell variables `ATELIER_ATELIER_DIR` and
+`ATELIER_GLOBAL_ATELIER_DIR` select alternative project and user directories.
+
+Project settings can set `defaultTimeout`, `defaultMaxConcurrency`,
+`loopHistoryLimit`, `loopHistoryEntryChars`, `usageLimitMaxWait`, `doneMarker`
+and `atelierDir`. They can lower `agentPermissions` to `edits` or `read-only`.
+Both JSON files also accept the equivalent snake_case names.
+
+Use user settings for `cleanupPeriodDays` (default 30), `webhookSources`
+(source ID to configuration), `webhookSecrets` (source ID to secret),
+`notificationRecipient`, `notificationProvider`, `dictariaAccount` and
+`runCaps` (run category to positive limit). Both project files reject changes
+to these keys. Launch commands, `ATELIER_HARNESSES`, `ATELIER_GLOBAL_ATELIER_DIR`,
+`ATELIER_API_TOKEN` and `ATELIER_SERVE_URL` require the shell environment.
+Atelier names each rejected file setting on stderr and omits its value.
 
 **Agent and shell steps.** Each agent and each shell step runs in its own
 process group on Linux and macOS. When a step is stopped or times out, Atelier

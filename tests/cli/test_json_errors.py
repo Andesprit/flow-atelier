@@ -4,10 +4,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from enum import StrEnum
 
-import click
 import pytest
 import typer
+from click import unstyle
 from typer.testing import CliRunner
 
 from flow_atelier.cli.main import AtelierTyper
@@ -20,7 +21,7 @@ _FLOW_COMMANDS = ["diagnose", "logs", "outputs", "rm", "status", "timing", "wait
 def _invoke(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "flow_atelier.main", *args],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+        stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", timeout=30,
     )
 
 
@@ -196,8 +197,13 @@ def test_literal_json_argument_keeps_human_usage_errors(tmp_path, monkeypatch, a
     monkeypatch.chdir(tmp_path)
     result = _invoke("wait", *args)
     assert result.returncode == 2
-    assert "--timeout" in result.stderr
+    assert "--timeout" in unstyle(result.stderr)
     assert not result.stderr.lstrip().startswith("{")
+
+
+class Mode(StrEnum):
+    short = "short"
+    long = "long"
 
 
 def test_choice_error_names_allowed_values():
@@ -205,7 +211,7 @@ def test_choice_error_names_allowed_values():
 
     @app.command()
     def example(
-        mode: str = typer.Option("short", click_type=click.Choice(["short", "long"])),
+        mode: Mode = typer.Option(Mode.short),
         json_mode: bool = typer.Option(False, "--json"),
     ) -> None:
         raise AssertionError("invalid choices must be rejected before invocation")

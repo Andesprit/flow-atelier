@@ -725,7 +725,7 @@ class FilesystemStore(StoreBase):
         path = self._flow_dir(flow_id) / "outputs.yaml"
         if not path.exists():
             return {}
-        loaded = _load_flow_yaml(path.read_text())
+        loaded = _load_flow_yaml(path.read_text(encoding="utf-8"))
         return loaded if isinstance(loaded, dict) else {}
 
     def write_outputs(self, flow_id: str, outputs: dict[str, Any]) -> None:
@@ -737,7 +737,7 @@ class FilesystemStore(StoreBase):
         """
         path = self._flow_dir(flow_id) / "outputs.yaml"
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
-        tmp.write_text(_dump_flow_yaml(outputs))
+        tmp.write_text(_dump_flow_yaml(outputs), encoding="utf-8")
         _atomic_replace(tmp, path)
 
     # ------------------------------------------------------------------ sessions.yaml

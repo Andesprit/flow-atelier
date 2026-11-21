@@ -9,12 +9,17 @@ import re
 import sys
 from contextlib import nullcontext
 
-import click
 import typer
 import yaml
 from typer.core import TyperCommand, TyperGroup
 
 from flow_atelier.cli._shared import cli_error, json_diagnostics
+
+# Recent Typer versions raise usage errors from their bundled copy of Click.
+try:
+    from typer._click.exceptions import BadOptionUsage, NoSuchOption, UsageError
+except ImportError:
+    from click.exceptions import BadOptionUsage, NoSuchOption, UsageError
 
 
 def _use_utf8_streams() -> None:
@@ -53,17 +58,20 @@ def _help_from_doc(doc: str) -> str:
     return _DOC_FIELDS_RE.sub("", inspect.cleandoc(doc)).rstrip().replace("``", "`")
 
 
-def _usage_error(exc: click.UsageError) -> typer.Exit:
+def _usage_error(exc: UsageError) -> typer.Exit:
     """Include the offending parameter and its choices when Click knows them."""
     details: dict[str, object] = {}
-    if isinstance(exc, click.BadParameter):
+    if isinstance(exc, typer.BadParameter):
         if exc.param is not None:
             details["parameter"] = exc.param.opts[0]
-            if isinstance(exc.param.type, click.Choice):
-                details["allowed"] = list(exc.param.type.choices)
+            descriptor = getattr(exc.param, "type_descriptor", None) or getattr(
+                exc.param, "type", None
+            )
+            if (choices := getattr(descriptor, "choices", None)) is not None:
+                details["allowed"] = list(choices)
         elif exc.param_hint:
             details["parameter"] = exc.param_hint
-    elif isinstance(exc, (click.BadOptionUsage, click.NoSuchOption)):
+    elif isinstance(exc, (BadOptionUsage, NoSuchOption)):
         details["parameter"] = exc.option_name
     return cli_error(
         "invalid_arguments", exc.format_message(), exit_code=exc.exit_code, json_mode=True,
@@ -74,7 +82,7 @@ def _usage_error(exc: click.UsageError) -> typer.Exit:
 class AtelierGroup(TyperGroup):
     """Report inaccessible paths for leaf commands and group defaults alike."""
 
-    def invoke(self, ctx: click.Context) -> object:
+    def invoke(self, ctx: typer.Context) -> object:
         try:
             return super().invoke(ctx)
         except (PermissionError, NotADirectoryError) as exc:
@@ -84,27 +92,27 @@ class AtelierGroup(TyperGroup):
 class AtelierCommand(TyperCommand):
     """Format usage errors on both sides of Click's argument parser."""
 
-    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+    def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:
         if "--json" not in args and "--jsonl" not in args:
             return super().parse_args(ctx, args)
         try:
             return super().parse_args(ctx, args.copy())
-        except click.UsageError as exc:
+        except UsageError as exc:
             # Ask Click whether the format was a flag, an option value or a
             # positional after "--", even if a preceding option was invalid.
-            probe = click.Context(self, resilient_parsing=True, ignore_unknown_options=True)
+            probe = typer.Context(self, resilient_parsing=True, ignore_unknown_options=True)
             options, _, _ = self.make_parser(probe).parse_args(args)
             if options.get("json_mode") or options.get("jsonl"):
                 raise _usage_error(exc) from exc
             raise
 
-    def invoke(self, ctx: click.Context) -> object:
+    def invoke(self, ctx: typer.Context) -> object:
         machine = ctx.params.get("json_mode") or ctx.params.get("jsonl")
         streaming = self.name == "run" or ctx.params.get("follow")
         with json_diagnostics() if machine and not streaming else nullcontext():
             try:
                 return super().invoke(ctx)
-            except click.UsageError as exc:
+            except UsageError as exc:
                 if machine:
                     raise _usage_error(exc) from exc
                 raise

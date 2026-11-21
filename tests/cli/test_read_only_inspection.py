@@ -64,9 +64,9 @@ def test_unusable_store_reports_the_path(tmp_path, monkeypatch, kind):
     assert result.stdout == ""
     error = json.loads(result.stderr)["error"]
     assert error["code"] == "filesystem_error"
-    assert str(path) in error["message"]
+    assert repr(str(path)) in error["message"]
     assert path.read_text() == "preserve me"
     if kind == "conduits":
         result = CliRunner().invoke(app, ["list"])
         assert result.exit_code == 1
-        assert str(path) in result.stderr
+        assert repr(str(path)) in result.stderr

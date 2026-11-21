@@ -86,6 +86,17 @@ def test_rejected_run_has_one_error_and_no_result(recipe, args, code, exit_code)
     assert not Path(".atelier/flows").exists()
 
 
+def test_missing_json_inputs_never_prompt_on_a_tty(recipe):
+    script = "import sys; sys.stdin.isatty = lambda: True; from flow_atelier.main import app; app()"
+    result = subprocess.run(
+        [sys.executable, "-c", script, "run", "job", "--json"],
+        stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", timeout=30,
+    )
+    assert result.returncode == 2, result.stderr
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["error"]["missing"] == ["label"]
+
+
 def test_engine_rejection_before_allocation_returns_only_an_error(recipe):
     path = Path(".atelier/conduits/job/conduit.yaml")
     conduit = yaml.safe_load(path.read_text())

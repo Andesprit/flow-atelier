@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from typing import TextIO
 from urllib.parse import quote, urlsplit
 
-import click
 import typer
 import yaml
 from pydantic import ValidationError
@@ -89,7 +88,7 @@ class _RunResult:
 class _RunCommand(AtelierCommand):
     """Keep argument and startup errors structured, then stream the run live."""
 
-    def invoke(self, ctx: click.Context) -> object:
+    def invoke(self, ctx: typer.Context) -> object:
         if not ctx.params.get("json_mode"):
             return super().invoke(ctx)
         # Executors and interactive prompts also write to stdout. Reserve the
@@ -443,7 +442,7 @@ def _reject_unknown_inputs(conduit: Conduit, inputs: dict[str, str], *, json_mod
 
 
 def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str], *, json_mode: bool) -> None:
-    """Prompt for each required input not yet supplied, or exit 2 off a TTY.
+    """Prompt for missing inputs in interactive human mode, otherwise exit 2.
 
     :param conduit: the conduit about to run.
     :param inputs: the ``--input`` map, extended in place with typed answers.
@@ -453,7 +452,7 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str], *, json_mo
     ]
     if not missing:
         return
-    if not sys.stdin.isatty():
+    if json_mode or not sys.stdin.isatty():
         # Flags only, never a whole command: a rebuilt command would drop the
         # inputs and options already given, and echoing them could leak secrets.
         flags = " ".join(f"--input {shlex.quote(f'{k}=<value>')}" for k in missing)
@@ -486,8 +485,6 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str], *, json_mo
                 hint=SUBMIT_HINT,
             )
     except KeyboardInterrupt:
-        if json_mode:
-            raise cli_error("cancelled", "input cancelled", json_mode=True, exit_code=130) from None
         print()
         raise typer.Exit(code=130)
 

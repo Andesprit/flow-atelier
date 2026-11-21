@@ -167,7 +167,11 @@ class FastApiServer(ApiServerBase):
             async with daily_cleanup(
                 atelier.settings.global_atelier_dir, atelier.settings.cleanup_period_days
             ):
-                yield
+                try:
+                    yield
+                finally:
+                    for chat in list(app.state.chats.values()):
+                        await chat.close()
 
         app = FastAPI(title="flow-atelier", version=__version__, lifespan=lifespan)
 
@@ -176,6 +180,7 @@ class FastApiServer(ApiServerBase):
             status = 409 if isinstance(exc, AmbiguousFlowId) else 422
             return JSONResponse({"detail": str(exc)}, status_code=status)
 
+        app.state.chats = {}
         app.state.atelier = atelier
         app.state.api_token = api_token or ""
         app.state.cors_origins = list(cors_origins or [])

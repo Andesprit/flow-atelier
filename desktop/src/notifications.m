@@ -6,10 +6,35 @@
 extern bool window_visible(void);
 extern void quit_status(int status);
 extern bool confirm_quit(void);
+extern void quit_decided(bool quit, bool appKitRequest);
+
+static NSApplication *pendingTermination;
+
+// AppKit runs a modal loop while waiting for a deferred termination reply.
+static void onMainRunLoop(void (^block)(void)) {
+    if (NSThread.isMainThread) {
+        block();
+        return;
+    }
+    CFRunLoopRef loop = CFRunLoopGetMain();
+    CFRunLoopPerformBlock(loop, (__bridge CFArrayRef)@[NSDefaultRunLoopMode, NSModalPanelRunLoopMode], block);
+    CFRunLoopWakeUp(loop);
+}
 
 // AppKit's standard Quit menu, Command-Q and Dock Quit bypass Tauri's ExitRequested.
 static NSApplicationTerminateReply shouldTerminate(id delegate, SEL selector, NSApplication *app) {
-    return confirm_quit() ? NSTerminateNow : NSTerminateCancel;
+    if (confirm_quit()) return NSTerminateNow;
+    pendingTermination = app;
+    return NSTerminateLater;
+}
+
+void finish_quit(bool quit) {
+    onMainRunLoop(^{
+        NSApplication *app = pendingTermination;
+        pendingTermination = nil;
+        quit_decided(quit, app != nil);
+        if (app) [app replyToApplicationShouldTerminate:quit];
+    });
 }
 
 static bool installQuitHandler(id delegate) {
@@ -60,7 +85,7 @@ static RunNotices *notices;
         id rows = nil;
         if (((NSHTTPURLResponse *)response).statusCode == 200 && data)
             rows = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-        dispatch_async(dispatch_get_main_queue(), ^{
+        onMainRunLoop(^{
             completion([rows isKindOfClass:NSArray.class] ? rows : nil);
         });
     }] resume];

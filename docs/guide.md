@@ -982,7 +982,7 @@ tasks:
       task: deploy_to_env
       tool: tool:conduit
       depends_on:
-        - "approve.output.match(confirm: 'yes')"
+        - "approve.output.match((?m)^confirm: 'yes'$)"
       inputs:
         target_env: "{{inputs.env}}"
         build_path: /tmp/build
@@ -1384,12 +1384,46 @@ answer as YAML, `confirm: 'yes'`:
       task: make deploy
       tool: tool:bash
       depends_on:
-        - "approve.output.match(confirm: 'yes')"
+        - "approve.output.match((?m)^confirm: 'yes'$)"
 ```
 
 Any other answer skips `deploy`. `atelier check` warns about a step that
 depends on a gate named for an approval (its name or an input mentions
 approve or confirm) without such a condition.
+
+#### Approving an exact patch
+
+Suppose `release.patch` adds one new file to a Git worktree. Run this shell
+command there in a step named `preview` before prompting for approval.
+Git stores the proposed bytes and returns their digest.
+
+```bash
+digest=$(git hash-object -w --no-filters release.patch) && printf '%s' "$digest"
+```
+
+Make `approve` depend on `preview`. Set its prompt to
+`Review git cat-file -p {{preview.output}} before answering.` Run that
+command in the worktree to inspect the exact patch. Keep the affirmative
+dependency on `deploy` shown above. For this local deployment, use the
+following shell command in the same worktree.
+
+```bash
+set -eo pipefail
+current=$(git hash-object --no-filters release.patch)
+if [[ "$current" != "$OUTPUT_PREVIEW" ]]; then
+  echo 'Patch changed since approval. Start a new run.' >&2
+  exit 1
+fi
+if git cat-file blob "$current" | git apply --reverse --check - 2>/dev/null; then
+  exit 0
+fi
+git cat-file blob "$current" | git apply -
+```
+
+The apply reads the verified blob. If a run stops just after creating the
+file, the reverse check recognizes the applied patch on resume. For a
+remote deployment, use the approved digest and target as the deployment
+service's idempotency key so the service can recognize a repeated request.
 
 ### Long AI conversations (`interactive: true`)
 

@@ -381,6 +381,14 @@ def test_pinned_chat_adapter_live(tmp_path, name):
         assert state["turns"][0]["answer"].strip().lower().strip(".") == "apricot"
         assert state["pending"] is None
 
+        if name == "codex-acp":
+            chat = app.state.chats[state["id"]]
+            session_id = chat.session_id
+            assert session_id
+            client.portal.call(chat.disconnect)
+            client.portal.call(chat.connect)
+            assert chat.session_id == session_id
+
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS sandbox profile")
 def test_model_network_has_dns_and_ca_bundle(tmp_path):

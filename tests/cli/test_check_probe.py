@@ -709,6 +709,7 @@ def test_a_workflow_with_no_agents_reports_an_empty_team(team):
 def test_a_healthy_agent_s_startup_logging_is_not_printed(tmp_path):
     """Real adapters log timings on stderr; only a failure needs them shown."""
     team = Team(tmp_path)
+    team.env["COLUMNS"] = "180"  # Keep the traceback filename on one line in long worktrees.
     team.install("team", TEAM)
     team.script("claude-code", stderr="[session/create] phase=sdk-initialize")
     team.script("codex", fail_session="not logged in")

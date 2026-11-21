@@ -1,6 +1,7 @@
 """Local configuration and outbound runner loop."""
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -23,7 +24,8 @@ def _local() -> Local:
 def pair(origin: str):
     """Pair with an HTTPS control plane using a single-use invitation."""
     token = typer.prompt("Pairing token", hide_input=True)
-    _local().pair(Client(origin), token)
+    local = _local()
+    local.pair(Client(origin, local.root), token)
 
 
 @runner.command()
@@ -39,10 +41,20 @@ def approve(folder: str, conduit: str):
 
 
 @runner.command()
+def status():
+    """Show online state and the last acknowledged heartbeat (UTC)."""
+    local = _local()
+    online, last_ack = local.status()
+    when = datetime.fromtimestamp(last_ack, UTC).isoformat() if last_ack is not None else "never"
+    state = "online" if online else "offline"
+    typer.echo(f"{local.identity()['id']} {state}  last heartbeat {when}")
+
+
+@runner.command()
 def start():
     """Poll for work and publish heartbeats until interrupted."""
     local = _local()
-    client = Client(local.identity()["origin"])
+    client = Client(local.identity()["origin"], local.root)
     try:
         asyncio.run(Worker(local, client).serve())
     except PermissionError:

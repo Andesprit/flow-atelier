@@ -16,6 +16,14 @@ class Plane:
         self.now = 1000
         self.jobs = {}
         self.drop_next = None
+        self.traffic = []
+
+    def records_for(self, tenant, rid):
+        with self.lock:
+            row = next(r for r in self.runners.values() if r["id"] == rid)
+            if row["tenant"] != tenant:
+                raise PermissionError("foreign runner")
+            return list(row["records"])
 
     def enqueue(self, tenant, candidates, conduit, hostile=False):
         """Each eligible runner has its own locally assigned folder ID."""
@@ -48,9 +56,10 @@ class Plane:
         return token
 
     def revoke(self, tenant):
-        for runner in self.runners.values():
-            if runner["tenant"] == tenant:
-                runner["revoked"] = True
+        with self.lock:
+            for runner in self.runners.values():
+                if runner["tenant"] == tenant:
+                    runner["revoked"] = True
 
     def view(self, tenant):
         with self.lock:
@@ -60,13 +69,14 @@ class Plane:
 
     def post(self, route, message, token):
         with self.lock:
+            self.traffic.append(message.model_dump(mode="json"))
             if route == "pair":
                 tenant = self.tokens.pop(token, None)
                 if tenant is None:
                     raise PermissionError("invalid invitation")
                 token, rid = uuid.uuid4().hex, uuid.uuid4().hex
                 self.runners[token] = dict(id=rid, tenant=tenant, folders=[], heartbeat=self.now,
-                                           revoked=False)
+                                           records=[], revoked=False)
                 return Identity(id=rid, token=token)
             row = self.runners.get(token)
             if row is None or row["revoked"]:
@@ -74,8 +84,9 @@ class Plane:
             if route == "poll":
                 row.update(heartbeat=self.now, folders=[f.model_dump() for f in message.folders])
                 claim = None
-                for jid, job in self.jobs.items():
-                    rid = row["id"]
+                rid = row["id"]
+                jobs = sorted(self.jobs.items(), key=lambda pair: pair[1]["owner"] != rid)
+                for jid, job in jobs:
                     if (not message.claim or job["tenant"] != row["tenant"]
                             or rid not in job["candidates"] or job["owner"] not in (None, rid)
                             or job["state"] not in ("queued", "claimed", "started")):
@@ -90,7 +101,20 @@ class Plane:
                         job["state"] = "claimed"
                     claim = Job(id=jid, folder=folder, conduit=job["conduit"])
                     break
-                return self._reply(route, Dispatch(job=claim, after=0))
+                return self._reply(route, Dispatch(job=claim, after=len(row["records"])))
+            if route == "records":
+                records = list(row["records"])
+                for item in message.records:
+                    job = self.jobs[item.job]
+                    if (job["tenant"] != row["tenant"] or job["owner"] != row["id"]
+                            or job["candidates"][row["id"]] != item.folder):
+                        raise PermissionError("foreign record")
+                    if item.sequence > len(records) + 1:
+                        raise ValueError("sequence gap")
+                    if item.sequence == len(records) + 1:
+                        records.append(item.model_dump(exclude_none=True))
+                row["records"] = records
+                return self._reply(route, Ack())
             if route == "result":
                 job = self.jobs[message.job]
                 if job["tenant"] != row["tenant"] or job["owner"] != row["id"]:

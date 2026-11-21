@@ -20,10 +20,32 @@ def test_wire_schema_and_examples():
         jsonschema.validate(body, {**spec["properties"][name], "$defs": spec["$defs"]})
 
 
-def test_origin_is_https_only():
+def test_origin_is_https_only(tmp_path):
     for origin in ["http://example.test", "https://me@example.test", "https://x/a", "https://x?q"]:
         with pytest.raises(ValueError):
-            Client(origin)
+            Client(origin, tmp_path)
+
+
+def test_status_displays_last_acknowledged_heartbeat(tmp_path, monkeypatch):
+    import time
+
+    from typer.testing import CliRunner
+
+    from flow_atelier.cli import app
+
+    plane = Plane()
+    local = Local(tmp_path)
+    monkeypatch.setenv("ATELIER_GLOBAL_ATELIER_DIR", str(tmp_path))
+    local.pair(plane, plane.invite("one"))
+    now = 1000
+    monkeypatch.setattr(time, "time", lambda: now)
+    local.poll(plane)
+    cli = CliRunner()
+    assert "online" in cli.invoke(app, ["runner", "status"]).output
+    now += 60
+    report = cli.invoke(app, ["runner", "status"])
+    assert report.exit_code == 0
+    assert "offline" in report.output and "1970-01-01T00:16:40" in report.output
 
 
 def test_tenant_pairing_registration_revocation(tmp_path):
@@ -55,6 +77,21 @@ def recipe(folder, name, tasks):
 
 def step(tool, task):
     return {"name": "step", "tool": tool, "task": task, "description": "fixture"}
+
+
+@pytest.mark.parametrize("command", [
+    "bash ./helper", 'bash "{{conduit_dir}}/../helper"', 'bash "{{conduit_dir}}/missing"',
+    "echo $(bash ./helper)", "true; bash ./helper",
+])
+def test_external_or_dynamic_shell_entry_points_need_packaging(tmp_path, command):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "helper").write_text("echo before")
+    local = Local(tmp_path / "user")
+    fid = local.expose(project, "Manuals")
+    recipe(project, "build", [step("tool:bash", command)])
+    with pytest.raises(ValueError, match="bundled"):
+        local.approve(fid, "build")
 
 
 def test_local_policy_includes_children_helpers_and_rejects_symlinks(tmp_path):

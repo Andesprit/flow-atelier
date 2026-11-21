@@ -11,7 +11,8 @@ Seq = Annotated[int, Field(ge=0)]
 
 
 class Wire(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True,
+                              frozen=True, revalidate_instances="always")
 
 
 class Pair(Wire):

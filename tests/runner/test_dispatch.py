@@ -90,3 +90,58 @@ def test_started_expiry_and_restart_never_relaunch(tmp_path):
     worker.dispatch(job)
     assert plane.job_view("one", jid) == "unknown"
     assert not (tmp_path / "project/count").exists()
+
+
+async def test_heartbeat_while_executing_and_pinned_helper(tmp_path, monkeypatch):
+    import threading
+    from contextlib import contextmanager
+
+    plane = Plane()
+    local, fid = prepared(tmp_path, plane, "user")
+    jid = plane.enqueue("one", {local.identity()["id"]: fid}, "run")
+    executing, release = threading.Event(), threading.Event()
+    snapshot = local.snapshot
+
+    @contextmanager
+    def hold_copy(*args):
+        with snapshot(*args) as bundle:
+            yield bundle
+            executing.set()
+            assert release.wait(5)
+
+    monkeypatch.setattr(local, "snapshot", hold_copy)
+    worker = Worker(local, plane)
+    await worker.tick()
+    try:
+        assert await asyncio.to_thread(executing.wait, 5)
+        plane.now += 20
+        await worker.tick()
+        assert plane.view("one")[0]["heartbeat"] == plane.now
+        polls = [body for body in plane.traffic if "claim" in body]
+        assert polls[-1]["claim"] is False
+        (tmp_path / "project/.atelier/conduits/run/helper").write_text("echo replaced >> count")
+    finally:
+        release.set()
+    await worker.active
+    assert plane.job_view("one", jid) == "completed"
+    assert (tmp_path / "project/count").read_text() == "ran\n"
+
+
+def test_lost_start_ack_reuses_preallocated_run(tmp_path):
+    plane = Plane()
+    local, fid = prepared(tmp_path, plane, "user")
+    jid = plane.enqueue("one", {local.identity()["id"]: fid}, "run")
+    job = local.poll(plane).job
+    plane.drop_next = "started"
+    with pytest.raises(ConnectionError):
+        Worker(local, plane).dispatch(job)
+    assert not (tmp_path / "project/count").exists()
+    with local.db() as db:
+        row, = db.execute("SELECT run,state FROM jobs")
+        run = row["run"]
+        assert row["state"] == "prepared"
+    reopened = Local(local.user_dir)
+    Worker(reopened, plane).dispatch(reopened.poll(plane).job)
+    assert plane.job_view("one", jid) == "completed"
+    with local.db() as db:
+        assert db.execute("SELECT run FROM jobs").fetchone()[0] == run

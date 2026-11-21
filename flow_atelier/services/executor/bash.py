@@ -16,7 +16,7 @@ from pathlib import Path
 from flow_atelier.schemas.conduit import TaskDefinition
 from flow_atelier.schemas.log import ExecutionResult, IntermediateStep, StepKind
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext, child_environ
-from flow_atelier.services.executor.cloud_sandbox import cloud_sandbox
+from flow_atelier.services.executor.cloud_sandbox import cloud_sandbox, product_git_guard
 
 logger = logging.getLogger(__name__)
 
@@ -354,7 +354,9 @@ class BashExecutor(ExecutorBase):
                 )
             env = {**inherited, **values, "ATELIER_FLOW_ID": context.flow_id}
             scratch = Path(tmp) if task.deny_cloud_config else None
-            result = await self._run(args, env, context, scratch)
+            cwd = context.working_dir or Path.cwd()
+            async with product_git_guard(cwd if scratch is not None else None):
+                result = await self._run(args, env, context, scratch)
         if script is not None:
             # bash names its script in its own error lines. The temp path is
             # new on every try, so keep it out of the result: the same failure

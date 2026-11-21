@@ -43,13 +43,16 @@ occurrences. For example:
 ```
 
 A valid request returns HTTP 202 with `run_id` and `status`. The same source,
-project and fingerprint always return the original ID. After history cleanup,
+project and fingerprint return the original ID until a person reopens the error. After history cleanup,
 `status` is `history_expired`. The receiver accepts up to 64 KiB and five minutes of
 clock skew in either direction. Up to two error runs execute per machine by default.
 When all 100 waiting positions are occupied, new errors get HTTP 429 with
 `Retry-After`. Previously claimed errors can still be looked up by resending them.
 Restarting drains waiting work. A run interrupted after its journal was published
-keeps its ID and can be inspected locally before resuming.
+keeps its ID. The dispatcher logs interrupted run IDs at startup. Inspect the local
+record with `atelier status <run-id>`. To allow a new run for the same fingerprint,
+use `atelier errors reopen <run-id>`. The next signed report starts the new run.
+Reopening preserves existing run history and requires a terminal or expired claim.
 
 ## HTTPS relay
 
@@ -69,6 +72,7 @@ in the same user settings file. This example runs a Python project's unittest su
 
 ```json
 {
+  "draftCiDisabledRepositories": ["example/orders"],
   "errorPrProjects": {
     "/absolute/path/to/orders": {
       "repository": "example/orders",
@@ -80,11 +84,22 @@ in the same user settings file. This example runs a Python project's unittest su
 }
 ```
 
+Previously prepared snapshots without the skip marker require a fresh run before automatic
+publication. Reopen a failed error claim and submit the signed report again.
+
 The regression command receives the new test's relative path as a separate argument.
 Use a runner that exits 1 for a failing regression and 0 for success. Both commands must
 work offline from a fresh checkout of committed files. Set up the local GitHub CLI
 login for the configured repository and the [WhatsApp sender](guide.md#send-a-whatsapp-run-summary).
-The repository's `origin` must match the configured GitHub destination.
+The repository must be private and its `origin` must match the configured GitHub destination.
+
+Before adding a repository to `draftCiDisabledRepositories`, configure every CI system,
+GitHub App and hosting integration to exclude `atelier/*` branches and PRs from those
+branches, including preview builds and `pull_request_target` workflows. Worker-authored
+tests and build scripts can access credentials if an integration executes them. The
+publisher includes `[skip ci]` on each draft commit for GitHub Actions push and
+pull_request workflows. Other triggers and providers require their own exclusions.
+The user settings entry acknowledges those exclusions for that specific repository.
 
 The shared worker uses the Codex CLI on macOS or Linux with named filesystem permission
 profiles and the app-server protocol. Its launcher creates a temporary configuration,

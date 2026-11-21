@@ -39,6 +39,7 @@ def project(tmp_path, monkeypatch):
             {
                 "dictariaAccount": "Alex",
                 "meetingRepositories": {str(repo.resolve()): "test/repo"},
+                "draftCiDisabledRepositories": ["test/repo"],
                 "notificationRecipient": "+1234567890",
                 "notificationProvider": "twilio",
             }
@@ -145,6 +146,7 @@ async def test_tasks_start_during_poll_and_notify_with_drafts(
                 "Alex", "meeting-1", "Make the draft PR"
             )
             assert git(snapshot, "show", argv[-1].split(":")[0] + ":app.txt") == "proposal"
+            assert "[skip ci]" in git(snapshot, "log", "-1", "--format=%B", argv[-1].split(":")[0])
             branches.append(ref)
             return ""
         assert argv[1:3] == ["pr", "create"] and "--draft" in argv
@@ -188,10 +190,13 @@ def test_private_repository_and_exact_task_branch(tmp_path, monkeypatch):
     monkeypatch.setattr(github_draft, "_remote", lambda argv, *args: calls.append(argv) or "public")
     for destination in ["main", "atelier/meetings/" + "b" * 64]:
         with pytest.raises(ValueError, match="destination"):
-            github_draft.publish_meeting_draft(tmp_path, "test/repo", task, destination)
+            github_draft.publish_meeting_draft(tmp_path, "test/repo", task, destination, [])
+    assert not calls
+    with pytest.raises(ValueError, match="draftCiDisabledRepositories"):
+        github_draft.publish_meeting_draft(tmp_path, "test/repo", task, "atelier/meetings/" + task, [])
     assert not calls
     with pytest.raises(ValueError, match="private"):
-        github_draft.publish_meeting_draft(tmp_path, "test/repo", task, "atelier/meetings/" + task)
+        github_draft.publish_meeting_draft(tmp_path, "test/repo", task, "atelier/meetings/" + task, ["test/repo"])
     assert len(calls) == 1 and calls[0][1:3] == ["api", "repos/test/repo"]
 
 

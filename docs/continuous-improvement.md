@@ -122,7 +122,8 @@ The proposer sees the measured baseline, `docs/improvement-log.md`, open
 improvement PRs, and improvement branches before suggesting one hypothesis.
 The hypothesis has a stable lowercase key. Reuse the key for the same
 experiment. A durable reservation gives one run ownership of that key for
-the project and goal.
+the project and goal. Concurrent proposals with different keys can both proceed,
+even when their hypotheses describe the same change.
 
 For latency, cost and UX, five paired samples alternate which version runs
 first. The median paired percentage gain must reach the configured minimum and exceed the full

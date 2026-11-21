@@ -34,6 +34,13 @@ atelier install builtin:platform --no-project
 atelier run idea-to-product --input idea="Build a reading list" --input deployment_target=staging
 ```
 
+On macOS the built-in Codex spec writer and reviewer use the Codex CLI's native
+read-only profile. Install Codex with named permission profile and app-server
+support. Each review uses a fresh session with a file-backed login. The reviewer
+can run local inspection commands, while its checkout is read-only and command
+networking is disabled. The builder and shell tests run in the outer OS sandbox
+with disposable agent configuration directories.
+
 ## Runtime events
 
 Configure the 2.3 receiver for the same source, signing key and target project,

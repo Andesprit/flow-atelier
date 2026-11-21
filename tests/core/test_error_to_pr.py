@@ -25,25 +25,30 @@ def git(folder, *args):
 
 
 @pytest.mark.parametrize(
-    ("reproduces", "native"),
+    ("reproduces", "native", "unsafe_change"),
     [
-        (True, False),
-        (False, False),
+        (True, False, None),
+        (True, False, ".editor-settings"),
+        (True, False, "deletion"),
+        (True, False, "symlink"),
+        (False, False, None),
         pytest.param(
             True,
             True,
+            None,
             marks=pytest.mark.skipif(not shutil.which("codex"), reason="Codex unavailable"),
         ),
     ],
 )
-async def test_webhook_to_verified_draft(tmp_path, monkeypatch, reproduces, native):
+async def test_webhook_to_verified_draft(tmp_path, monkeypatch, reproduces, native, unsafe_change):
     project = tmp_path / "orders"
     project.mkdir()
     monkeypatch.chdir(project)
     git(project, "init", "-b", "main")
     git(project, "remote", "add", "origin", "https://github.com/fixture/orders.git")
     (project / "orders.py").write_text("def total(): return 2\n")
-    git(project, "add", "orders.py")
+    (project / "notes").write_text("fixture")
+    git(project, "add", "orders.py", "notes")
     git(
         project,
         "-c",
@@ -63,6 +68,7 @@ async def test_webhook_to_verified_draft(tmp_path, monkeypatch, reproduces, nati
                 "webhookSecrets": {"app": "fixture key"},
                 "notificationRecipient": "+1234567890",
                 "notificationProvider": "twilio",
+                "draftCiDisabledRepositories": ["fixture/orders"],
                 "errorPrProjects": {
                     str(project.resolve()): {
                         "repository": "fixture/orders",
@@ -119,6 +125,12 @@ async def test_webhook_to_verified_draft(tmp_path, monkeypatch, reproduces, nati
                 )
             else:
                 (checkout / "orders.py").write_text("def total(): return 3\n")
+                if unsafe_change == "deletion":
+                    (checkout / "notes").unlink()
+                elif unsafe_change == "symlink":
+                    (checkout / "link").symlink_to("notes")
+                elif unsafe_change:
+                    (checkout / unsafe_change).touch()
 
     if native:
         isolated_login = tmp_path / "empty-codex-home"
@@ -150,6 +162,8 @@ async def test_webhook_to_verified_draft(tmp_path, monkeypatch, reproduces, nati
                     }
                 ]
             )
+        if argv[1:3] == ["api", "repos/fixture/orders"]:
+            return "private"
         if argv[1] == "api":
             assert argv[2] == "repos/fixture/orders/git/ref/heads/main"
             return parent
@@ -161,6 +175,7 @@ async def test_webhook_to_verified_draft(tmp_path, monkeypatch, reproduces, nati
                 "refs/heads/atelier/errors/"
             )
             git(snapshot, "push", lease, str(remote), refspec)
+            assert "[skip ci]" in git(remote, "log", "-1", "--format=%B", sha)
             assert git(remote, "rev-parse", sha + "^") == parent
             assert "return 3" in git(remote, "show", sha + ":orders.py")
             assert "assertEqual" in git(remote, "show", sha + ":" + starts[0])
@@ -203,15 +218,23 @@ async def test_webhook_to_verified_draft(tmp_path, monkeypatch, reproduces, nati
     assert git(project, "status", "--porcelain") == ""
     assert len(starts) == 1, atlas.store.read_logs(run)
     assert git(remote, "rev-parse", "main") == parent
-    if reproduces:
+    if unsafe_change:
+        assert result["status"] == "failed" and not prs and not sends
+        assert "protected" in str(atlas.store.read_logs(run))
+    elif reproduces:
         assert result["status"] == "completed", atlas.store.read_logs(run)
         assert prs == ["atelier/errors/" + run]
         assert atlas.get_outputs(run)["publish"] == url
         assert sends == [("+1234567890", run, [url])]
         snapshot = atlas.store.journal(run).side / "error-to-pr.git"
-        assert github_draft.publish_draft(snapshot, "fixture/orders", prs[0]) == url
+        with pytest.raises(ValueError, match="draftCiDisabledRepositories"):
+            github_draft.publish_draft(snapshot, "fixture/orders", prs[0], ["other/repo"])
+        assert github_draft.publish_draft(snapshot, "fixture/orders", prs[0], ["fixture/orders"]) == url
+        monkeypatch.setattr(github_draft, "_remote", lambda *args: "public")
+        with pytest.raises(ValueError, match="private"):
+            github_draft.publish_draft(snapshot, "fixture/orders", prs[0], ["fixture/orders"])
         with pytest.raises(ValueError, match="destination"):
-            github_draft.publish_draft(snapshot, "fixture/orders", "main")
+            github_draft.publish_draft(snapshot, "fixture/orders", "main", [])
         assert len(prs) == 1
     else:
         assert result["status"] == "failed" and not prs and not sends

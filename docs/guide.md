@@ -1939,7 +1939,7 @@ See [Receive signed application errors](error-webhooks.md) to set up the separat
 
 Use user settings for `cleanupPeriodDays` (default 30), `webhookSources`
 (source ID to configuration), `webhookSecrets` (source ID to secret),
-`errorPrProjects`, `deploymentTargets`, `meetingRepositories`,
+`errorPrProjects`, `deploymentTargets`, `meetingRepositories`, `draftCiDisabledRepositories`,
 `notificationRecipient`, `notificationProvider`, `dictariaAccount`, `dictariaUrl`, `dictariaAliases` and
 `runCaps` (run category to positive limit). Both project files reject changes
 to these keys. Launch commands, `ATELIER_HARNESSES`, `ATELIER_ATELIER_DIR`, `ATELIER_GLOBAL_ATELIER_DIR`,

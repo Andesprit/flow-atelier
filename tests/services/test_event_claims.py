@@ -64,6 +64,7 @@ def test_restart_recovers_old_folder_alongside_unreadable_claim(tmp_path, caplog
 
     claims._recover()
     assert claims.lookup("previous").status == "interrupted"
+    assert claims.lookup("previous").run_id in caplog.text and "interrupted" in caplog.text
     assert claims.lookup("broken").run_id in caplog.text
     assert claims.take() is None
 
@@ -121,3 +122,38 @@ tasks:
     assert expired.run_id == claims[0].run_id
     assert expired.status == "history_expired"
     assert store.take() is None
+
+def test_reopen_requires_terminal_error_claim(tmp_path):
+    from typer.testing import CliRunner
+
+    from flow_atelier.cli import app
+    from flow_atelier.services.store.claims import expire_claim
+
+    home = AtelierSettings().global_atelier_dir
+    errors = EventClaims(home, "errors")
+    other = EventClaims(home, "meeting-tasks")
+    cli = CliRunner()
+    def reopen(run):
+        return cli.invoke(app, ["errors", "reopen", run])
+
+    for status in ("completed", "interrupted", "failed", "history_expired"):
+        run = errors.claim("fingerprint", tmp_path, "demo", {}).run_id
+        assert reopen(run).exit_code != 0
+        errors.start_reserved(run)
+        assert reopen(run).exit_code != 0
+        errors.finish_reserved(run, "failed" if status == "history_expired" else status)
+        if status == "history_expired":
+            expire_claim(home, run)
+        result = reopen(run)
+        assert result.exit_code == 0, result.output
+        assert errors.lookup("fingerprint") is None
+        assert reopen(run).exit_code != 0
+    foreign = other.claim("fingerprint", tmp_path, "demo", {})
+    other.start_reserved(foreign.run_id)
+    other.finish_reserved(foreign.run_id, "failed")
+    assert reopen(foreign.run_id).exit_code != 0 and other.lookup("fingerprint") is not None
+
+
+def test_claim_writers_allow_time_for_contention(tmp_path):
+    with EventClaims(tmp_path, "errors")._transaction() as db:
+        assert db.execute("PRAGMA busy_timeout").fetchone()[0] >= 30000

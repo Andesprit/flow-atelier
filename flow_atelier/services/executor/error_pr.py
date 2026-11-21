@@ -20,7 +20,20 @@ from flow_atelier.services.executor.base import ExecutorBase, FlowContext
 from flow_atelier.services.executor.worker import WorkerSandbox
 from flow_atelier.services.github_draft import git, publish_draft
 
-PROTECTED = {".git", ".github", ".gitmodules", ".gitattributes", ".atelier", ".codex", ".claude"}
+
+def _validate_patch(snapshot: Path, parent: str) -> int:
+    changes = git(snapshot, "diff", "--cached", "--raw", "--no-renames", "-z", parent)
+    fields = changes.split(b"\0")[:-1]
+    for info, path in zip(fields[::2], fields[1::2], strict=True):
+        old, new, _, _, status = info.split()
+        if (
+            status not in (b"A", b"M")
+            or new not in (b"100644", b"100755")
+            or old[1:] not in (b"000000", b"100644", b"100755")
+            or any(part.startswith(b".") for part in path.split(b"/"))
+        ):
+            raise ValueError("Draft patch contains a deletion, special file or protected path")
+    return len(fields) // 2
 
 
 def _artifact(path: Path, limit: int) -> bytes:
@@ -67,6 +80,7 @@ async def _check(snapshot: Path, ref: str, cmd: list[str], expected: int, label:
 
 def _commit_tree(snapshot: Path, parent: str, message: str) -> str:
     tree = git(snapshot, "write-tree").decode().strip()
+    message += " [skip ci]"
     return git(snapshot, "commit-tree", tree, "-p", parent, "-m", message).decode().strip()
 
 
@@ -173,17 +187,8 @@ async def repair(
         patch = _artifact(workspace / "proposed.patch", 4 * 1024 * 1024)
         git(snapshot, "read-tree", parent)
         git(snapshot, "apply", "--cached", "--binary", "-", data=patch)
-        changed = (
-            git(snapshot, "diff", "--cached", "--no-renames", "--name-only", "-z", parent)
-            .decode()
-            .split("\0")[:-1]
-        )
-        if len(changed) < 2 or any(
-            PROTECTED.intersection(part.casefold() for part in Path(name).parts) for name in changed
-        ):
-            raise ValueError(
-                "Expected a fix and regression test without protected repository changes"
-            )
+        if _validate_patch(snapshot, parent) < 2:
+            raise ValueError("Expected a fix and regression test")
         if git(snapshot, "ls-files", "-s", "--", test).split()[:2] != [b"100644", blob.encode()]:
             raise ValueError("The fix changed the regression test")
         commit = _commit_tree(
@@ -225,7 +230,8 @@ class ErrorPrExecutor(ExecutorBase):
             )
         elif resolved_command == "publish":
             output = await _blocking(
-                publish_draft, verified, target.repository, "atelier/errors/" + context.flow_id
+                publish_draft, verified, target.repository, "atelier/errors/" + context.flow_id,
+                self.settings.draft_ci_disabled_repositories,
             )
         elif resolved_command == "notify":
             output = await _blocking(

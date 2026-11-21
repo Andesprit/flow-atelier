@@ -103,7 +103,7 @@ def intake(tmp_path, monkeypatch, request, _isolate_global_atelier_dir):
                     {"assignee": "alex@example.invalid", "task": "Other person's task"},
                     {"assignee": None, "task": "Someone should call"},
                 ]
-                return subprocess.CompletedProcess(argv, 0, errors.get("output", json.dumps({"tasks": tasks})))
+                return subprocess.CompletedProcess(argv, 0, errors.get(meeting["process_id"], errors.get("output", json.dumps({"tasks": tasks}))))
 
             monkeypatch.setattr("flow_atelier.modules.meetings.subprocess.run", run)
             yield home, rows, calls, errors, extracted
@@ -161,8 +161,8 @@ def test_incomplete_transcript_and_malformed_extraction_are_retryable(intake):
     errors.clear()
     errors["output"] = '{"tasks":[{"task":"Missing assignee"}]}'
     bad = poll()
-    assert bad.exit_code == 1 and "extraction" in bad.output
-    assert not list(home.rglob("cursor.json")) and not list(home.rglob("tasks.json"))
+    assert bad.exit_code == 0 and "extraction" in bad.output
+    assert not list(home.rglob("tasks.json"))
     assert EventClaims(home, "meeting-tasks").take() is None
     errors.clear()
     assert poll().exit_code == 0
@@ -214,3 +214,37 @@ def test_restart_after_partial_task_handoff(intake, monkeypatch):
     a, b = (json.loads(row["inputs"]) for row in (first, second))
     assert [a["task"], b["task"]] == ["Draft A", "Draft B"]
     assert a["task_id"] != b["task_id"]
+
+def test_failed_meeting_does_not_block_intake(intake):
+    home, rows, _, errors, extracted = intake
+    rows.extend([meeting(0, 2), meeting(1, 1)])
+    errors[IDS[0]] = "invalid"
+    for attempt in range(1, 4):
+        reply = poll()
+        assert reply.exit_code == 0, reply.output
+        failure, = json.loads(reply.stdout)["extraction_errors"]
+        assert failure == {"meeting_id": IDS[0], "attempts": attempt,
+                           "status": "failed" if attempt == 3 else "retrying",
+                           "reason": "invalid meeting extraction output"}
+        assert EventClaims(home, "meeting-tasks").waiting()
+    assert poll().exit_code == 0
+    assert extracted.count(IDS[0]) == 3 and extracted.count(IDS[1]) == 1
+    assert EventClaims(home, "dictaria:owner@example.test").lookup(IDS[0]).status == "failed"
+
+
+def test_cleanup_expires_only_old_transcripts(tmp_path):
+    import os
+
+    from flow_atelier.services.store.retention import cleanup_runs
+
+    for i in (0, 1):
+        directory = tmp_path / "meetings" / "account" / IDS[i]
+        directory.mkdir(parents=True)
+        raw = directory / "meeting.json"
+        raw.write_text("test")
+        (directory / "tasks.json").write_text("{}")
+        if i == 0:
+            os.utime(raw, (0, 0))
+    cleanup_runs(tmp_path, 30)
+    assert [p.parent.name for p in tmp_path.rglob("meeting.json")] == [IDS[1]]
+    assert len(list(tmp_path.rglob("tasks.json"))) == 2

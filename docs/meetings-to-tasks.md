@@ -13,6 +13,7 @@ Set the endpoint, account identity, and optional exact owner aliases in
   "dictariaUrl": "https://dictaria.example/mcp",
   "dictariaAccount": "alex@example.com",
   "dictariaAliases": ["Alex Rivera"],
+  "draftCiDisabledRepositories": ["example/private-repo"],
   "meetingRepositories": {"/absolute/path/to/project": "example/private-repo"},
   "runCaps": {"meeting-tasks": 2}
 }
@@ -43,7 +44,10 @@ Each result links to a private `tasks.json` under `~/.atelier/meetings/`. Its
 `tasks` array contains validated assignments matching the account or an alias,
 ignoring case and surrounding whitespace. Its `review` array lists tasks whose
 owner was unclear. The adjacent `meeting.json` holds the complete local transcript.
-These local artifacts persist across polls. The extractor's validated decisions
+Daily cleanup removes raw transcripts after `cleanupPeriodDays` (default 30).
+Invalid or unsuccessful extractions are retried once per poll for three attempts.
+The summary records the meeting ID and reason while other meetings continue.
+After the third failure the intake marks that meeting failed. The extractor's validated decisions
 are saved before task submission, so a restart can finish a partially queued
 meeting with its original task IDs.
 
@@ -71,7 +75,14 @@ command reads and queues assignments without starting workers.
 
 The publisher checks GitHub's repository visibility and restricts writes to
 the exact `atelier/meetings/<task-id>` branch of the configured private repo.
-It rejects file deletions, special files, changes to hidden paths, and a remote
+Before acknowledging this repository in `draftCiDisabledRepositories`, exclude
+`atelier/*` branches and their PRs from all CI and hosting integrations, including
+preview deployments and `pull_request_target`. Draft commits carry `[skip ci]` for
+GitHub Actions push and pull_request workflows. Other integrations can still run
+worker-written code unless configured to exclude those branches.
+Draft snapshots prepared by older versions without the skip marker remain available for
+local review. The publisher refuses to push them.
+The publisher rejects file deletions, special files, changes to hidden paths, and a remote
 `main` that has moved past the draft's parent. Completed local drafts survive a
 publication failure, so a later poll can reuse the same snapshot. To retry a
 queued worker, run `atelier run meetings-to-tasks` in its original repository.

@@ -47,7 +47,7 @@ from flow_atelier.schemas.log import (
     UsageLimit,
 )
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext, child_environ
-from flow_atelier.services.executor.cloud_sandbox import cloud_sandbox
+from flow_atelier.services.executor.cloud_sandbox import cloud_sandbox, product_git_guard
 from flow_atelier.services.executor.interaction import InteractionRouter
 from flow_atelier.services.executor.prompt_sink import (
     AskQuestion,
@@ -61,6 +61,7 @@ from flow_atelier.services.executor.usage_limit import (
     is_usage_limit_reply,
     parse_reset,
 )
+from flow_atelier.services.executor.worker import WorkerSandbox
 
 if TYPE_CHECKING:
     from acp.connection import StreamEvent
@@ -1420,6 +1421,7 @@ class AcpHarnessExecutor(ExecutorBase):
         env: dict[str, str] | None = None,
         model: str | None = None,
         effort: str | None = None,
+        native_codex: bool = False,
     ) -> None:
         """Initialize the harness executor.
 
@@ -1440,6 +1442,7 @@ class AcpHarnessExecutor(ExecutorBase):
         self.env = dict(env or {})
         self.model = model
         self.effort = effort
+        self.native_codex = native_codex
 
     def with_model(self, model: str, effort: str | None = None) -> AcpHarnessExecutor:
         """Return a copy of this executor pinned to ``model`` (and ``effort``).
@@ -1460,6 +1463,7 @@ class AcpHarnessExecutor(ExecutorBase):
             env=self.env,
             model=model,
             effort=effort,
+            native_codex=self.native_codex,
         )
 
     def _spawn_env(self) -> dict[str, str]:
@@ -1703,6 +1707,17 @@ class AcpHarnessExecutor(ExecutorBase):
         # an absolute path"), and a relative --path or schedule run_path would
         # otherwise fail the whole task at session/new.
         cwd = str(Path(context.working_dir).resolve()) if context.working_dir else str(Path.cwd())
+        # macOS cannot nest Codex's command sandbox inside Seatbelt. Use its verified
+        # native read-only profile for the product spec and reviewer instead.
+        if (sys.platform == "darwin" and self.native_codex and task.deny_cloud_config
+                and (task.permissions or context.agent_permissions) == "read-only"):
+            if interactive or context.resume_session or context.supervisor_run:
+                raise ValueError("Native product review requires a fresh noninteractive session")
+            async with WorkerSandbox(Path(cwd), read_only=True) as reviewer:
+                answer = await reviewer.turn(
+                    prompt_text, timeout=context.timeout, model=self.model, effort=self.effort,
+                )
+                return ExecutionResult(output=answer, stdout=answer)
         client = _BufferingClient(
             _SilentSink() if context.supervisor_run else self.sink,
             stream_messages=interactive,
@@ -1719,10 +1734,11 @@ class AcpHarnessExecutor(ExecutorBase):
 
         spawned_at = time.monotonic()
         try:
-            with contextlib.ExitStack() as resources:
+            async with contextlib.AsyncExitStack() as resources:
                 scratch = None
                 if task.deny_cloud_config:
                     scratch = Path(resources.enter_context(tempfile.TemporaryDirectory()))
+                    await resources.enter_async_context(product_git_guard(Path(cwd)))
                 result = await asyncio.wait_for(
                     self._drive_session(
                         client, prompt_text, interactive, cwd, agent_stderr,

@@ -42,7 +42,7 @@ ENVIRONMENT_ONLY = frozenset({
 USER_FILE_ONLY = frozenset({
     "webhook_sources", "webhook_secrets", "run_caps",
     "dictaria_account", "dictaria_aliases", "dictaria_url",
-    "meeting_repositories",
+    "meeting_repositories", "draft_ci_disabled_repositories",
     "notification_recipient", "notification_provider", "error_pr_projects", "deployment_targets",
 })
 
@@ -148,6 +148,7 @@ class AtelierSettings(BaseSettings):
     dictaria_account: str | None = None
     dictaria_aliases: list[str] = Field(default_factory=list)
     dictaria_url: str | None = None
+    draft_ci_disabled_repositories: list[str] = Field(default_factory=list)
     meeting_repositories: dict[str, str] = Field(default_factory=dict)
     webhook_sources: dict[str, dict[str, str]] = Field(
         default_factory=dict, description="Per-source project and conduit for signed errors.",

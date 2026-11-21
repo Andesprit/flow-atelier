@@ -182,7 +182,9 @@ class Atelier:
 
         :param sink: :class:`PromptSink` shared by every harness executor.
         """
-        def make(argv: list[str], env: dict[str, str] | None = None) -> AcpHarnessExecutor:
+        def make(
+            argv: list[str], env: dict[str, str] | None = None, *, native_codex: bool = False
+        ) -> AcpHarnessExecutor:
             """Build a harness executor for ``argv``.
 
             :param argv: the agent's launch command.
@@ -193,6 +195,7 @@ class Atelier:
                 sink=sink,
                 done_marker=self.settings.done_marker,
                 env=env,
+                native_codex=native_codex,
             )
 
         self.registry = load_registry(
@@ -200,11 +203,15 @@ class Atelier:
             self.settings.global_atelier_dir / INSTALL_DIRNAME,
         )
         for agent_id, spec in self.registry.items():
-            self.executors[f"harness:{agent_id}"] = make(list(spec.argv), spec.env)
+            self.executors[f"harness:{agent_id}"] = make(
+                list(spec.argv), spec.env, native_codex=spec.id == "codex-acp",
+            )
         for alias, target in LEGACY_HARNESS_ALIASES.items():
             spec = self.registry.get(target)
             if spec is not None:
-                self.executors[f"harness:{alias}"] = make(list(spec.argv), spec.env)
+                self.executors[f"harness:{alias}"] = make(
+                    list(spec.argv), spec.env, native_codex=spec.id == "codex-acp",
+                )
         launch_overrides = {
             "claude-code": self.settings.claude_launch_cmd,
             "codex": self.settings.codex_launch_cmd,

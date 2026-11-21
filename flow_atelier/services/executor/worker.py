@@ -14,6 +14,8 @@ from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import Any
 
+from flow_atelier.services.executor.cloud_sandbox import protected_paths
+
 # The launcher does not inherit application, cloud, publisher or notification credentials.
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
 OFF = (
@@ -42,9 +44,10 @@ async def _stop(proc: asyncio.subprocess.Process) -> None:
 
 
 class WorkerSandbox:
-    """One writable checkout. The sibling launcher home and the source repo are inaccessible."""
+    """One checkout with restricted tools and a separate private launcher home."""
 
-    def __init__(self, workspace: Path) -> None:
+    def __init__(self, workspace: Path, *, read_only: bool = False) -> None:
+        self.read_only = read_only
         self.workspace = workspace.resolve(strict=True)
         self._stack = AsyncExitStack()
         self._sequence = 0
@@ -72,11 +75,19 @@ class WorkerSandbox:
                 raise WorkerUnavailable("Scratch workspace overlaps an agent credential directory")
             self.files = {
                 ":minimal": "read",
+                "/tmp": "deny",
+                "/private/tmp": "deny",
+                "/var/tmp": "deny",
                 str(self.control): "read",
-                str(self.workspace): "write",
+                str(self.workspace): "read" if self.read_only else "write",
                 str(home): "deny",
                 **{str(path.resolve()): "deny" for path in private_dirs},
             }
+            if self.read_only:
+                for path in protected_paths(dict(os.environ)):
+                    if self.workspace.is_relative_to(path):
+                        raise WorkerUnavailable("Product workspace overlaps a private directory")
+                    self.files[str(path)] = "deny"
             if login.is_file():
                 real_login = login.resolve()
                 if real_login.is_relative_to(self.workspace):
@@ -84,7 +95,9 @@ class WorkerSandbox:
                 self.files[str(real_login)] = "deny"
                 (home / "auth.json").symlink_to(real_login)
             self.env = {"HOME": str(home), "CODEX_HOME": str(home), "PATH": SYSTEM_PATH}
-            self.tool_tmp = Path(tempfile.mkdtemp(prefix=".worker-", dir=self.workspace))
+            self.tool_tmp = self.control if self.read_only else Path(
+                tempfile.mkdtemp(prefix=".worker-", dir=self.workspace)
+            )
             config = [
                 'default_permissions = "worker"',
                 'approval_policy = "never"',
@@ -122,14 +135,17 @@ class WorkerSandbox:
                     "thread/start", {"cwd": str(self.control), "ephemeral": True}
                 )
                 policy = started["sandbox"]
-                if (
-                    policy.get("type") != "workspaceWrite"
-                    or policy.get("networkAccess") is not False
-                    or policy.get("writableRoots") != [str(self.workspace)]
-                    or not policy.get("excludeSlashTmp")
-                    or not policy.get("excludeTmpdirEnvVar")
-                    or started.get("approvalPolicy") != "never"
-                ):
+                if self.read_only:
+                    valid = policy.get("type") == "readOnly"
+                else:
+                    valid = (
+                        policy.get("type") == "workspaceWrite"
+                        and policy.get("writableRoots") == [str(self.workspace)]
+                        and policy.get("excludeSlashTmp")
+                        and policy.get("excludeTmpdirEnvVar")
+                    )
+                if (not valid or policy.get("networkAccess") is not False
+                        or started.get("approvalPolicy") != "never"):
                     raise WorkerUnavailable("Codex did not apply the restricted workspace policy")
                 self.thread = started["thread"]["id"]
                 servers = await self._rpc("mcpServerStatus/list", {})
@@ -187,24 +203,35 @@ class WorkerSandbox:
                     raise WorkerUnavailable(f"Codex refused {method}")
                 return message["result"]
 
-    async def turn(self, prompt: str, *, timeout: float = 900) -> None:
+    async def turn(
+        self, prompt: str, *, timeout: float = 900, model: str | None = None,
+        effort: str | None = None,
+    ) -> str:
         """Send data only after confirming the active thread's permissions and empty MCP list."""
+        answer = ""
+        location = f"Use {self.workspace} as the working directory for every command."
         async with asyncio.timeout(timeout):
             await self._rpc(
                 "turn/start",
                 {
                     "threadId": self.thread,
+                    **({"model": model} if model else {}),
+                    **({"effort": effort} if effort else {}),
                     "input": [
-                        {"type": "text", "text": f"Work only in {self.workspace}.\n{prompt}"},
+                        {"type": "text", "text": f"{location}\n{prompt}"},
                     ],
                 },
             )
             while True:
                 message = await self._message()
+                if message.get("method") == "item/completed":
+                    item = message["params"]["item"]
+                    if item.get("type") == "agentMessage":
+                        answer = item["text"]
                 if message.get("method") == "turn/completed":
                     if message["params"]["turn"]["status"] != "completed":
                         raise RuntimeError("Restricted worker turn failed")
-                    return
+                    return answer
 
     async def command(self, argv: list[str]) -> subprocess.CompletedProcess:
         """Independently verify the worker's changes inside the same OS sandbox."""

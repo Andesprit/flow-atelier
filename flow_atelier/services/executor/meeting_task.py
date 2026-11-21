@@ -8,7 +8,7 @@ import re
 import tempfile
 import time
 from contextlib import ExitStack
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.engine import Engine
@@ -23,6 +23,7 @@ from flow_atelier.services.executor.error_pr import (
     _blocking,
     _commit_tree,
     _scratch_branch,
+    _validate_patch,
 )
 from flow_atelier.services.executor.worker import WorkerSandbox
 from flow_atelier.services.github_draft import REPOSITORY, git, publish_meeting_draft
@@ -92,17 +93,7 @@ def _prepare(project: Path, snapshot: Path, workspace: Path, branch: str) -> tup
 def _stage_patch(snapshot: Path, parent: str, patch: bytes, branch: str, repository: str) -> None:
     git(snapshot, "read-tree", parent)
     git(snapshot, "apply", "--cached", "--binary", "-", data=patch)
-    changes = git(snapshot, "diff", "--cached", "--raw", "--no-renames", "-z", parent)
-    fields = changes.split(b"\0")[:-1]
-    for info, path in zip(fields[::2], fields[1::2], strict=True):
-        old, new, _, _, status = info.split()
-        if (
-            status not in (b"A", b"M")
-            or new not in (b"100644", b"100755")
-            or old[1:] not in (b"000000", b"100644", b"100755")
-            or any(part.startswith(".") for part in PurePosixPath(path.decode()).parts)
-        ):
-            raise ValueError("Meeting patch contains a deletion, special file or protected path")
+    _validate_patch(snapshot, parent)
     commit = _commit_tree(snapshot, parent, "Prepare meeting task draft")
     git(snapshot, "update-ref", "refs/heads/" + branch, commit)
     git(snapshot, "config", "atelier.repository", repository)
@@ -317,6 +308,9 @@ async def _collect(
         for result_path in summary.get("meeting_results", []):
             path = Path(result_path)
             lines.append(f"- [Assignments for {path.parent.name}]({path.as_uri()})")
+        for error in summary.get("extraction_errors", []):
+            lines.append(f"- Meeting {error['meeting_id']} extraction {error['status']} "
+                         f"after {error['attempts']} attempt(s): {error['reason']}")
         for item in summary["tasks"]:
             lines.append(f"- {item['task_id']} — {item['status']}")
             for url in item.get("files", []):
@@ -359,7 +353,8 @@ class MeetingTaskExecutor(ExecutorBase):
         elif flow == "meetings-to-tasks" and resolved_command == "notify":
             summary = json.loads((journal.side / "summary.json").read_bytes())
             rows = summary["tasks"]
-            if rows or summary["pending"] or summary["intake_partial"]:
+            extraction_errors = summary.get("extraction_errors", [])
+            if rows or summary["pending"] or summary["intake_partial"] or extraction_errors:
                 ready = sum(row["status"] == "ready" for row in rows)
                 status = f"{ready} meeting tasks ready"
                 for label in ("partial", "failed"):
@@ -367,6 +362,8 @@ class MeetingTaskExecutor(ExecutorBase):
                         status += f", {count} {label}"
                 if summary["pending"]:
                     status += f", {summary['pending']} queued"
+                if extraction_errors:
+                    status += f", {len(extraction_errors)} extraction errors"
                 if summary.get("intake_partial"):
                     status += ", intake partial"
                 links = [row["pr"] for row in rows if row.get("pr")]
@@ -400,6 +397,7 @@ class MeetingTaskExecutor(ExecutorBase):
                         repository,
                         task_id,
                         "atelier/meetings/" + task_id,
+                        self.settings.draft_ci_disabled_repositories,
                         context.inputs["deadline"],
                     )
             else:

@@ -37,7 +37,7 @@ def expire_claim(home: Path, run_id: str) -> None:
     """Persist the tombstone before retention unlinks the last evidence of a run."""
     path = home / DATABASE
     if path.exists():
-        with closing(sqlite3.connect(path)) as db, db:
+        with closing(sqlite3.connect(path, timeout=30)) as db, db:
             db.execute(
                 "UPDATE claims SET status='history_expired', inputs=NULL WHERE run_id=?",
                 (run_id,),
@@ -65,7 +65,7 @@ class EventClaims:
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
-        with closing(sqlite3.connect(self.home / DATABASE)) as db, db:
+        with closing(sqlite3.connect(self.home / DATABASE, timeout=30)) as db, db:
             db.row_factory = sqlite3.Row
             db.execute("BEGIN IMMEDIATE")
             yield db
@@ -158,13 +158,23 @@ class EventClaims:
             ).fetchone()
             return Claim(*row) if row else None
 
-    def complete_queued(self, run_id: str) -> None:
+    def complete_queued(self, run_id: str, *, failed: bool = False) -> None:
         """Acknowledge inline processing only after its durable outputs are committed."""
         with self._transaction() as db:
             db.execute(
-                "UPDATE claims SET status='succeeded', inputs=NULL"
-                " WHERE category=? AND run_id=? AND status='queued'", (self.category, run_id),
+                "UPDATE claims SET status=?, inputs=NULL"
+                " WHERE category=? AND run_id=? AND status='queued'",
+                ("failed" if failed else "succeeded", self.category, run_id),
             )
+
+    def reopen(self, run_id: str) -> bool:
+        """Release a terminal claim so the next report can start a new run."""
+        with self._transaction() as db:
+            return bool(db.execute(
+                "DELETE FROM claims WHERE category=? AND run_id=?"
+                " AND status IN ('completed','failed','stopped','interrupted','history_expired')",
+                (self.category, run_id),
+            ).rowcount)
 
     def _recover(self) -> None:
         # Only the dispatch lease holder may decide whether a reserved run actually started.
@@ -196,6 +206,13 @@ class EventClaims:
                     """UPDATE claims SET status=?, inputs=CASE WHEN ?='queued' THEN inputs END
                        WHERE run_id=?""", (status, status, row["run_id"]),
                 )
+
+            interrupted = db.execute(
+                "SELECT run_id FROM claims WHERE category=? AND status='interrupted'",
+                (self.category,),
+            ).fetchall()
+        for row in interrupted:
+            logger.warning("Run interrupted. Inspect with atelier status %s", row["run_id"])
 
     async def _worker(self, stopped: asyncio.Event) -> None:
         from flow_atelier.core.atelier import Atelier

@@ -91,10 +91,22 @@ def cleanup_runs(home: Path, days: int) -> None:
     """Keep a whole tree until every member has finished outside the retention window."""
     if days < 0:
         raise ValueError("cleanup period must be non-negative")
+    now = _now()
+    meetings = home / "meetings"
+    if meetings.is_dir() and not meetings.is_symlink():
+        for account in meetings.iterdir():
+            if account.is_symlink() or not account.is_dir():
+                continue
+            with file_lock(account / ".poll.lock", wait=False) as acquired:
+                if acquired:
+                    for raw in account.glob("*/meeting.json"):
+                        if raw.parent.is_symlink() or raw.is_symlink() or not raw.is_file():
+                            continue
+                        if now.timestamp() - raw.stat().st_mtime >= days * DAY_SECONDS:
+                            raw.unlink()
     root = home / "projects"
     if root.is_symlink() or not root.is_dir():
         return
-    now = _now()
     with cleanup_lock(root) as acquired:
         if not acquired:
             return

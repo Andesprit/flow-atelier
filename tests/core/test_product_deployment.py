@@ -369,3 +369,48 @@ async def test_adapter_requires_persisted_human_gate_and_reuses_receipt(
     first = await service.execute(task, "deploy", ctx)
     again = await service.execute(task, "deploy", ctx)
     assert first == again and fake.calls == 1
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX host sandbox")
+def test_product_worker_can_edit_source_but_not_git_or_agent_settings(tmp_path):
+    import subprocess
+
+    from flow_atelier.services.executor.cloud_sandbox import cloud_sandbox
+
+    if sys.platform == "linux" and not shutil.which("bwrap", path="/usr/bin:/bin"):
+        pytest.skip("Bubblewrap unavailable")
+    repo, scratch = tmp_path / "repo", tmp_path / "scratch"
+    repo.mkdir()
+    scratch.mkdir()
+    (repo / ".git").mkdir()
+    files = [Path.home() / ".claude/settings.json", Path.home() / ".codex/config.toml",
+             repo / ".git/config"]
+    for file in files:
+        file.parent.mkdir(exist_ok=True)
+        file.write_text("original")
+    argv, env = cloud_sandbox(["/bin/sh", "-c",
+        'touch source && for file do if echo changed > "$file"; then exit 1; fi; done',
+        "check", *map(str, files)], {}, repo, scratch)
+    assert subprocess.run(argv, env=env, cwd=repo).returncode == 0
+    assert (repo / "source").exists() and all(p.read_text() == "original" for p in files)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux mountpoint lifecycle uses flock")
+async def test_concurrent_product_steps_preserve_new_workspace(tmp_path, monkeypatch):
+    from flow_atelier.services.executor.cloud_sandbox import product_git_guard
+
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    entered = asyncio.Event()
+
+    async def step():
+        async with product_git_guard(tmp_path):
+            # Bubblewrap creates a directory for the read-only mount when the target is new.
+            (tmp_path / ".git").mkdir()
+            entered.set()
+            await asyncio.sleep(0.02)
+
+    first = asyncio.create_task(step())
+    async with asyncio.timeout(5):
+        await entered.wait()
+        await asyncio.gather(first, step())
+    assert list(tmp_path.iterdir()) == []

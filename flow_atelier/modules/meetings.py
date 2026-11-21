@@ -94,16 +94,42 @@ async def poll(
     meetings = EventClaims(home, "dictaria:" + account)
     tasks = EventClaims(home, "meeting-tasks")
     results = []
+    errors = []
+    attempted = set()
 
     async def process(meeting_id: UUID, run: str, target: Path) -> None:
+        if meeting_id in attempted:
+            return
+        attempted.add(meeting_id)
         artifacts = folder / str(meeting_id)
         artifacts.mkdir(mode=0o700, exist_ok=True)
         raw = artifacts / "meeting.json"
-        if not raw.exists():
-            _save(raw, await reader.read(meeting_id))
         manifest = artifacts / "tasks.json"
         if not manifest.exists():
-            extraction = await asyncio.to_thread(_extract, raw.read_text(encoding="utf-8"))
+            failures = artifacts / "extraction-error.json"
+            last = json.loads(failures.read_bytes()) if failures.exists() else {}
+            if last.get("status") == "failed":
+                meetings.complete_queued(run, failed=True)
+                errors.append(last)
+                return
+            if not raw.exists():
+                _save(raw, await reader.read(meeting_id))
+            transcript = raw.read_text(encoding="utf-8")
+            try:
+                extraction = await asyncio.to_thread(_extract, transcript)
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                attempts = last.get("attempts", 0) + 1
+                reason = str(exc) if type(exc) is ValueError else type(exc).__name__
+                failed = attempts >= 3
+                failure = {
+                    "meeting_id": str(meeting_id), "attempts": attempts,
+                    "reason": reason, "status": "failed" if failed else "retrying",
+                }
+                _save(failures, failure)
+                if failed:
+                    meetings.complete_queued(run, failed=True)
+                errors.append(failure)
+                return
             assigned = {}
             review = []
             for item in extraction.tasks:
@@ -115,6 +141,7 @@ async def poll(
                                          "assignee": item.assignee, "meeting_id": str(meeting_id)}
             # Commit the validated decisions before queueing anything. A retry reuses them.
             _save(manifest, {"tasks": list(assigned.values()), "review": review})
+            failures.unlink(missing_ok=True)
         plan = json.loads(manifest.read_bytes())
         for task in plan["tasks"]:
             if task["assignee"].casefold() in owners:
@@ -141,4 +168,4 @@ async def poll(
                     await process(summary.process_id, claim.run_id, project)
         if newest != since:
             _save(cursor, newest.isoformat())
-    return {"meeting_results": results}
+    return {"meeting_results": results, "extraction_errors": errors}

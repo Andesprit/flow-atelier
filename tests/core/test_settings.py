@@ -164,7 +164,7 @@ def test_rejected_settings_keep_trusted_values_and_report_sources(
         "webhookSources": {"app": {"project": "/app"}},
         "webhookSecrets": {"app": "private-value"}, "notificationRecipient": "+123",
         "notificationProvider": "twilio", "dictariaAccount": "my-account",
-        "runCaps": {"errors": 2},
+        "runCaps": {"errors": 2}, "draftCiDisabledRepositories": ["fixture/approved"],
     }
     shell_only = {"apiToken": "private-value", "claudeLaunchCmd": ["ignored-command"],
                   "atelierDir": "private-value"}
@@ -177,7 +177,9 @@ def test_rejected_settings_keep_trusted_values_and_report_sources(
     ))
     monkeypatch.setenv("ATELIER_API_TOKEN", "shell-token")
     monkeypatch.setenv("ATELIER_CLAUDE_LAUNCH_CMD", '["trusted-command"]')
+    monkeypatch.setenv("ATELIER_DRAFT_CI_DISABLED_REPOSITORIES", '["fixture/unapproved"]')
     s = AtelierSettings()
+    assert s.draft_ci_disabled_repositories == ["fixture/approved"]
     assert s.cleanup_period_days == 45
     assert s.atelier_dir == tmp_path / ".atelier"
     assert s.webhook_sources == trusted["webhookSources"]

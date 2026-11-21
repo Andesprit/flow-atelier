@@ -56,11 +56,13 @@ def _remote(argv: list[str], env: dict[str, str], cwd: Path, *, timeout: float =
     return result.stdout.strip()
 
 
-def publish_draft(snapshot: Path, repository: str, branch: str) -> str:
+def publish_draft(
+    snapshot: Path, repository: str, branch: str, acknowledged: list[str]
+) -> str:
     """Only push the verified branch and create or recover its draft PR."""
     if not re.fullmatch(r"atelier/errors/[0-9]{8}_[0-9a-f]{8}_error-to-pr", branch):
         raise ValueError("Invalid error PR destination")
-    return _publish(snapshot, repository, branch, meeting=False)
+    return _publish(snapshot, repository, branch, acknowledged, meeting=False)
 
 
 def publish_meeting_draft(
@@ -68,24 +70,28 @@ def publish_meeting_draft(
     repository: str,
     task_id: str,
     branch: str,
+    acknowledged: list[str],
     deadline: float | None = None,
 ) -> str:
     """Publish only this task's exact branch to a private repository."""
     if not re.fullmatch(r"[0-9a-f]{64}", task_id) or branch != f"atelier/meetings/{task_id}":
         raise ValueError("Invalid meeting PR destination")
-    return _publish(snapshot, repository, branch, meeting=True, deadline=deadline)
+    return _publish(snapshot, repository, branch, acknowledged, meeting=True, deadline=deadline)
 
 
 def _publish(
     snapshot: Path,
     repository: str,
     branch: str,
+    acknowledged: list[str],
     *,
     meeting: bool,
     deadline: float | None = None,
 ) -> str:
     if not re.fullmatch(REPOSITORY, repository) or repository.endswith(("/.", "/..")):
         raise ValueError("Invalid PR destination")
+    if repository not in acknowledged:
+        raise ValueError(f"Confirm {repository} in draftCiDisabledRepositories in user settings")
     if git(snapshot, "config", "--get", "atelier.repository").decode().strip() != repository:
         raise ValueError("Verified repository differs from publication target")
     gh = shutil.which("gh", path=SYSTEM_PATH)
@@ -109,11 +115,12 @@ def _publish(
             raise TimeoutError("Meeting publication deadline reached")
         return _remote(argv, env, snapshot, timeout=min(remaining, 120))
 
-    if meeting:
-        visibility = remote([gh, "api", f"repos/{repository}", "--jq", ".visibility"])
-        if visibility != "private":
-            raise ValueError("Meeting drafts require a private GitHub repository")
+    visibility = remote([gh, "api", f"repos/{repository}", "--jq", ".visibility"])
+    if visibility != "private":
+        raise ValueError("Drafts require a private GitHub repository")
     sha = git(snapshot, "rev-parse", "--verify", "refs/heads/" + branch).decode().strip()
+    if b"[skip ci]" not in git(snapshot, "log", "-1", "--format=%B", sha):
+        raise ValueError("Verified draft lacks [skip ci]. Generate a new draft before publishing")
     parent = git(snapshot, "rev-parse", sha + "^").decode().strip()
     existing = json.loads(
         remote(

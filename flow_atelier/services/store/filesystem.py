@@ -192,15 +192,15 @@ class FilesystemStore(StoreBase):
         return conduit_dir / "conduit.yaml" if conduit_dir is not None else None
 
     def _journals(
-        self, project: Path | None = None, pattern: str = "*.jsonl"
+        self, projects: tuple[Path, ...] = (), pattern: str = "*.jsonl"
     ) -> Iterator[tuple[RunJournal, dict[str, Any]]]:
         if self.global_dir is None:
             return
         root = self.global_dir / "projects"
-        recorded = os.path.abspath(project) if project is not None else None
-        names = project_folders(recorded) if recorded is not None else None
+        recorded = {str(path) for path in projects}
+        names = {name for path in recorded for name in project_folders(path)}
         for folder in root.glob("*/"):
-            if names is not None and folder.name not in names:
+            if names and folder.name not in names:
                 continue
             for path in folder.glob(pattern):
                 journal = RunJournal(path)
@@ -211,7 +211,7 @@ class FilesystemStore(StoreBase):
                 except (RunRecordError, OSError) as exc:
                     self.warn_record(str(path), exc)
                     continue
-                if recorded is None or header["project"] == recorded:
+                if not recorded or header["project"] in recorded:
                     yield journal, header
 
     def warn_record(self, record: str, error: Exception) -> None:
@@ -290,7 +290,8 @@ class FilesystemStore(StoreBase):
         """Scan global headers and this store's pre-migration top-level records."""
         found: dict[str, Path] = {}
         ambiguous = set()
-        for journal, header in self._journals(project):
+        targets = (Path(os.path.abspath(project)), project.resolve()) if project is not None else ()
+        for journal, header in self._journals(targets):
             if header["parent_flow_id"] or (conduit_name and header["conduit"] != conduit_name):
                 continue
             run = journal.path.stem
@@ -299,7 +300,6 @@ class FilesystemStore(StoreBase):
             found[run] = Path(header["project"])
         legacy = FilesystemStore(self.base_dir)
         origin = self.base_dir.resolve().parent
-        target = Path(os.path.abspath(project)) if project is not None else None
         for run in legacy.list_flows(conduit_name):
             directory = origin
             try:
@@ -309,7 +309,7 @@ class FilesystemStore(StoreBase):
             else:
                 if progress.run_path:
                     directory = (origin / progress.run_path).resolve()
-            if target is None or target == directory:
+            if not targets or directory in targets:
                 if run in found:
                     ambiguous.add(run)
                 found[run] = directory

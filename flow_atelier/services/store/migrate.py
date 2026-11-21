@@ -23,6 +23,10 @@ from flow_atelier.services.store.retention import cleanup_lock
 _LOCKS = (".writer.lock", ".ask.lock")
 
 
+class ArchiveError(ValueError):
+    """The journals were published but the legacy source could not be archived."""
+
+
 def _leases(directory: Path, locks: ExitStack, dry_run: bool) -> None:
     for name in _LOCKS:
         path = directory / name
@@ -232,7 +236,7 @@ def migrate_tree(old: FilesystemStore, home: Path, root: str, *, dry_run: bool) 
             try:
                 source.rename(retired)
             except OSError as exc:
-                raise ValueError(
+                raise ArchiveError(
                     f"{root}: published; source not archived ({exc}); rerun atelier migrate runs"
                 ) from exc
         return [j.path.stem for j in staged]

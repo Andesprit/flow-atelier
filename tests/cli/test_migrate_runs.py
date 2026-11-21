@@ -306,7 +306,9 @@ def test_archive_rename_failure_reports_publication_and_history_remains_usable(t
         patch.setattr(Path, "rename", refuse)
         result = migrate()
     assert result.exit_code != 0
-    assert "published; source not archived (source busy); rerun atelier migrate runs" in result.output
+    assert result.output.strip() == (
+        f"{root}: published; source not archived (source busy); rerun atelier migrate runs"
+    )
     other = FilesystemStore(old.base_dir, home).create_flow("other", {}, project=project)
     rows = CliRunner().invoke(app, ["list", "flows", "--json"])
     assert rows.exit_code == 0 and other in rows.stdout

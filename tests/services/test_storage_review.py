@@ -47,8 +47,11 @@ def test_historical_folder_and_changed_project_symlink(tmp_path, monkeypatch):
     run = store.create_flow("demo", {}, project=project)
     project.rename(tmp_path / "moved")
     project.symlink_to(tmp_path / "moved", target_is_directory=True)
+    current = store.create_flow("demo", {}, project=project)
+    legacy = store.create_flow("demo", {})
+    store.write_progress(legacy, Progress(run_path=str(project.resolve())))
     assert store.journal(run).header()["project"] == str(project)
-    assert store.list_project_flows(project) == [run]
+    assert set(store.list_project_flows(project)) == {run, current, legacy}
 
 
 def test_old_and_new_long_project_names(tmp_path, monkeypatch):

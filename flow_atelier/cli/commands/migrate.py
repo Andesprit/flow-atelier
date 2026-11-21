@@ -5,7 +5,7 @@ import typer
 from flow_atelier.cli.main import migrate_app
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.services.store.filesystem import FilesystemStore
-from flow_atelier.services.store.migrate import migrate_tree
+from flow_atelier.services.store.migrate import ArchiveError, migrate_tree
 
 
 @migrate_app.command("runs")
@@ -25,7 +25,8 @@ def runs_cmd(
             ids = migrate_tree(old, home, root, dry_run=dry_run)
         except (OSError, ValueError) as exc:
             failed = True
-            typer.echo(f"Kept {root}: {exc}", err=True)
+            message = str(exc) if isinstance(exc, ArchiveError) else f"Kept {root}: {exc}"
+            typer.echo(message, err=True)
             continue
         action = "Would migrate" if dry_run else "Migrated"
         typer.echo(f"{action} {', '.join(ids)}")

@@ -1746,7 +1746,7 @@ class AcpHarnessExecutor(ExecutorBase):
                 env = self._spawn_env()
                 if task.deny_cloud_config:
                     scratch = Path(resources.enter_context(tempfile.TemporaryDirectory()))
-                    token = resources.enter_context(product_login(task.tool, env, scratch))
+                    token = resources.enter_context(product_login(task.tool, argv, env, scratch))
                     await resources.enter_async_context(product_git_guard(Path(cwd)))
                     argv, env = cloud_sandbox(argv, env, Path(cwd), scratch)
                     if token:

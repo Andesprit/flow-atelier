@@ -114,14 +114,26 @@ def _read_scratch_login(path: Path) -> bytes | None:
     return None
 
 
+def _launches_claude(argv: list[str]) -> bool:
+    executable = Path(argv[0]).name
+    if executable != "npx":
+        return executable == "claude-agent-acp"
+    # Match the package npx runs, never a later argument to another adapter.
+    package = next((arg for arg in argv[1:] if arg not in {"-y", "--yes", "--"}), "")
+    claude = "@agentclientprotocol/claude-agent-acp"
+    return package == claude or package.startswith(claude + "@")
+
+
 @contextmanager
-def product_login(tool: str, env: dict[str, str], scratch: Path) -> Iterator[str | None]:
+def product_login(
+    tool: str, argv: list[str], env: dict[str, str], scratch: Path,
+) -> Iterator[str | None]:
     """Yield the Claude token or provision a file-backed login for the selected agent."""
     if sys.platform not in {"darwin", "linux"}:
         yield
         return
     name, _, _ = split_harness_tool(tool)
-    if name in {"harness:claude-code", "harness:claude-acp"}:
+    if name in {"harness:claude-code", "harness:claude-acp"} or _launches_claude(argv):
         if token := env.get("CLAUDE_CODE_OAUTH_TOKEN"):
             yield token
             return

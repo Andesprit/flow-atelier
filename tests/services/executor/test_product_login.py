@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from unittest.mock import AsyncMock
@@ -5,15 +6,36 @@ from unittest.mock import AsyncMock
 import pytest
 
 from flow_atelier.core.atelier import Atelier
-from flow_atelier.schemas.conduit import TaskDefinition
+from flow_atelier.schemas.conduit import TaskDefinition, split_harness_tool
 from flow_atelier.services.executor import cloud_sandbox
 from flow_atelier.services.executor.base import FlowContext
 
 
-@pytest.mark.parametrize("tool", ["harness:claude-code", "harness:claude-acp:opus"])
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "harness:claude-code",
+        "harness:claude-acp:opus",
+        "harness:local",
+        "harness:packaged",
+    ],
+)
 async def test_macos_claude_product_step_requires_setup_token(tmp_path, monkeypatch, tool):
+    monkeypatch.setenv(
+        "ATELIER_HARNESSES",
+        json.dumps(
+            {
+                "local": [str(tmp_path / "claude-agent-acp")],
+                "packaged": [
+                    str(tmp_path / "npx"),
+                    "-y",
+                    "@agentclientprotocol/claude-agent-acp@0.62.0",
+                ],
+            }
+        ),
+    )
     atlas = Atelier()
-    executor = atlas.executors["harness:claude-code"]
+    executor = atlas.executors[split_harness_tool(tool)[0]]
     task = TaskDefinition(
         name="build", description="Build", task="Build", tool=tool, deny_cloud_config=True
     )
@@ -26,6 +48,21 @@ async def test_macos_claude_product_step_requires_setup_token(tmp_path, monkeypa
     drive.assert_not_awaited()
     assert result.exit_code and "CLAUDE_CODE_OAUTH_TOKEN" in result.stderr
     assert "run claude setup-token" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["adapter", "claude-agent-acp"],
+        ["npx", "-y", "other-adapter", "@agentclientprotocol/claude-agent-acp"],
+        ["npx", "-y", "@other/claude-agent-acp"],
+    ],
+)
+def test_unrelated_custom_harness_does_not_receive_claude_token(tmp_path, monkeypatch, argv):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    env = {"CLAUDE_CODE_OAUTH_TOKEN": "fixture-only"}
+    with cloud_sandbox.product_login("harness:custom", argv, env, tmp_path) as token:
+        assert token is None
 
 
 @pytest.fixture(
@@ -47,7 +84,7 @@ def login(request, tmp_path, monkeypatch):
     def step(scratch):
         scratch.mkdir()
         return (
-            cloud_sandbox.product_login(tool, {variable: str(config)}, scratch),
+            cloud_sandbox.product_login(tool, ["fixture-agent"], {variable: str(config)}, scratch),
             scratch / directory / name,
         )
 

@@ -1,14 +1,17 @@
-"""Atelier runtime settings (env-driven)."""
+"""Atelier runtime settings and file-source trust boundaries."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, PositiveInt, SecretStr, field_validator
+from pydantic.alias_generators import to_snake
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
+    DotEnvSettingsSource,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
@@ -32,63 +35,83 @@ ENVIRONMENT_ONLY = frozenset({
     "serve_url",
 })
 
-# Keys already reported as ignored, so each is named once per process.
-_REPORTED: set[str] = set()
+# New fields are user-only until explicitly allowed in project files.
+PROJECT_KEYS = frozenset({
+    "atelier_dir", "default_timeout", "default_max_concurrency", "done_marker",
+    "loop_history_limit", "loop_history_entry_chars", "usage_limit_max_wait", "agent_permissions",
+})
+_REPORTED: set[tuple[str, str]] = set()
 
 
-class _ProjectDotEnv(PydanticBaseSettingsSource):
-    """The working folder's `.env`, without the settings it may not set.
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except ValueError as exc:
+        raise ValueError(f"{path}: invalid JSON ({exc})") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a JSON object")
+    return data
 
-    It may lower ``agent_permissions`` but not raise it to ``full``.
-    """
 
-    def __init__(self, inner: PydanticBaseSettingsSource) -> None:
-        """Wrap the `.env` source pydantic-settings built.
+class _FileSettings(PydanticBaseSettingsSource):
+    """Load files after the trusted constructor and environment select the roots."""
 
-        :param inner: the dotenv source, which honours ``_env_file``.
-        """
-        super().__init__(inner.settings_cls)
-        self.inner = inner
+    def __init__(self, dotenv: DotEnvSettingsSource) -> None:
+        super().__init__(dotenv.settings_cls)
+        self.dotenv = dotenv
 
     def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
-        """Unused: values come from :meth:`__call__`.
-
-        :param field: the field.
-        :param field_name: the field's name.
-        :returns: no value.
-        """
-        return None, field_name, False
+        return None, field_name, False  # Values are loaded together in __call__.
 
     def __call__(self) -> dict[str, Any]:
-        """Return the `.env` values, dropping and reporting refused ones.
+        trusted = self.current_state
+        user_dir = Path(trusted.get("global_atelier_dir", Path.home() / ".atelier"))
+        user_path = user_dir / "settings.json"
+        values: dict[str, Any] = {}
 
-        :returns: the values the working folder's `.env` may set.
-        """
-        values = dict(self.inner())
-        refused = sorted(key for key in values if key in ENVIRONMENT_ONLY)
-        if values.get("agent_permissions") == "full":
-            refused.append("agent_permissions")
-        for key in refused:
-            values.pop(key, None)
-            if key not in _REPORTED:
-                _REPORTED.add(key)
-                print(
-                    f"[flow-atelier] ignored ATELIER_{key.upper()} from ./.env: "
-                    "set it in your shell environment instead; the .env of the "
-                    "folder you run in cannot set it",
-                    file=sys.stderr,
-                )
+        def merge(data: dict[str, Any], source: str, *, project: bool, prefix: str = "") -> None:
+            for raw, value in data.items():
+                if prefix and (value is None or not raw.lower().startswith(prefix.lower())):
+                    continue
+                key = to_snake(raw[len(prefix):])
+                allowed = key in (PROJECT_KEYS if project else self.settings_cls.model_fields)
+                if project and key == "agent_permissions":
+                    # Neither file may raise a tighter permission from another source.
+                    read_only = "read-only" in (values.get(key), trusted.get(key))
+                    allowed = value == "read-only" or (value == "edits" and not read_only)
+                if allowed and key not in ENVIRONMENT_ONLY:
+                    values[key] = value
+                else:
+                    label = ascii(raw.upper() if prefix else raw)[1:-1]
+                    report = (str(Path(source).absolute()), label)
+                    if report not in _REPORTED:
+                        _REPORTED.add(report)
+                        print(f"[flow-atelier] ignored {label} from {source}", file=sys.stderr)
+
+        merge(_read_json(user_path), str(user_path), project=False)
+        # Filter the original strings before pydantic decodes complex fields. Even
+        # a malformed, forbidden launch command must leave the trusted command usable.
+        env_file = self.dotenv.env_file
+        source = "./.env" if env_file == ".env" else str(env_file)
+        merge(dict(self.dotenv.env_vars), source, project=True, prefix=self.dotenv.env_prefix)
+        project_dir = Path(trusted.get("atelier_dir", Path.cwd() / ".atelier"))
+        project_path = project_dir / "settings.json"
+        if project_path != user_path:
+            merge(_read_json(project_path), str(project_path), project=True)
         return values
 
 
 class AtelierSettings(BaseSettings):
-    """Environment-driven configuration."""
+    """Configuration shared by the CLI, server and scheduler."""
 
     model_config = SettingsConfigDict(
         env_prefix="ATELIER_",
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     atelier_dir: Path = Field(
@@ -99,8 +122,15 @@ class AtelierSettings(BaseSettings):
         default_factory=lambda: Path.home() / ".atelier",
         description="Global directory holding shared conduits/ (no flows).",
     )
-    default_timeout: int = 3600
-    default_max_concurrency: int = 3
+    default_timeout: PositiveInt = 3600
+    default_max_concurrency: PositiveInt = 3
+    cleanup_period_days: int = Field(default=30, ge=0)
+    webhook_sources: dict[str, dict[str, str]] = Field(default_factory=dict)
+    webhook_secrets: dict[str, SecretStr] = Field(default_factory=dict)
+    notification_recipient: str | None = None
+    notification_provider: str | None = None
+    dictaria_account: str | None = None
+    run_caps: dict[str, PositiveInt] = Field(default_factory=dict)
     loop_history_limit: int = Field(
         default=10,
         description=(
@@ -208,7 +238,7 @@ class AtelierSettings(BaseSettings):
         settings_cls: type[BaseSettings],
         init_settings: PydanticBaseSettingsSource,
         env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
+        dotenv_settings: DotEnvSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         """Read the working folder's `.env` through :class:`_ProjectDotEnv`.
@@ -223,7 +253,7 @@ class AtelierSettings(BaseSettings):
         return (
             init_settings,
             env_settings,
-            _ProjectDotEnv(dotenv_settings),
+            _FileSettings(dotenv_settings),
             file_secret_settings,
         )
 

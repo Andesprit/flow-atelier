@@ -10,6 +10,7 @@ import pytest
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.schemas.api import CreateConduitInput, UpdateConduitInput
+from flow_atelier.schemas.conduit import InputSpec
 
 
 def _seed_run_path(atelier: Atelier, conduit_name: str, run_path: Path) -> str:
@@ -88,6 +89,35 @@ def test_create_conduit_rejects_collision(atelier):
     atelier.create_conduit(_payload())
     with pytest.raises(FileExistsError):
         atelier.create_conduit(_payload())
+
+
+def test_shared_conduit_inherits_each_projects_defaults_until_overridden(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("ATELIER_LOOP_HISTORY_LIMIT=99")
+    first, second = (tmp_path / name / ".atelier" for name in ("first", "second"))
+    for directory, timeout in [(first, 11), (second, 22)]:
+        directory.mkdir(parents=True)
+        (directory.parent / ".env").write_text(f"ATELIER_LOOP_HISTORY_LIMIT={timeout}")
+        (directory / "settings.json").write_text(
+            f'{{"defaultTimeout": {timeout}, "defaultMaxConcurrency": 5}}'
+        )
+    a, b = Atelier(base_dir=first), Atelier(base_dir=second)
+    assert (a.settings.loop_history_limit, b.settings.loop_history_limit) == (11, 22)
+    payload = _payload()
+    payload.inputs["goal"] = InputSpec(default="ship")
+    recipe = a.create_conduit(payload)
+    assert recipe.inputs == payload.inputs
+    assert (recipe.timeout, recipe.max_concurrency) == (11, 5)
+    a.store.write_conduit_global(recipe)
+    assert b.store.read_conduit(recipe.name).timeout == 22
+    edited = b.update_conduit(recipe.name, UpdateConduitInput(description="local"))
+    assert edited.timeout == 22
+    (second / "settings.json").write_text('{"defaultTimeout": 33}')
+    b = Atelier(base_dir=second)
+    assert b.store.read_conduit(recipe.name).timeout == 33
+    b.update_conduit(recipe.name, UpdateConduitInput(timeout=3600))
+    assert b.store.read_conduit(recipe.name).timeout == 3600
+    assert a.store.read_conduit(recipe.name).description == recipe.description
 
 
 # ----------------------------------------------------------- update

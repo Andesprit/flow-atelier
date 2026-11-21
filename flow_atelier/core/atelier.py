@@ -112,16 +112,19 @@ class Atelier:
         :param prompt_sink: optional :class:`PromptSink` shared by harness
             executors; defaults to :class:`TerminalPromptSink`.
         """
-        if settings is None:
-            settings = (
-                AtelierSettings(atelier_dir=Path(base_dir))
-                if base_dir is not None
-                else AtelierSettings()
+        if settings is None and base_dir is not None:
+            project_dir = Path(base_dir)
+            settings = AtelierSettings(
+                atelier_dir=project_dir, _env_file=project_dir.parent / ".env"
             )
-        self.settings = settings
+        self.settings = settings or AtelierSettings()
         self.store = FilesystemStore(
             self.settings.atelier_dir,
             global_dir=self.settings.global_atelier_dir,
+            conduit_defaults={
+                "timeout": self.settings.default_timeout,
+                "max_concurrency": self.settings.default_max_concurrency,
+            },
         )
         sink: PromptSink = prompt_sink if prompt_sink is not None else TerminalPromptSink()
         self.executors = {
@@ -879,7 +882,7 @@ class Atelier:
             raise FileExistsError(f"conduit already exists: {payload.name}")
         except FileNotFoundError:
             pass
-        conduit = Conduit.model_validate(payload.model_dump(exclude={"run_path"}))
+        conduit = self.store.parse_conduit(self.store.conduit_definition(payload))
         self.store.write_conduit(conduit)
         return conduit
 
@@ -907,13 +910,13 @@ class Atelier:
                     "this conduit has an inline loop body; preserve its nested "
                     "tasks when updating it, or edit conduit.yaml directly"
                 )
-        merged = existing.model_dump()
+        merged = self.store.conduit_definition(existing)
         if "interaction" in payload.model_fields_set:
             merged["interaction"] = payload.interaction
         for key, value in payload.model_dump(exclude_none=True).items():
             merged[key] = value
         merged["name"] = merged.get("name") or name
-        updated = Conduit.model_validate(merged)
+        updated = self.store.parse_conduit(merged)
         if updated.name != name:
             # Rename: refuse to clobber an existing conduit at the target name.
             try:
@@ -1063,6 +1066,7 @@ class Atelier:
             conduit = Conduit.model_validate(
                 {
                     "name": f"task__{payload.name}",
+                    "timeout": self.settings.default_timeout,
                     "description": payload.description or payload.name,
                     "tasks": [
                         {

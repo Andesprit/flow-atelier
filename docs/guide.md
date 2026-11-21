@@ -1932,21 +1932,20 @@ current project's defaults. The shell variables `ATELIER_ATELIER_DIR` and
 
 Project settings can set `defaultTimeout`, `defaultMaxConcurrency`,
 `loopHistoryLimit`, `loopHistoryEntryChars`, `usageLimitMaxWait`, `doneMarker`
-and `atelierDir`. They can lower `agentPermissions` to `edits` or `read-only`.
+and `agentPermissions` (which they can lower to `edits` or `read-only`).
 Both JSON files also accept the equivalent snake_case names.
 
-Use user settings for `cleanupPeriodDays` (default 30), `webhookSources`
-(source ID to configuration), `webhookSecrets` (source ID to secret),
-`notificationRecipient`, `notificationProvider`, `dictariaAccount` and
-`runCaps` (run category to positive limit). Both project files reject changes
-to these keys. Launch commands, `ATELIER_HARNESSES`, `ATELIER_GLOBAL_ATELIER_DIR`,
+User settings can set `cleanupPeriodDays` (default 30). Both project files
+reject changes to it. Launch commands, `ATELIER_HARNESSES`, `ATELIER_ATELIER_DIR`,
+`ATELIER_GLOBAL_ATELIER_DIR`,
 `ATELIER_API_TOKEN` and `ATELIER_SERVE_URL` require the shell environment.
 Atelier names each rejected file setting on stderr and omits its value.
 
 The server and scheduler clean global run history on startup and every 24 hours.
-A run tree becomes eligible once every member has finished and its most recent
-finish is at least `cleanupPeriodDays` old. A value of `0` makes a finished
-tree eligible immediately at the next sweep. Negative values are rejected.
+A run tree becomes eligible when every member has finished or crashed and all
+are at least `cleanupPeriodDays` old. Finished runs use their finish time.
+Crashed runs use their last heartbeat, falling back to the start time. A value
+of `0` makes a finished or crashed tree eligible at the next sweep. Negative values are rejected.
 Cleanup removes journal records, tool steps and saved outputs. Active writers,
 pending questions, unmigrated project records and project worktrees are kept.
 
@@ -2061,7 +2060,7 @@ The `.atelier` directory lives in the working directory where
 .atelier/
 ├── conduits/
 │   └── <conduit_name>/conduit.yaml
-└── flows/
+└── flows/                                  # legacy project-local runs
     └── <flow_id>/                          # <YYYYMMDD>_<uuid8>_<conduit>
         ├── input.yaml                      # the inputs this run was given
         ├── logs.jsonl                      # append-only log, one JSON object per line
@@ -2085,3 +2084,5 @@ Set `ATELIER_GLOBAL_ATELIER_DIR` in the process environment to relocate the
 entire global store. A run header records the full resolved project path.
 The folder name replaces each non-alphanumeric character with a hyphen, so
 two projects can share a folder while retaining their separate identities.
+Encoded names longer than 160 UTF-8 bytes use a SHA-256 digest of the full
+project path. Existing unshortened folders remain readable.

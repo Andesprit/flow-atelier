@@ -11,6 +11,7 @@ from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+from flow_atelier.modules.liveness import is_crashed
 from flow_atelier.schemas.progress import FlowStatus, Progress
 from flow_atelier.services.store.events import RunJournal, RunRecordError, file_lock
 
@@ -24,12 +25,17 @@ def _now() -> datetime:
 
 def _expired(journal: RunJournal, now: datetime, days: int) -> bool:
     progress = Progress.model_validate(journal.latest("progress"))
-    return bool(
-        progress.status != FlowStatus.running
-        and not progress.pending_ask
-        and progress.finished_at
-        and (now - datetime.fromisoformat(progress.finished_at)).days >= days
-    )
+    if progress.pending_ask:
+        return False
+    if progress.status == FlowStatus.running:
+        if not is_crashed(progress):
+            return False
+        last = progress.heartbeat_at or (
+            datetime.fromisoformat(progress.started_at) if progress.started_at else None
+        )
+    else:
+        last = datetime.fromisoformat(progress.finished_at) if progress.finished_at else None
+    return last is not None and (now - last).days >= days
 
 
 def _remove_expired(path: Path) -> None:
@@ -92,19 +98,32 @@ def cleanup_runs(home: Path, days: int) -> None:
             return
         children: dict[str | None, list[RunJournal]] = defaultdict(list)
         seen: set[str] = set()
+        ambiguous: set[str] = set()
         # Collect before deleting. An unreadable header might belong to an otherwise eligible tree.
         for folder in root.iterdir():
             if folder.is_symlink() or not folder.is_dir() or folder.name.startswith("."):
                 continue
             for path in folder.glob("*.expired"):
-                if not path.is_symlink():
-                    _remove_expired(path)
+                try:
+                    if not path.is_symlink():
+                        _remove_expired(path)
+                except (OSError, ValueError) as exc:
+                    logger.warning("Could not remove retired journal %s: %s", path, exc)
             for path in folder.glob("*.jsonl"):
-                if path.is_symlink() or path.stem in seen:
-                    raise RunRecordError(f"ambiguous or linked run journal: {path}")
-                seen.add(path.stem)
-                journal = RunJournal(path)
-                header = journal.header()
+                try:
+                    if path.is_symlink():
+                        raise RunRecordError(f"linked run journal: {path}")
+                    journal = RunJournal(path)
+                    header = journal.header()
+                    if path.stem in seen:
+                        ambiguous.add(path.stem)
+                        if header["parent_flow_id"]:
+                            ambiguous.add(header["parent_flow_id"])
+                        raise RunRecordError(f"ambiguous run journal: {path}")
+                    seen.add(path.stem)
+                except (OSError, ValueError) as exc:
+                    logger.warning("Skipping unreadable journal %s: %s", path, exc)
+                    continue
                 # An interrupted publish may still be missing children.
                 if (
                     header["parent_flow_id"] is None
@@ -117,6 +136,8 @@ def cleanup_runs(home: Path, days: int) -> None:
             tree = [parent]
             for journal in tree:
                 tree.extend(children.get(journal.path.stem, ()))
+            if any(journal.path.stem in ambiguous for journal in tree):
+                continue
             try:
                 _expire_tree(tree, now, days)
             except (OSError, ValueError, KeyError, TypeError) as exc:

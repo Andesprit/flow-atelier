@@ -257,7 +257,7 @@ def test_migrated_heartbeat_and_retention_preserve_tree_and_checkout(tree, monke
     saved.pending_ask = None
     store.write_progress(child, saved)
     assert liveness.display_status(store.read_progress(child)) == "crashed"
-    retention.cleanup_runs(home, 0)
+    retention.cleanup_runs(home, 30)
     assert store.list_child_flows(root) == [child]
     saved.status = FlowStatus.completed
     saved.finished_at = (now - timedelta(days=29)).isoformat()
@@ -292,3 +292,23 @@ def test_live_legacy_pid_with_stale_heartbeat_is_not_migrated(tree):
     assert result.exit_code != 0 and child in result.output
     assert (old.base_dir / "flows" / root).is_dir()
     assert not (home / "projects").exists()
+
+
+def test_archive_rename_failure_reports_publication_and_history_remains_usable(tree, monkeypatch):
+    old, home, project, root, child = tree
+    source = old.base_dir / "flows" / root
+    rename = Path.rename
+    def refuse(path, target):
+        if path == source:
+            raise PermissionError("source busy")
+        return rename(path, target)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "rename", refuse)
+        result = migrate()
+    assert result.exit_code != 0
+    assert "published; source not archived (source busy); rerun atelier migrate runs" in result.output
+    other = FilesystemStore(old.base_dir, home).create_flow("other", {}, project=project)
+    rows = CliRunner().invoke(app, ["list", "flows", "--json"])
+    assert rows.exit_code == 0 and other in rows.stdout
+    assert migrate().exit_code == 0
+    assert FilesystemStore(old.base_dir, home).list_child_flows(root) == [child]

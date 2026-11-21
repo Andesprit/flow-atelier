@@ -161,7 +161,8 @@ def list_flows_cmd(
         try:
             progress = atelier.store.read_progress(fid)
         except RunRecordError as exc:
-            raise cli_error("invalid_run_record", str(exc), json_mode=json_mode) from exc
+            atelier.store.warn_record(fid, exc)
+            continue
         except Exception:  # noqa: BLE001
             progress = None
         progresses[fid] = progress

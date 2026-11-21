@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, PositiveInt, SecretStr, field_validator
+from pydantic import Field, PositiveInt, field_validator
 from pydantic.alias_generators import to_snake
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
@@ -30,6 +30,7 @@ ENVIRONMENT_ONLY = frozenset({
     "copilot_launch_cmd",
     "cursor_launch_cmd",
     "harnesses",
+    "atelier_dir",
     "global_atelier_dir",
     "api_token",
     "serve_url",
@@ -37,7 +38,7 @@ ENVIRONMENT_ONLY = frozenset({
 
 # New fields are user-only until explicitly allowed in project files.
 PROJECT_KEYS = frozenset({
-    "atelier_dir", "default_timeout", "default_max_concurrency", "done_marker",
+    "default_timeout", "default_max_concurrency", "done_marker",
     "loop_history_limit", "loop_history_entry_chars", "usage_limit_max_wait", "agent_permissions",
 })
 _REPORTED: set[tuple[str, str]] = set()
@@ -125,12 +126,6 @@ class AtelierSettings(BaseSettings):
     default_timeout: PositiveInt = 3600
     default_max_concurrency: PositiveInt = 3
     cleanup_period_days: int = Field(default=30, ge=0)
-    webhook_sources: dict[str, dict[str, str]] = Field(default_factory=dict)
-    webhook_secrets: dict[str, SecretStr] = Field(default_factory=dict)
-    notification_recipient: str | None = None
-    notification_provider: str | None = None
-    dictaria_account: str | None = None
-    run_caps: dict[str, PositiveInt] = Field(default_factory=dict)
     loop_history_limit: int = Field(
         default=10,
         description=(

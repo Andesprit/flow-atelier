@@ -13,7 +13,7 @@ in [`examples/cloud-run/`](examples/cloud-run/).
 | Claude Code login | `CLAUDE_CODE_OAUTH_TOKEN`, a Secret Manager secret exposed as an env var |
 | Codex login | a logged-in `auth.json`, a secret mounted as a file and copied to a writable `CODEX_HOME` |
 | Repository | cloned at start with `GITHUB_TOKEN` |
-| Flow history | `.atelier/flows` copied into a mounted Cloud Storage bucket at the end |
+| Flow history | Global journals and side files copied from `~/.atelier/projects/` (or the configured global store) to `$STATE_DIR/projects/` after the run |
 | Agent adapters | installed into the image with `atelier harness install`, so no task waits on npx |
 
 flow-atelier never handles these credentials. It passes its environment to

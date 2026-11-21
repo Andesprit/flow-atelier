@@ -36,6 +36,8 @@ async def test_two_resumes_of_interrupted_nested_run(tmp_path, monkeypatch):
     finally:
         owner.kill()
         await owner.wait()
+    broken = atlas.store.create_flow("unreadable", {}, project=tmp_path / "other")
+    atlas.store.journal(broken).path.write_bytes(b"broken header\n")
     started = [root, child]
     folder = atlas.settings.global_atelier_dir / "projects" / project_folder(tmp_path)
     original = {run: (folder / f"{run}.jsonl").read_bytes() for run in started}

@@ -688,7 +688,7 @@ SCHEDULE_ONCE_JSON = """{
 }"""
 
 
-def test_schedule_add_and_list(workdir, tmp_path):
+def test_schedule_add_and_list(workdir, tmp_path, _isolate_global_atelier_dir):
     """Verify `schedule add` installs a recurring schedule and `list` shows it.
 
     :param workdir: isolated working directory fixture.
@@ -700,7 +700,8 @@ def test_schedule_add_and_list(workdir, tmp_path):
     result = runner.invoke(app, ["schedule", "add", str(src)])
     assert result.exit_code == 0, result.output
     assert "installed" in result.output
-    assert list((workdir / ".atelier" / "schedules").glob("nightly-*.yaml"))
+    assert list((_isolate_global_atelier_dir / "schedules").glob("nightly-*.yaml"))
+    assert str(_isolate_global_atelier_dir / "schedules") in result.stdout
 
     listing = runner.invoke(app, ["list", "schedules"])
     assert listing.exit_code == 0, listing.output
@@ -760,7 +761,7 @@ def test_schedule_add_rejects_invalid(workdir, tmp_path):
     assert "invalid" in result.output.lower()
 
 
-def test_schedule_add_rejects_unknown_input(workdir, tmp_path, monkeypatch):
+def test_schedule_add_rejects_unknown_input(workdir, tmp_path, monkeypatch, _isolate_global_atelier_dir):
     """Verify `schedule add` refuses an input key the conduit cannot use.
 
     :param workdir: isolated working directory fixture.
@@ -777,9 +778,7 @@ def test_schedule_add_rejects_unknown_input(workdir, tmp_path, monkeypatch):
     assert "unknown inputs: ['nmae']" in result.output
     assert "did you mean 'name' for 'nmae'?" in result.output
     assert "'hello' accepts inputs: ['name']" in result.output
-    assert not (workdir / ".atelier" / "schedules").exists() or not list(
-        (workdir / ".atelier" / "schedules").glob("*.yaml")
-    )
+    assert not list((_isolate_global_atelier_dir / "schedules").glob("*.yaml"))
 
 
 def test_schedule_remove_by_name(workdir, tmp_path):
@@ -906,7 +905,7 @@ def _add_schedule_and_record(tmp_path, status, flow_id):
     src.write_text(SCHEDULE_RECURRING_JSON)
     runner = CliRunner()
     runner.invoke(app, ["schedule", "add", str(src)])
-    store = ScheduleStore(tmp_path / ".atelier")
+    store = ScheduleStore(os.environ["ATELIER_GLOBAL_ATELIER_DIR"])
     job = store.get_by_name("nightly")
     store.append_run_record(job.id, status, flow_id)
     return job.id

@@ -60,7 +60,7 @@ def _load_schedule_payload(path: Path) -> CreateScheduleInput:
 
 @schedule_app.command(
     "add",
-    help="Install a schedule (JSON or YAML) into .atelier/schedules/.",
+    help="Install a schedule (JSON or YAML) into ~/.atelier/schedules/.",
 )
 def schedule_add_cmd(
     file: Path = typer.Argument(
@@ -80,11 +80,20 @@ def schedule_add_cmd(
     # Route through the facade so conduit_name is validated against the store
     # (a typo'd conduit otherwise installs cleanly and only fails at fire time).
     try:
-        job = Atelier().create_schedule(payload)
+        atelier = Atelier()
+        atelier.schedule_store.migrate_from(atelier.settings.atelier_dir)
+        job = atelier.create_schedule(payload)
     except (ValueError, FileExistsError) as e:
         console.print(f"[red]invalid schedule:[/red] {e}")
         raise typer.Exit(code=1)
-    console.print(f"[green]installed[/green] {job.id}")
+    typer.echo(f"installed {job.id} in {atelier.schedule_store.schedules_dir.resolve()}")
+
+
+@schedule_app.command("migrate", help="Move this project's legacy schedules into the global store.")
+def schedule_migrate_cmd() -> None:
+    """Migrate an existing installation without starting a scheduler."""
+    store = _schedule_store()
+    typer.echo(f"Schedule store: {store.schedules_dir.resolve()}")
 
 
 @list_app.command("schedules", help="List installed schedules and their next fire times.")
@@ -98,7 +107,7 @@ def schedule_list_cmd(
 
     :param json_mode: when true, emit machine-readable JSON instead of a table.
     """
-    store = _schedule_store()
+    store = _schedule_store(migrate=False)
     planned = compute_planned_view(
         store,
         default_zone=default_local_zone(),
@@ -171,7 +180,7 @@ def schedule_history_cmd(
     :param ref: schedule id or ``schedule.name`` to inspect.
     :param json_mode: when true, emit machine-readable JSON instead of a table.
     """
-    store = _schedule_store()
+    store = _schedule_store(migrate=False)
     job = _resolve_schedule(store, ref)
     if job is None:
         raise cli_error(
@@ -256,6 +265,7 @@ def schedule_run_now_cmd(
                 dict(job.inputs),
                 on_task_event=_on_event,
                 on_flow_started=_on_started,
+                working_dir=working_dir,
             )
         )
     except Exception as e:  # noqa: BLE001

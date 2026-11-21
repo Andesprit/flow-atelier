@@ -1627,6 +1627,7 @@ atelier uninstall <package>                            # delete a package's cond
 
 # scheduling
 atelier schedule add <file.{json,yaml}>
+atelier schedule migrate
 atelier schedule rm <id-or-name>
 atelier schedule run-now <id-or-name>
 atelier schedule history <id-or-name>
@@ -1635,7 +1636,7 @@ atelier schedule daemon [--reload-interval 30] [--log-level INFO]
 # HTTP + WebSocket server
 atelier serve [--host 127.0.0.1] [--port 8000] \
               [--reload-interval 30] [--cors-origin URL]* \
-              [--log-level INFO] [--idle-exit MINUTES]
+              [--log-level INFO] [--idle-exit MINUTES] [--no-scheduler]
 
 # maintenance
 atelier self-update                                    # prebuilt binary only; uv installs use `uv tool upgrade`
@@ -1689,9 +1690,24 @@ left alone.
 ## Running on a schedule
 
 `atelier schedule daemon` runs conduits on a wall-clock schedule. Each
-schedule is one YAML file under `.atelier/schedules/<name>.yaml`. The
-daemon is one foreground process you can put under `systemd`,
-`launchd`, or any supervisor.
+schedule is one YAML file in `~/.atelier/schedules/`. The CLI, API and daemon
+share this directory. Set `ATELIER_GLOBAL_ATELIER_DIR` in the environment to
+change the global root. Both `schedule add` and scheduler-enabled `serve`
+print the schedule directory. A new schedule's relative `run_path` is anchored
+to the working directory where you add it.
+
+**Upgrading project schedules.** Stop old project daemons. In each directory
+where one used to run, use `atelier list schedules` to discover legacy jobs,
+then `atelier schedule migrate` to move them without starting a daemon.
+Scheduling-enabled `serve`, `schedule daemon`, and writable schedule commands
+also migrate that project's jobs. The source is the configured project store
+(`ATELIER_ATELIER_DIR`, default `./.atelier`). Migration preserves IDs,
+fire markers, history and run counts, and anchors relative run paths to the
+current directory. A name or ID conflict leaves the source job in place and
+prints a warning. Resolve the conflicting definition before retrying.
+
+Run one scheduler for the shared store, either `atelier schedule daemon` or
+`atelier serve`. Use `atelier serve --no-scheduler` for additional dashboards.
 
 To register a schedule, write a YAML file like the one below and run
 `atelier schedule add <file>`:
@@ -1733,7 +1749,9 @@ immediately, bypassing the daemon.
 
 `atelier serve` boots a single process that hosts both the HTTP /
 WebSocket API and the scheduler daemon. It is the entry point the
-Flow Atelier visual frontend connects to.
+Flow Atelier visual frontend connects to. Startup prints the project store and
+the active schedule directory. With `--no-scheduler` the API remains available
+and startup reports that the scheduler is disabled.
 
 
 | Method   | Path                  | Notes                                     |
@@ -1769,11 +1787,11 @@ driving the CLI can hand the link to you. The page loads only while
 `atelier serve` runs from the same project directory as the run. Set
 `ATELIER_SERVE_URL` when you serve on another host or port. If the server is absent,
 unresponsive, or serves another project, the CLI gives an instruction instead:
-run `atelier serve --port 0` from this project, then open `/runs/<flow_id>` at
+run `atelier serve --port 0 --no-scheduler` from this project, then open `/runs/<flow_id>` at
 the address it prints. Port 0 chooses a free port.
 
 A server started only to show a run page does not need to live forever.
-`atelier serve --idle-exit 30` stops itself after 30 minutes with no open page,
+`atelier serve --no-scheduler --idle-exit 30` skips scheduling and stops itself after 30 minutes with no open page,
 no request, no running flow in that directory and no scheduled run in progress.
 Without the flag it runs until you stop it.
 
@@ -1996,9 +2014,6 @@ The `.atelier` directory lives in the working directory where
 .atelier/
 ├── conduits/
 │   └── <conduit_name>/conduit.yaml
-├── schedules/
-│   └── <schedule_name>.yaml                # one YAML file per schedule
-├── scheduler_state.json                    # fired-once markers
 └── flows/
     └── <flow_id>/                          # <YYYYMMDD>_<uuid8>_<conduit>
         ├── input.yaml                      # the inputs this run was given
@@ -2007,6 +2022,11 @@ The `.atelier` directory lives in the working directory where
         ├── outputs.yaml                    # per-task outputs (written as tasks finish)
         └── flows/
             └── <child_flow_id>/...         # nested tool:conduit runs
+
+~/.atelier/
+├── schedules/
+│   └── <slug>-<hash>.yaml                  # one YAML file per shared schedule
+└── scheduler_state.json                    # fired-once markers and run history
 ```
 
 

@@ -1,187 +1,94 @@
-# Orchestrating several agents in one workflow
+# When to give a second agent a task
 
-A 5-minute exercise that builds two multi-agent workflows from the command
-line — a handoff chain and a review panel with a synthesis step — runs both,
-and reads their saved results back by flow id. You never write YAML by hand,
-and what you get is still an ordinary conduit you can open and edit.
+A task is one checkable result owned by one agent with the skills it needs.
+Keep planning and implementation together when both serve one change. Split
+when you need fresh context, parallel work, an independent test or review,
+or a different permission level or agent.
 
-`atelier compose` is the only new command here. Everything after it is the
-workflow surface Atelier already has: `check`, `plan`, `run`, `outputs`,
-`--resume`.
+## Check the evidence for a decision
 
-New to Atelier? Run the single-agent
-[first workflow](first-workflow.md) first; it needs no AI account at all.
-
-## Before you start
-
-Two agents you are already logged into. The guide uses `claude-code` and
-`codex`; any two names from `atelier list harnesses` work, and you can swap
-them in every command below.
-
-Each prerequisite is checked explicitly, so a missing or logged-out agent
-stops here instead of halfway through a run:
+Suppose an on-call team wants to move a nightly job. One reader gathers
+evidence. A fresh reviewer opens the cited sources and writes the decision
+memo. Both need only read access. This Bash exercise uses Git, Python 3 and
+two logged-in agents with read-only support.
 
 ```bash
-atelier --version || exit 1
 atelier harness check claude-code || exit 1
 atelier harness check codex || exit 1
-```
-
-`harness check` opens an ACP session and closes it. It sends no prompt, so it
-costs no tokens.
-
-The blocks below are Bash — macOS, Linux, WSL or Git Bash. They quote every
-path, and they all end in `|| exit 1`, so you can paste them into a script
-without adding error handling of your own.
-
-## 1. A disposable workspace
-
-```bash
 work_dir="$(mktemp -d)/agent handoff" || exit 1
-mkdir -p "$work_dir" || exit 1
-cd "$work_dir" || exit 1
-echo "working in: $work_dir"
+mkdir -p "$work_dir" && cd "$work_dir" || exit 1
+git init -q || exit 1
+printf '02:00 billing starts\n02:02 backup starts\n02:18 billing ends\n' > incident.txt
+printf 'Backups must finish by 03:00.\n' > policy.txt
+git add incident.txt policy.txt || exit 1
+git -c user.name=Demo -c user.email=demo@example.com commit -qm "Record incident and policy" || exit 1
 ```
 
-The space in the folder name is deliberate; real project paths have them.
-
-## 2. Compose a handoff
-
-One `--step` per agent, in the order you want them to work. Only the first
-`=` separates the agent from its instruction, so the prompt keeps its own:
-
 ```bash
-atelier compose triage \
-  -s "claude-code=Propose one concrete fix. Say what you would change and why." \
-  -s "codex=Review the proposal above. Name what breaks, or say it is sound." \
-  || exit 1
-```
-
-That wrote `.atelier/conduits/triage/conduit.yaml` and nothing else. No agent
-started, no run was created.
-
-## 3. Read it before you run it
-
-```bash
-cat ".atelier/conduits/triage/conduit.yaml" || exit 1
+atelier compose triage --permissions read-only \
+  -s "claude-code=Use the incident and policy files. Label each claim with file and line. Identify missing evidence." \
+  -s "codex=Open each cited line. Write a decision memo listing supported claims, unsupported claims and the next check." || exit 1
 atelier check triage --json || exit 1
 atelier plan triage || exit 1
-```
-
-Two tasks, `step_1` and `step_2`. Both receive the conduit's required `brief`
-input; `step_2` also receives `step_1`'s result, quoted under a
-`RESULT FROM step_1 (harness:claude-code)` marker so the second agent can tell
-the material apart from its instruction. `step_2` lists `step_1` under
-`depends_on`, which is what makes the handoff an order and not a hope.
-
-`check --json` reports `"required_inputs": ["brief"]`. `plan` prints the two
-waves and runs nothing.
-
-The file is yours from here. Add a `tool:bash` step, a `tool:hitl` approval,
-a `timeout`, a `retries` — `compose` writes the first draft, it does not own
-the result.
-
-## 4. Run it
-
-```bash
-atelier run triage --input brief="The nightly billing job is late. Constraint: budget=0." || exit 1
-```
-
-The brief reaches both agents. The second agent starts only once the first has
-finished, because it cannot be handed a result that does not exist yet.
-
-## 5. Read the exact result back
-
-```bash
-flow_id=$(atelier wait latest --timeout 5) || exit 1
-atelier outputs "$flow_id" --task step_1 || exit 1
+atelier run triage --input brief="Would moving the backup avoid a billing overrun while meeting policy?" --json > triage.json || exit 1
+flow_id=$(python3 -c 'import json; print(json.load(open("triage.json"))["flow_id"])') || exit 1
 atelier outputs "$flow_id" --task step_2 || exit 1
 ```
 
-`atelier wait` prints only the resolved flow id, so the next command addresses
-one exact run instead of resolving `latest` again and possibly landing on a
-newer one. Every prompt and every reply stays on disk under that id:
-`atelier logs "$flow_id"` shows them tomorrow.
+For example, the incident shows an overlap at lines 1–3. It gives no backup
+duration or evidence of causation. A checker can recommend measuring both
+before changing the schedule. The generated YAML hands the first response and
+the original brief to the checker.
 
-## 6. A panel instead of a chain
+## Review one commit in parallel
 
-`--parallel` cuts the links between the steps: every agent gets the brief and
-nothing else, and they run at the same time. `--synthesize` adds one final
-`synthesis` task that depends on all of them and receives each result labelled
-with the step and the agent that produced it:
+Use a panel when different reviewers should examine the same change without
+seeing each other’s findings. Pin the commit in the brief. Give each reviewer
+a finding format and let synthesis resolve disagreements against the diff.
 
 ```bash
-atelier compose panel --parallel \
-  -s "claude-code=Review the brief for correctness risks." \
-  -s "codex=Review the brief for security risks." \
-  --synthesize "claude-code=Merge the two reviews into one ranked list." \
-  || exit 1
+revision=$(git rev-parse HEAD) || exit 1
+atelier compose panel --parallel --permissions read-only \
+  -s "claude-code=Check correctness at the specified commit. Give each finding as file:line, impact, verification, or say no findings." \
+  -s "codex=Check for missing test coverage at the specified commit. Give each finding as file:line, impact, verification, or say no findings." \
+  --synthesize "claude-code=Check disagreements against the commit and rank actionable findings with their evidence." || exit 1
 atelier plan panel || exit 1
+if ! atelier run panel --input brief="Review the patch from git show $revision." --json > panel.json; then
+  [ -s panel.json ] || exit 1
+  echo "Read the saved status before continuing." >&2
+fi
 ```
 
-`plan` shows it: one wave with both reviewers, then a wave with `synthesis`.
+If a reviewer fails, synthesis waits for its result. For a failed allocated
+run, read its ID from the completion record and diagnose it. Once the failed
+reviewer is available, resume. Completed reviewers keep their results.
 
 ```bash
-atelier run panel --input brief="The nightly billing job is late. Constraint: budget=0." || exit 1
-panel_id=$(atelier wait latest --timeout 5) || exit 1
+panel_id=$(python3 -c 'import json; print(json.load(open("panel.json"))["flow_id"])') || exit 1
+if [ "$(python3 -c 'import json; print(json.load(open("panel.json"))["status"])')" = failed ]; then
+  atelier diagnose "$panel_id" || exit 1
+  atelier run --resume "$panel_id" || exit 1
+fi
 atelier outputs "$panel_id" --task synthesis || exit 1
 ```
 
-The reviewers work from the same brief and never see each other's answers;
-only the synthesizer sees both.
+## Build a change with an independent test
 
-One honest limit: parallel agents run in the **same directory**. The composed
-prompts ask for analysis, and nothing stops an agent from editing files
-anyway — that is a prompt, not a sandbox. Give writing agents separate
-worktrees, or keep the parallel shape for review and analysis.
+In a project with a trusted test command, the fix-loop starter puts planning
+in the builder’s first attempt. A shell task checks the actual change once
+per attempt. Failure sends the diagnostic back to the builder. After four
+failed attempts the flow fails. A passing exit status unlocks two parallel
+diff reviews and a combined verdict. You decide whether to merge.
 
-## When an agent fails
+Try it in the incident exercise above. Give the builder a writable task and
+keep the acceptance command under your control.
 
-Nothing special: a composed conduit fails and recovers like any other. The
-failing step is recorded, everything downstream of it is cancelled rather than
-run on a missing result, and the run exits non-zero.
-
-```text
-# after fixing whatever failed — a login, a rate limit, a prompt
-atelier run --resume "$flow_id"
+```bash
+atelier create incident-summary --template fix-loop || exit 1
+atelier run incident-summary --input goal="Write the billing duration from incident.txt to duration.txt as one line: 18 minutes." \
+  --input test_command='test "$(cat duration.txt)" = "18 minutes"' --json
 ```
 
-`--resume` finishes that same flow. Steps that already completed are not asked
-again, so a failure in the last agent of a five-agent chain costs you one
-agent, not five. The mechanics, and the difference from `--again`, are covered
-in the [first workflow](first-workflow.md#7-repair-then-resume).
-
-## Choosing agents, models and effort
-
-A step names any harness `atelier list harnesses` shows, with or without the
-`harness:` prefix, and may pin a model or a model and a reasoning effort:
-
-```text
--s "codex=..."                       the agent's own default model
--s "codex:gpt-5.1=..."               that model
--s "codex:gpt-5.1:high=..."          that model at that effort
-```
-
-`atelier harness check codex` lists the models the agent offers, and
-`atelier harness check codex:<model>` the efforts that model offers. To ask
-every agent of one workflow at once instead of naming them yourself, see
-[Checking the whole agent team before a
-run](checking-the-team-before-a-run.md).
-
-The name a step carries is its default, not a lock: `atelier run <name>
---agent <task>=<harness>` runs one task on another agent without touching the
-file. [Running one workflow with different
-agents](reusing-a-workflow-with-other-agents.md) walks that path — preview,
-run, read back, recover a bad choice, and re-run with the agents swapped.
-
-When a run breaks halfway, `atelier diagnose <flow_id>` says what failed, what
-is already saved and what to do next. [Recovering a failed
-workflow](recovering-a-failed-workflow.md) walks that path — break a run, read
-it back, repair it, and finish it without paying for the completed agent work
-twice.
-
-A prompt may not contain `{{...}}`. Composed prompts reach the agent as you
-typed them — only the whitespace around the prompt is trimmed — so a template
-reference is refused when you compose rather than quietly reinterpreted at run
-time. If you want one, write it into the conduit.yaml afterwards — it is a
-normal file.
+[Run the fix-loop starter](loop-agents-graph.md) ·
+[Swap agents for a run](reusing-a-workflow-with-other-agents.md) ·
+[Compare implementations in separate checkouts](parallel-agents-in-separate-checkouts.md)

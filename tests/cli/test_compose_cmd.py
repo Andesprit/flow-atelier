@@ -85,6 +85,7 @@ def test_sequential_chains_brief_and_previous_result(workdir):
         "harness:alpha", "harness:beta", "harness:alpha"
     ]
     assert [t.depends_on for t in conduit.tasks] == [[], ["step_1"], ["step_2"]]
+    assert all(task.permissions is None for task in conduit.tasks)
     assert set(conduit.inputs) == {"brief"}
     assert conduit.inputs["brief"].default is None
 
@@ -116,15 +117,17 @@ def test_parallel_workers_share_only_the_brief(workdir):
         assert ".output}}" not in task.task
 
 
-def test_synthesis_waits_for_every_attributed_worker(workdir):
+@pytest.mark.parametrize("permissions", ["read-only", "edits", "full"])
+def test_synthesis_waits_for_every_attributed_worker(workdir, permissions):
     """`--synthesize` adds one final task fed by all of them."""
     assert _compose(
-        "panel", "--parallel",
+        "panel", "--parallel", "--permissions", permissions,
         "-s", "alpha=Correctness", "-s", "beta=Security",
         "--synthesize", "alpha=Merge the findings",
     ).exit_code == 0
     conduit = _conduit(workdir, "panel")
     validate_conduit(conduit)
+    assert all(task.permissions == permissions for task in conduit.tasks)
     synthesis = conduit.tasks[-1]
     assert synthesis.name == "synthesis"
     assert synthesis.depends_on == ["step_1", "step_2"]
@@ -187,7 +190,12 @@ def test_only_the_first_equals_separates(workdir):
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        (["-s", "alpha=only one"], "at least two"),
+        ([], "at least one --step"),
+        (["-s", "alpha=x", "--permissions", "typo"], "read-only"),
+        (
+            ["-s", "alpha=x", "--parallel", "--synthesize", "alpha=z"],
+            "--synthesize needs at least two --step values",
+        ),
         (["-s", "alpha", "-s", "beta=x"], "expected HARNESS=PROMPT"),
         (["-s", "alpha=", "-s", "beta=x"], "expected HARNESS=PROMPT"),
         (["-s", "=prompt", "-s", "beta=x"], "expected HARNESS=PROMPT"),

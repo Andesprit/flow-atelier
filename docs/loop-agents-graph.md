@@ -1,7 +1,7 @@
 # One file: a fix loop with agent reviews
 
 This walkthrough starts in an empty directory and builds a workflow with a
-planning agent, a fix/test loop, two reviews that can run together, and a final
+builder that plans and fixes, a shell test, two parallel reviews, and a final
 verdict. The loop and its body live in one `conduit.yaml`. You can preview the
 whole graph and swap the fix agent for one run without editing the recipe.
 
@@ -28,13 +28,15 @@ atelier create ship --template fix-loop
 ```
 
 `create` writes only `.atelier/conduits/ship/conduit.yaml`. Open it to see the
-graph: `plan → fix_until_green → {review_correctness,
+graph: `fix_until_green → {review_correctness,
 review_maintainability} → verdict`. The two reviews share the same dependency
-and `max_concurrency: 2` lets them run together. Inside `fix_until_green`,
-`fix` runs before `test`. `repeat: 4` caps attempts; `until:
-output.match(TESTS PASSED)` stops early; `on_exhaust: fail` keeps reviews from
-running if the test never passes. The fix prompt receives the previous attempt
-through `{{loop.previous}}`.
+and inspect the working tree diff and the passing test output.
+`max_concurrency: 2` lets them run together. Inside `fix_until_green`,
+`fix` runs before `test`. The loop runs at most four times. A passing shell
+check prints the marker for `until: output.match(TESTS PASSED)`.
+`on_exhaust: fail` blocks reviews after four failed attempts. The builder
+receives the goal on every attempt and the previous failure through
+`{{loop.previous}}` on retries.
 
 The `test_command` input defaults to `python3 -m pytest -q` for a Python
 project; pass `--input test_command='python -m pytest -q'` if your machine
@@ -54,11 +56,10 @@ SH
 For your own project, omit the `test_command` input to use the default, or
 pass your real check command. The test task prints the command's output,
 including its error output, then `TESTS FAILED` when that command exits
-nonzero and `TESTS PASSED` when it succeeds. A failing check is
-feedback for the next loop attempt, so it does not abort the run by itself.
-The loop would go on even if the test task itself exited nonzero: in a loop
-with `until`, a failed try counts as one more try, and the next one sees its
-output and error in `{{loop.previous}}`.
+nonzero and `TESTS PASSED` when it succeeds. The task exits with the command's
+failure code after printing `TESTS FAILED`. Atelier retries a failed attempt
+without evaluating its output predicate, so even a builder that says
+`TESTS PASSED` cannot send a failing change to review.
 
 ## Preview and run
 
@@ -74,10 +75,9 @@ atelier status latest
 wave. Neither command starts an agent. In the run, Codex receives both fix
 prompts; the second includes `TESTS FAILED` from the first attempt. Status
 reports `fix_until_green` at iteration `2/4` and lists both passes: the fix
-agent, the test's last line, and whether the condition was met. During the run,
-the child banners read `fix_until_green 1/4 > fix` and then `2/4 > fix`;
-an unmet pass has an amber `condition not met` marker. The recipe still names
-Claude Code for `fix`: the `--agent` choice applies only to this run.
+agent, the pass result, and whether the condition was met. During the run,
+the child banners read `fix_until_green 1/4 > fix` and then `2/4 > fix`.
+The `--agent` choice applies only to this run.
 
 For a specific model and effort, the same address accepts
 `--agent fix_until_green.fix=codex:<model>:<effort>` when that harness offers
@@ -121,10 +121,9 @@ atelier diagnose latest
 
 The `run` command is expected to exit 1. Status records that
 `fix_until_green` exhausted four iterations without matching its loop
-predicate and that the reviews were cancelled. Both status and diagnose show
-passes `1/4` through `4/4`, each with `fix [harness:codex]`, `TESTS FAILED`,
-and `condition not met`. The live result panel warns on each unmet pass, and
-the final loop row in status reads `4/4`.
+predicate and that both reviews and the verdict were cancelled. Status and
+diagnose show passes `1/4` through `4/4`, each with `fix [harness:codex]`,
+the failed `test [tool:bash]` step, its exit code, and `condition not met`.
 Repair the check or code so the command exits zero. Here, choose the working
 test command for a fresh run:
 

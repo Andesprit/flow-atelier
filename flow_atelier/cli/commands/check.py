@@ -6,6 +6,7 @@ import json
 import math
 import re
 import time
+from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,8 +19,8 @@ from rich.markup import escape
 
 from flow_atelier.cli._shared import (
     _exit_unknown_conduit,
+    cli_error,
     console,
-    err_console,
     parse_agents_option,
 )
 from flow_atelier.cli.commands.recipe_diagnostics import (
@@ -45,7 +46,12 @@ from flow_atelier.modules.engine import (
     validate_conduit,
 )
 from flow_atelier.modules.plan import exhaustion_warnings
-from flow_atelier.modules.templating import env_var_name, shell_env, shell_env_hints
+from flow_atelier.modules.templating import (
+    env_var_name,
+    extract_task_refs,
+    shell_env,
+    shell_env_hints,
+)
 from flow_atelier.schemas.conduit import (
     Conduit,
     TaskDefinition,
@@ -382,6 +388,100 @@ def _is_conditional(task: TaskDefinition) -> bool:
     )
 
 
+_INDEPENDENT_WORK = re.compile(
+    r"\b(review\w*|audit\w*|verif\w*|test\w*|critique\w*|fresh context|clean context|"
+    r"independent\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _handoff_warnings(
+    tasks: list[TaskDefinition], prefix: str, agents: Mapping[str, str],
+) -> list[str]:
+    """Suggest merging a plain, one-to-one edge between comparable agent tasks."""
+    consumers: dict[str, set[str]] = defaultdict(set)
+    for task in tasks:
+        refs = {parse_dependency(dep).task for dep in task.depends_on}
+        for template in (task.task, *task.inputs.values()):
+            if isinstance(template, str):
+                refs.update(extract_task_refs(template))
+        for name in refs:
+            consumers[name].add(task.name)
+
+    candidates = {
+        task.name: task for task in tasks
+        if task.tool.startswith("harness:") and task.repeat == 1 and not task.interactive
+        and not _is_conditional(task)
+        and not _INDEPENDENT_WORK.search(
+            f"{task.name.replace('_', ' ')} {task.description} {task.task}"
+        )
+    }
+    warnings = []
+    for task in candidates.values():
+        if len(task.depends_on) != 1:
+            continue
+        source = candidates.get(task.depends_on[0])
+        if (
+            source is not None and consumers[source.name] == {task.name}
+            and agents.get(source.name, source.tool) == agents.get(task.name, task.tool)
+            and source.permissions == task.permissions and source.session == task.session
+        ):
+            warnings.append(
+                f"{prefix}{source.name} -> {prefix}{task.name}: only one task consumes "
+                "this handoff. If both serve one checkable result, give one agent both "
+                "instructions and the skills it needs. Split for clean context, parallel "
+                "work, an independent test or review, or different permissions or agents."
+            )
+    return warnings
+
+
+# shortcut: recognize common status-masking shell endings, extend for other observed recipes.
+_MASKED_CHECK = re.compile(
+    r"""(?:
+        ^ | ^[\w./-][^;&|\n]*[;\n]\s*   # alone or after one unguarded command
+        | \|\|\s* | \b(?:then|else)\s+   # the last branch of an OR or if
+    )
+    (?:echo|printf|true|exit\s+0)\b[^;&|\n]*+
+    (?:[;\s]+fi)*[;\s]*$                # no later command propagates failure
+    """, re.VERBOSE,
+)
+
+
+def _loop_marker_warnings(
+    task: TaskDefinition, body: list[TaskDefinition], prefix: str,
+) -> list[str]:
+    """Flag predicates that rely on agent prose or a visibly masked shell check."""
+    condition = task.until or task.while_
+    if not condition:
+        return []
+    if task.tool.startswith("harness:"):
+        reason = "reads the agent's reply"
+    elif any(child.tool.startswith("harness:") for child in body):
+        shells = [child for child in body if child.tool == ToolType.bash]
+        if shells and not any(_MASKED_CHECK.search(child.task.strip()) for child in shells):
+            return []
+        reason = "checks every child output, so agent prose can match the marker"
+    else:
+        return []
+    return [
+        f"{prefix}{task.name}: {condition} {reason}. Use a shell check that exits "
+        "nonzero on failure and prints a success marker only after the check passes."
+    ]
+
+
+def _authoring_warnings(
+    tasks: list[TaskDefinition], prefix: str, agents: Mapping[str, str],
+) -> list[str]:
+    warnings = _handoff_warnings(tasks, prefix, agents)
+    for task in tasks:
+        warnings.extend(_loop_marker_warnings(task, task.tasks or [], prefix))
+        if task.tasks:
+            warnings.extend(_authoring_warnings(
+                task.tasks, f"{prefix}{task.name}.", child_bindings(agents, task.name),
+            ))
+    return warnings
+
+
 def _team_of(conduit: Conduit, hops: list[tuple[str, str]]) -> list[_TeamTask]:
     """List the harness work ``conduit`` itself defines, in task order.
 
@@ -506,6 +606,7 @@ def _walk_calls(
     hops: list[tuple[str, str]],
     cache: dict[str, tuple[Conduit, str]],
     seen: set[tuple[str, int]],
+    warnings: list[str],
     team: list[_TeamTask] | None = None,
     agents: Mapping[str, str] | None = None,
     source: RecipeSource | None = None,
@@ -559,6 +660,9 @@ def _walk_calls(
             raise _NestedProblem(f"{chain} ({path}) — {'; '.join(problems)}")
         child_source = source if parse_inline_conduit_name(target) else _recipe_source(path, target)
         _check_bindings(child, path, task, chain, source)
+        if task.tasks is None:
+            prefix = f"{_chain(hops, conduit.name)}." if hops else ""
+            warnings.extend(_loop_marker_warnings(task, child.tasks, prefix))
         # Preserve the existing one-probe-per-child presentation when no
         # nested choice exists. With path choices, each call has its own agent
         # assignment and must contribute its own probe row.
@@ -567,10 +671,12 @@ def _walk_calls(
         ):
             continue
         seen.add((target, level + 1))
+        if task.tasks is None:
+            warnings.extend(_authoring_warnings(child.tasks, f"{chain}.", selected))
         if team is not None:
             team.extend(_team_of(child, here))
         _walk_calls(
-            atelier, child, level + 1, ancestors | {target}, here, cache, seen, team,
+            atelier, child, level + 1, ancestors | {target}, here, cache, seen, warnings, team,
             selected, child_source,
         )
 
@@ -625,6 +731,7 @@ def _check_one(
         # A selection that no longer fits the recipe, or names an agent this
         # machine has nothing registered for, is a failed row like any other.
         effective = atelier.bind_agents(conduit, agents) if agents else conduit
+        warnings += _authoring_warnings(effective.tasks, "", agents or {})
         problems = atelier.tool_readiness(effective)
         if problems:
             recipe_source = _recipe_source(path, name)
@@ -639,7 +746,7 @@ def _check_one(
                 recipe_source = _recipe_source(path, name)
                 _walk_calls(
                     atelier, effective, 0, frozenset({name}), [],
-                    {} if cache is None else cache, set(), team, agents, recipe_source,
+                    {} if cache is None else cache, set(), warnings, team, agents, recipe_source,
                 )
             # Child inputs are the parent's business at runtime, not extra
             # `--input` keys: the root's own declarations are what a caller
@@ -928,22 +1035,27 @@ def check_cmd(
     :param agents_raw: list of ``task=harness`` strings from ``--agent``.
     :param timeout: seconds allowed per agent; requires ``--probe``.
     """
-    out = err_console if json_mode else console
-    agents = parse_agents_option(agents_raw, out)
+    agents = parse_agents_option(agents_raw, json_mode=json_mode)
     if timeout is not None and not probe:
-        out.print("[red]--timeout applies to --probe; pass both or neither[/red]")
-        raise typer.Exit(code=2)
+        raise cli_error(
+            "invalid_arguments", "--timeout applies to --probe; pass both or neither",
+            exit_code=2, json_mode=json_mode, out=console, parameter="--timeout",
+        )
     if timeout is None:
         timeout = PROBE_TIMEOUT_SECONDS
     elif not math.isfinite(timeout) or timeout <= 0:
-        out.print(f"[red]--timeout must be a positive number of seconds, not {timeout}[/red]")
-        raise typer.Exit(code=2)
+        raise cli_error(
+            "invalid_arguments", f"--timeout must be a positive number of seconds, not {timeout}",
+            exit_code=2, json_mode=json_mode, out=console, parameter="--timeout",
+        )
     # An omitted name means "every conduit installed", which is a fine default
     # for reading files and a terrible one for starting processes.
     if conduit_name is None and (probe or agents):
         flag = "--probe" if probe else "--agent"
-        out.print(f"[red]{flag} needs a conduit name — it acts on one workflow[/red]")
-        raise typer.Exit(code=2)
+        raise cli_error(
+            "invalid_arguments", f"{flag} needs a conduit name — it acts on one workflow",
+            exit_code=2, json_mode=json_mode, out=console, parameter=flag,
+        )
 
     try:
         atelier = Atelier()
@@ -951,13 +1063,14 @@ def check_cmd(
     except OSError as e:
         # No target set could be established, so there is nothing to report:
         # an empty `[]` here would read as "checked everything, all fine".
-        err_console.print(f"[red]FAIL: cannot list conduits — {escape(str(e))}[/red]")
-        raise typer.Exit(code=1) from e
+        raise cli_error(
+            "conduit_lookup_failed", f"FAIL: cannot list conduits — {e}", json_mode=json_mode,
+        ) from e
 
     if conduit_name is not None:
         sources = dict(entries)
         if conduit_name not in sources:
-            _exit_unknown_conduit(conduit_name, list(sources), out=out)
+            _exit_unknown_conduit(conduit_name, list(sources), json_mode=json_mode)
         targets = [(conduit_name, sources[conduit_name])]
     else:
         targets = entries

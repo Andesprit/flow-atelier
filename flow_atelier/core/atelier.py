@@ -138,7 +138,7 @@ class Atelier:
             usage_limit_max_wait=self.settings.usage_limit_max_wait,
             agent_permissions=self.settings.agent_permissions,
         )
-        self.schedule_store = ScheduleStore(self.settings.atelier_dir)
+        self.schedule_store = ScheduleStore(self.settings.global_atelier_dir)
 
     def _register_harnesses(self, sink: PromptSink) -> None:
         """Register a ``harness:<name>`` executor for every known ACP agent.
@@ -569,6 +569,8 @@ class Atelier:
             task whose assignment is already fixed was named
         """
         prior = self.store.read_progress(flow_id)
+        if prior.pending_ask:
+            raise ValueError(f"flow is waiting for a reply: atelier ask {flow_id} --json")
         if prior.status not in (FlowStatus.failed, FlowStatus.running):
             raise ValueError(
                 f"can only resume failed or crashed flows, got {prior.status.value}"
@@ -1144,7 +1146,9 @@ class Atelier:
                 f"schedule for {payload.conduit_name!r} is missing required "
                 f"inputs: {sorted(missing)}"
             )
-        return self.schedule_store.create(payload)
+        return self.schedule_store.create(
+            payload.model_copy(update={"run_path": str(Path(payload.run_path).absolute())})
+        )
 
     def delete_schedule(self, schedule_id: str) -> ScheduledJob:
         """Delete a schedule by id (hard delete; the YAML file is removed).

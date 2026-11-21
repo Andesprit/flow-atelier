@@ -11,6 +11,8 @@ import sys
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import TextIO
 from urllib.parse import quote, urlsplit
 
 import typer
@@ -23,14 +25,16 @@ from flow_atelier.cli._shared import (
     _parse_input_files,
     _parse_inputs,
     _resolve_flow_id,
+    cli_error,
     console,
+    json_diagnostics,
     mark_activity,
     parse_agents_option,
     parse_worktrees_option,
     seconds_since_activity,
 )
 from flow_atelier.cli.commands.recipe_diagnostics import RecipeSource, validation_errors
-from flow_atelier.cli.main import app
+from flow_atelier.cli.main import AtelierCommand, app
 from flow_atelier.cli.rendering.render import (
     _render_orchestration_msg,
     format_conduit_error,
@@ -42,7 +46,11 @@ from flow_atelier.cli.rendering.render import (
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.binding import BindingError
-from flow_atelier.modules.engine import accepted_input_keys, current_nested_path
+from flow_atelier.modules.engine import (
+    ConduitValidationError,
+    accepted_input_keys,
+    current_nested_path,
+)
 from flow_atelier.modules.loop_report import unmet_loop_messages
 from flow_atelier.modules.nested_failure import brief_failure_reason
 from flow_atelier.modules.workspace import WorkspaceError, check_selectors
@@ -64,6 +72,32 @@ STOPPED_EXIT_CODE = 143
 
 # How often the heartbeat wakes to check for silence.
 _HEARTBEAT_TICK_SECONDS = 1.0
+
+
+@dataclass
+class _RunResult:
+    """Reserve stdout for the record and collect diagnostics until execution starts."""
+
+    stdout: TextIO
+    startup: contextlib.ExitStack
+
+    def emit(self, flow_id: str, status: str) -> None:
+        typer.echo(json.dumps({"flow_id": flow_id, "status": status}), file=self.stdout)
+
+
+class _RunCommand(AtelierCommand):
+    """Keep argument and startup errors structured, then stream the run live."""
+
+    def invoke(self, ctx: typer.Context) -> object:
+        if not ctx.params.get("json_mode"):
+            return super().invoke(ctx)
+        # Executors and interactive prompts also write to stdout. Reserve the
+        # original stream for the result before constructing any of them.
+        stdout = sys.stdout
+        with contextlib.redirect_stdout(sys.stderr), contextlib.ExitStack() as startup:
+            startup.enter_context(json_diagnostics())
+            ctx.obj = _RunResult(stdout, startup)
+            return super().invoke(ctx)
 
 
 def _run_page_available(base: str, flow_id: str, token: str) -> bool:
@@ -198,6 +232,7 @@ def drive_flow(
     verb: str = "running",
     flow_id: str | None = None,
     resume_hint: bool = True,
+    machine: _RunResult | None = None,
 ) -> str:
     """Run one flow to completion on the terminal and return its id.
 
@@ -212,10 +247,13 @@ def drive_flow(
     :param flow_id: the id when resuming an existing flow. A fresh run learns
         its id from the engine and announces it.
     :param resume_hint: print ``atelier run --resume <id>`` after a failure.
+    :param machine: stream for the completion record when running with ``--json``.
     :returns: the flow id the engine returned.
     """
     collected: list[TaskEvent] = []
-    captured: dict[str, str | None] = {"id": flow_id}
+    # In JSON mode a resume must pass the engine's eligibility checks before
+    # its existing ID can identify a result from this invocation.
+    captured_id = None if machine else flow_id
     running = _RunningTasks()
     settings = AtelierSettings()
     page_base = settings.serve_url.rstrip("/")
@@ -233,7 +271,7 @@ def drive_flow(
         else:
             message = (
                 f"run page: no atelier serve for this project at {page_base}; "
-                "start one here with: atelier serve --port 0; "
+                "start one here with: atelier serve --port 0 --no-scheduler; "
                 f"open /runs/{fid} at its printed address"
             )
         # soft_wrap keeps the URL on one line when the output is piped to a
@@ -244,8 +282,10 @@ def drive_flow(
         )
 
     def _on_event(event: TaskEvent) -> None:
+        if flow_id and captured_id is None:
+            _on_started(flow_id)
         if (
-            event.flow_id != captured["id"]
+            event.flow_id != captured_id
             and "Traceback (most recent call last)" in event.stderr
         ):
             event = event.model_copy(update={"stderr": brief_failure_reason(event.stderr)})
@@ -259,6 +299,12 @@ def drive_flow(
         render_task_event(displayed, console)
 
     def _on_started(fid: str) -> None:
+        nonlocal captured_id
+        first = captured_id is None
+        if first:
+            captured_id = flow_id or fid
+            if machine:
+                machine.startup.close()
         if flow_id is None:
             name, _, _ = parse_flow_id(fid)
             if current_nested_path():
@@ -270,11 +316,12 @@ def drive_flow(
         # The engine also reports each nested tool:conduit run it starts. The
         # flow this command drives is the first one (or the resumed one), and
         # its page links to the nested runs.
-        if captured["id"] is None:
-            captured["id"] = fid
-            _announce_page(fid)
+        if first:
+            _announce_page(flow_id or fid)
 
     def _on_task_starting(task_name: str, tool: str) -> None:
+        if flow_id and captured_id is None:
+            _on_started(flow_id)
         nested = bool(current_nested_path())
         label = _task_label(task_name)
         index = running.start(label, counted=not nested)
@@ -285,7 +332,7 @@ def drive_flow(
         ))
 
     # The engine does not announce a resumed flow, so name its page here.
-    if flow_id is not None:
+    if flow_id is not None and not machine:
         _announce_page(flow_id)
     coro = start(
         on_task_event=_on_event,
@@ -294,38 +341,53 @@ def drive_flow(
     )
     try:
         result = asyncio.run(_with_heartbeat(coro, running))
-    except (BindingError, WorkspaceError) as exc:
-        # Raised while validating agent or worktree selections, before any task
-        # runs and before a byte of the flow's saved state is touched. It is a
-        # usage error, not a failed run, so it gets neither footer nor resume
-        # hint. A partly created set of checkouts is named in the message and
-        # left on disk; nothing here deletes an agent's directory.
-        console.print(f"[red]{escape(str(exc))}[/red]")
-        raise typer.Exit(code=exc.code)
-    except asyncio.CancelledError:
-        # SIGTERM via `atelier stop`: the engine has marked the flow stopped.
-        # The work was cut short, so a caller must not read it as success.
+    except (asyncio.CancelledError, KeyboardInterrupt) as exc:
+        interrupted = isinstance(exc, KeyboardInterrupt)
+        if interrupted and not machine:
+            raise
+        exit_code = 130 if interrupted else STOPPED_EXIT_CODE
+        if machine and captured_id is None:
+            raise cli_error("cancelled", "run cancelled", json_mode=True, exit_code=exit_code)
+        status = "failed" if interrupted else "stopped"
         render_run_footer(collected, console)
-        console.print("[yellow]flow stopped[/yellow]")
-        if captured["id"]:
-            console.print(f"[yellow]flow_id:[/yellow] {captured['id']}")
-        raise typer.Exit(code=STOPPED_EXIT_CODE)
+        console.print(f"[yellow]flow {status}[/yellow]")
+        if captured_id:
+            console.print(f"[yellow]flow_id:[/yellow] {captured_id}")
+            console.print(f"[dim]→ atelier diagnose {captured_id}[/dim]", soft_wrap=True)
+            if machine:
+                machine.emit(captured_id, status)
+        raise typer.Exit(code=exit_code)
     except Exception as exc:  # noqa: BLE001
+        if isinstance(exc, (BindingError, WorkspaceError)) and not (machine and captured_id):
+            raise cli_error(
+                "invalid_arguments", str(exc), exit_code=exc.code, json_mode=bool(machine),
+                out=console, parameter="--agent" if isinstance(exc, BindingError) else "--worktree",
+            ) from exc
+        if machine and captured_id is None:
+            code = (
+                "invalid_conduit" if isinstance(exc, ConduitValidationError) else "command_failed"
+            )
+            raise cli_error(code, str(exc), json_mode=True) from exc
         render_run_footer(collected, console)
         console.print(f"[red]flow failed:[/red] {escape(str(exc))}")
-        if captured["id"]:
-            console.print(f"[red]flow_id:[/red] {captured['id']}")
+        if captured_id:
+            console.print(f"[red]flow_id:[/red] {captured_id}")
+            console.print(f"[dim]→ atelier diagnose {captured_id}[/dim]", soft_wrap=True)
             if resume_hint:
-                console.print(f"[dim]→ atelier run --resume {captured['id']}[/dim]")
+                console.print(f"[dim]→ atelier run --resume {captured_id}[/dim]")
+            if machine:
+                machine.emit(captured_id, "failed")
         raise typer.Exit(code=1)
     render_run_footer(collected, console)
     for warning in unmet_loop_messages(Atelier().get_status(result)):
         console.print(f"[yellow]⚠ {escape(warning)}[/yellow]")
     console.print(f"[green]flow_id:[/green] {result}")
+    if machine:
+        machine.emit(result, "completed")
     return result
 
 
-def _load_conduit(atelier: Atelier, name: str) -> Conduit | None:
+def _load_conduit(atelier: Atelier, name: str, *, json_mode: bool) -> Conduit | None:
     """Read conduit ``name``, exiting 1 with a readable message when it is malformed.
 
     :param atelier: Atelier whose store to read from.
@@ -336,19 +398,19 @@ def _load_conduit(atelier: Atelier, name: str) -> Conduit | None:
         return atelier.store.read_conduit(name)
     except FileNotFoundError:
         return None
-    except ValidationError as exc:
-        path = atelier.store.conduit_dir(name) / "conduit.yaml"
-        message = "\n".join(validation_errors(exc, RecipeSource(str(path), name)))
-        console.print(f"[red]invalid conduit:[/red] {escape(message)}")
-        console.print(f"[dim]→ fix conduits/{name}/conduit.yaml[/dim]")
-        raise typer.Exit(code=1)
     except (yaml.YAMLError, ValueError) as exc:
-        console.print(f"[red]invalid conduit:[/red] {escape(format_conduit_error(exc))}")
-        console.print(f"[dim]→ fix conduits/{name}/conduit.yaml[/dim]")
-        raise typer.Exit(code=1)
+        if isinstance(exc, ValidationError):
+            path = atelier.store.conduit_dir(name) / "conduit.yaml"
+            message = "\n".join(validation_errors(exc, RecipeSource(str(path), name)))
+        else:
+            message = format_conduit_error(exc)
+        raise cli_error(
+            "invalid_conduit", f"invalid conduit: {message}", conduit=name,
+            hint=f"→ fix conduits/{name}/conduit.yaml", json_mode=json_mode, out=console,
+        ) from exc
 
 
-def _reject_unknown_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
+def _reject_unknown_inputs(conduit: Conduit, inputs: dict[str, str], *, json_mode: bool) -> None:
     """Exit 1 when an ``--input`` key is one the conduit can never use.
 
     A key needs no ``inputs:`` declaration: a ``{{inputs.<key>}}`` reference
@@ -363,21 +425,24 @@ def _reject_unknown_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
     unknown = [k for k in inputs if k not in accepted]
     if not unknown:
         return
+    messages = []
     for key in unknown:
         close = difflib.get_close_matches(key, sorted(accepted), n=1)
-        hint = f" — did you mean {escape(close[0])}?" if close else ""
-        console.print(f"[red]unknown input:[/red] {escape(key)}{hint}")
+        hint = f" — did you mean {close[0]}?" if close else ""
+        messages.append(f"unknown input: {key}{hint}")
     accepts = (
-        f"accepts --input: {escape(', '.join(sorted(accepted)))}"
+        f"accepts --input: {', '.join(sorted(accepted))}"
         if accepted
         else "accepts no --input"
     )
-    console.print(f"[dim]{escape(conduit.name)} {accepts}[/dim]")
-    raise typer.Exit(code=1)
+    raise cli_error(
+        "invalid_arguments", "\n".join(messages), hint=f"{conduit.name} {accepts}",
+        parameter="--input", allowed=sorted(accepted), json_mode=json_mode, out=console,
+    )
 
 
-def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
-    """Prompt for each required input not yet supplied, or exit 2 off a TTY.
+def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str], *, json_mode: bool) -> None:
+    """Prompt for missing inputs in interactive human mode, otherwise exit 2.
 
     :param conduit: the conduit about to run.
     :param inputs: the ``--input`` map, extended in place with typed answers.
@@ -387,9 +452,15 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
     ]
     if not missing:
         return
-    if not sys.stdin.isatty():
+    if json_mode or not sys.stdin.isatty():
         # Flags only, never a whole command: a rebuilt command would drop the
         # inputs and options already given, and echoing them could leak secrets.
+        flags = " ".join(f"--input {shlex.quote(f'{k}=<value>')}" for k in missing)
+        if json_mode:
+            raise cli_error(
+                "missing_inputs", f"missing required inputs: {', '.join(missing)}",
+                exit_code=2, json_mode=True, missing=missing, hint=f"Add {flags}",
+            )
         console.print(f"[red]missing required inputs:[/red] {escape(', '.join(missing))}")
         for key in missing:
             description = conduit.inputs[key].description
@@ -399,7 +470,6 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
             "inputs and options; replace each <value> (or use --input-file key=path "
             "for a file), then run it again:[/dim]"
         )
-        flags = " ".join(f"--input {shlex.quote(f'{k}=<value>')}" for k in missing)
         console.print(f"  {escape(flags)}", soft_wrap=True)
         raise typer.Exit(code=2)
 
@@ -421,6 +491,7 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
 
 @app.command(
     "run",
+    cls=_RunCommand,
     help=(
         "Start a new flow for the named conduit. "
         "Use --input key=value to pass inputs, or --input-file key=path to "
@@ -432,6 +503,7 @@ def _collect_missing_inputs(conduit: Conduit, inputs: dict[str, str]) -> None:
     ),
 )
 def run_cmd(
+    ctx: typer.Context,
     conduit_name: str = typer.Argument(
         None, help="Name of the conduit to run (not needed with --resume or --again)."
     ),
@@ -488,9 +560,13 @@ def run_cmd(
             "reusing its saved inputs."
         ),
     ),
+    json_mode: bool = typer.Option(
+        False, "--json", help="Write flow_id and final status as JSON. Stream progress to stderr.",
+    ),
 ) -> None:
     """Start a new flow, resume a failed one, or re-run a past one.
 
+    :param ctx: command context holding the JSON result stream when requested.
     :param conduit_name: name of the conduit to execute.
     :param inputs_raw: list of ``key=value`` input strings collected from ``--input``.
     :param input_files_raw: list of ``key=path`` strings collected from
@@ -503,49 +579,49 @@ def run_cmd(
     :param resume_from: flow id (or unique prefix) of a failed run to resume.
     :param again_from: flow id (or unique prefix) of a past run to re-run from
         scratch, reusing its saved inputs (overridable via ``--input``).
+    :param json_mode: write one completion record on stdout and progress on stderr.
     """
+    machine = ctx.obj if json_mode else None
     atelier = Atelier()
-    agents = parse_agents_option(agents_raw)
-    worktrees = parse_worktrees_option(worktrees_raw)
+    agents = parse_agents_option(agents_raw, json_mode=json_mode)
+    worktrees = parse_worktrees_option(worktrees_raw, json_mode=json_mode)
 
     if resume_from is not None and again_from is not None:
-        console.print("[red]error:[/red] --resume and --again are mutually exclusive")
-        raise typer.Exit(code=2)
+        raise cli_error(
+            "invalid_arguments", "error: --resume and --again are mutually exclusive",
+            exit_code=2, out=console, allowed=["--resume", "--again"], json_mode=json_mode,
+        )
 
     # Resume continues the flow's saved inputs; there is nothing for a new
     # value to change. Refuse rather than read the file and ignore it.
     if resume_from is not None and input_files_raw:
-        console.print(
-            "[red]error:[/red] --resume and --input-file are mutually exclusive"
+        raise cli_error(
+            "invalid_arguments", "error: --resume and --input-file are mutually exclusive",
+            out=console, allowed=["--resume", "--input-file"], json_mode=json_mode,
+            hint="→ --resume reuses the flow's saved inputs; use --again <flow_id> to change one",
         )
-        console.print(
-            "[dim]→ --resume reuses the flow's saved inputs;"
-            " use --again <flow_id> to change one[/dim]"
-        )
-        raise typer.Exit(code=1)
 
     # A resume continues in the directories the first attempt recorded — that
     # is what makes a failed worker's partial edits recoverable. Silently
     # ignoring a new selection, or honouring it and abandoning those edits,
     # would both be worse than saying no.
     if resume_from is not None and worktrees:
-        console.print(
-            "[red]error:[/red] --resume and --worktree are mutually exclusive"
+        raise cli_error(
+            "invalid_arguments", "error: --resume and --worktree are mutually exclusive",
+            exit_code=2, out=console, allowed=["--resume", "--worktree"], json_mode=json_mode,
+            hint="→ --resume continues in the checkouts the run already has;"
+                 " use --again <flow_id> to start fresh ones",
         )
-        console.print(
-            "[dim]→ --resume continues in the checkouts the run already has;"
-            " use --again <flow_id> to start fresh ones[/dim]"
-        )
-        raise typer.Exit(code=2)
 
     # --resume path: resolve the old flow, skip input prompts
     if resume_from is not None:
-        flow_id = _resolve_flow_id(atelier, resume_from)
+        flow_id = _resolve_flow_id(atelier, resume_from, json_mode=json_mode)
         # Surface a malformed conduit with a readable message before resuming,
         # so a YAML or schema error does not reach the generic `flow failed:`
         # handler as a raw exception.
-        _load_conduit(atelier, parse_flow_id(flow_id)[0])
-        console.print(_render_orchestration_msg(f"resuming flow {flow_id}"))
+        _load_conduit(atelier, parse_flow_id(flow_id)[0], json_mode=json_mode)
+        if not json_mode:
+            console.print(_render_orchestration_msg(f"resuming flow {flow_id}"))
         # No `[i/total]` on resume: the counter numbers the tasks this resume
         # starts, so pairing it with the conduit's full count would read as
         # "[1/5], just started" for a run finishing its last two tasks.
@@ -561,17 +637,19 @@ def run_cmd(
             verb="resuming",
             flow_id=flow_id,
             resume_hint=False,
+            machine=machine,
         )
         return
 
     if again_from is not None:
-        flow_id = _resolve_flow_id(atelier, again_from)
-        conduit = _load_conduit(atelier, parse_flow_id(flow_id)[0])
+        flow_id = _resolve_flow_id(atelier, again_from, json_mode=json_mode)
+        conduit = _load_conduit(atelier, parse_flow_id(flow_id)[0], json_mode=json_mode)
         overrides = _parse_inputs(inputs_raw)
         overrides.update(_parse_input_files(input_files_raw, overrides))
         if conduit is not None:
-            _reject_unknown_inputs(conduit, overrides)
-        console.print(_render_orchestration_msg(f"re-running flow {flow_id}"))
+            _reject_unknown_inputs(conduit, overrides, json_mode=json_mode)
+        if not json_mode:
+            console.print(_render_orchestration_msg(f"re-running flow {flow_id}"))
         drive_flow(
             lambda **callbacks: atelier.rerun_flow(
                 flow_id,
@@ -583,32 +661,32 @@ def run_cmd(
                 **callbacks,
             ),
             total_tasks=len(conduit.tasks) if conduit is not None else 0,
+            machine=machine,
         )
         return
 
     if conduit_name is None:
-        console.print(
-            "[red]error:[/red] conduit name is required (unless using --resume or --again)"
+        raise cli_error(
+            "invalid_arguments",
+            "error: conduit name is required (unless using --resume or --again)",
+            json_mode=json_mode, exit_code=2, out=console,
         )
-        raise typer.Exit(code=2)
 
     if inline := parse_inline_conduit_name(conduit_name):
-        console.print(
-            f"[red]error:[/red] {escape(conduit_name)} is the internal name of "
-            f"the inline body of {escape(inline[0])}.{escape(inline[1])}, not a "
-            "conduit you can run"
+        raise cli_error(
+            "invalid_arguments", f"error: {conduit_name} is the internal name of "
+            f"the inline body of {inline[0]}.{inline[1]}, not a conduit you can run",
+            hint=f"→ atelier run {inline[0]}", json_mode=json_mode, exit_code=2, out=console,
         )
-        console.print(f"[dim]→ atelier run {escape(inline[0])}[/dim]")
-        raise typer.Exit(code=2)
 
     inputs = _parse_inputs(inputs_raw)
     inputs.update(_parse_input_files(input_files_raw, inputs))
-    conduit = _load_conduit(atelier, conduit_name)
+    conduit = _load_conduit(atelier, conduit_name, json_mode=json_mode)
     if conduit is None:
-        _exit_unknown_conduit(conduit_name, atelier.store.list_conduits())
+        _exit_unknown_conduit(conduit_name, atelier.store.list_conduits(), json_mode=json_mode)
         return
 
-    _reject_unknown_inputs(conduit, inputs)
+    _reject_unknown_inputs(conduit, inputs, json_mode=json_mode)
 
     # Apply the agent selections before the readiness gate, so replacing an
     # agent you are not logged into is enough to run — and so an unavailable
@@ -620,23 +698,28 @@ def run_cmd(
         # the recipe cannot honour should cost nothing at all.
         check_selectors(effective, worktrees)
     except (BindingError, WorkspaceError) as exc:
-        console.print(f"[red]{escape(str(exc))}[/red]")
-        raise typer.Exit(code=exc.code) from exc
+        raise cli_error(
+            "invalid_arguments", str(exc), json_mode=json_mode, exit_code=exc.code, out=console,
+            parameter="--agent" if isinstance(exc, BindingError) else "--worktree",
+        ) from exc
 
     # Readiness gate: refuse to start an unrunnable conduit (unregistered tool
     # or a harness CLI missing from PATH) before prompting for inputs or
     # spending any wall-clock/tokens.
     problems = atelier.tool_readiness(effective)
     if problems:
-        for problem in problems:
-            console.print(f"[red]cannot run:[/red] {escape(problem)}")
+        hint = ""
         if any("no executor registered for tool 'harness:" in problem for problem in problems):
-            console.print("→ run atelier harness list to see installed agents")
-        raise typer.Exit(code=1)
+            hint = "→ run atelier harness list to see installed agents"
+        raise cli_error(
+            "conduit_not_ready", "\n".join(f"cannot run: {problem}" for problem in problems),
+            json_mode=json_mode, out=console, hint=hint,
+        )
 
-    _collect_missing_inputs(conduit, inputs)
+    _collect_missing_inputs(conduit, inputs, json_mode=json_mode)
 
-    console.print(_render_orchestration_msg(f'loading conduit "{conduit_name}"'))
+    if not json_mode:
+        console.print(_render_orchestration_msg(f'loading conduit "{conduit_name}"'))
     drive_flow(
         lambda **callbacks: atelier.run_conduit(
             conduit_name,
@@ -648,4 +731,5 @@ def run_cmd(
             **callbacks,
         ),
         total_tasks=len(conduit.tasks),
+        machine=machine,
     )

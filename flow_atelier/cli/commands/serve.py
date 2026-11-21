@@ -10,15 +10,18 @@ from pathlib import Path
 
 import typer
 
-from flow_atelier.cli._shared import console
+from flow_atelier.cli._shared import _migrate_schedules, console
 from flow_atelier.cli.main import app
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.liveness import is_runner_alive
 from flow_atelier.schemas.api import ScheduledJob
 from flow_atelier.schemas.log import TaskEvent
-from flow_atelier.services.scheduler import SchedulerDaemon, default_local_zone
-from flow_atelier.services.scheduler.store import ScheduleStore
+from flow_atelier.services.scheduler import (
+    SchedulerAlreadyRunning,
+    SchedulerDaemon,
+    default_local_zone,
+)
 
 
 class _IdleClock:
@@ -81,6 +84,9 @@ def serve_cmd(
         "INFO", "--log-level",
         help="Logging level for the server."
     ),
+    no_scheduler: bool = typer.Option(
+        False, "--no-scheduler", help="Serve the dashboard and API without firing schedules."
+    ),
     idle_exit: float = typer.Option(
         0.0, "--idle-exit", min=0, metavar="MINUTES",
         help="Stop after this many minutes with no open page, no request, no "
@@ -96,6 +102,7 @@ def serve_cmd(
     :param cors_origin: other pages' origins that may call the API; when
         empty, only pages this server serves may.
     :param log_level: logging level for uvicorn and the daemon.
+    :param no_scheduler: disable the embedded scheduler.
     :param idle_exit: minutes of idleness before the server stops itself;
         0 never stops.
     """
@@ -111,16 +118,12 @@ def serve_cmd(
     )
 
     settings = AtelierSettings()
-    global_schedule_store = ScheduleStore(settings.global_atelier_dir)
 
     # Conduits and flows resolve exactly as they do for the CLI: project store
     # (./.atelier) first, global store (~/.atelier) as fallback. Rooting the
     # facade at the global dir instead would hide every conduit `atelier init`
     # creates from the UI.
     atelier = Atelier(settings=settings)
-    # Schedules are the one global resource — a single daemon spans projects —
-    # so the API writes to the same store the daemon below watches.
-    atelier.schedule_store = global_schedule_store
     bus = SchedulerEventBus()
     atelier.scheduler_bus = bus  # type: ignore[attr-defined]
 
@@ -212,29 +215,6 @@ def serve_cmd(
         finally:
             scheduled_runs -= 1
 
-    daemon = SchedulerDaemon(
-        global_schedule_store,
-        executor=_counted_executor,
-        default_zone=default_local_zone(),
-        default_working_dir=Path.cwd(),
-        reload_interval_seconds=reload_interval,
-    )
-    # The schedules POST/DELETE handlers look here to opportunistically
-    # re-sync the daemon when a schedule is created or removed.
-    atelier.scheduler_daemon = daemon  # type: ignore[attr-defined]
-
-    @asynccontextmanager
-    async def _lifespan(app):
-        """FastAPI lifespan context that starts and stops the scheduler daemon.
-
-        :param app: the FastAPI application receiving the lifespan event.
-        """
-        await daemon.start()
-        try:
-            yield
-        finally:
-            await daemon.stop()
-
     # Refuse rather than warn. This API runs shell commands, so an
     # unauthenticated bind that anything but loopback can reach is a remote
     # code execution surface, and `api_token` now defaults to empty — a
@@ -263,7 +243,41 @@ def serve_cmd(
         api_token=settings.api_token or None,
         allowed_hosts=allowed_hosts,
     )
-    api_app.router.lifespan_context = _lifespan
+    scheduler_status = "Scheduler disabled"
+    if not no_scheduler:
+        _migrate_schedules(atelier.schedule_store, settings.atelier_dir)
+        daemon = SchedulerDaemon(
+            atelier.schedule_store,
+            executor=_counted_executor,
+            default_zone=default_local_zone(),
+            default_working_dir=Path.cwd(),
+            reload_interval_seconds=reload_interval,
+        )
+
+        @asynccontextmanager
+        async def _lifespan(app):
+            """FastAPI lifespan context that starts and stops the scheduler daemon.
+
+            :param app: the FastAPI application receiving the lifespan event.
+            """
+            nonlocal scheduler_status
+            try:
+                await daemon.start()
+            except SchedulerAlreadyRunning as exc:
+                scheduler_status = f"Scheduler disabled (running in pid {exc.pid})"
+                typer.echo(f"{exc}; serving without scheduler", err=True)
+                yield
+                return
+            scheduler_status = f"Schedule store: {atelier.schedule_store.schedules_dir.resolve()}"
+            # The schedules API can resync jobs immediately on the owning daemon.
+            atelier.scheduler_daemon = daemon  # type: ignore[attr-defined]
+            try:
+                yield
+            finally:
+                del atelier.scheduler_daemon
+                await daemon.stop()
+
+        api_app.router.lifespan_context = _lifespan
 
     clock = _IdleClock(api_app)
     config = uvicorn.Config(
@@ -320,6 +334,8 @@ def serve_cmd(
             f"[green]atelier serve[/green] running at "
             f"[bold]http://{host}:{actual}[/bold]{stops}"
         )
+        typer.echo(f"Project store: {settings.atelier_dir.resolve()}")
+        typer.echo(scheduler_status)
         await serve_task
         if idle_watch is not None:
             idle_watch.cancel()

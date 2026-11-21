@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -15,7 +18,8 @@ from flow_atelier.services.scheduler.runner import (
     _resolve_run_path,
     compute_planned_view,
 )
-from flow_atelier.services.scheduler.store import ScheduleStore
+from flow_atelier.services.scheduler.store import SchedulerAlreadyRunning, ScheduleStore
+from tests._shell import CLI
 
 UTC = ZoneInfo("UTC")
 
@@ -171,6 +175,66 @@ async def daemon(tmp_path, store, executor):
 
 
 # -------------------------------------------------------------- start / stop
+
+
+async def test_two_daemons_dispatch_a_one_shot_once(daemon, store, executor, monkeypatch, tmp_path):
+    monkeypatch.setenv("ATELIER_GLOBAL_ATELIER_DIR", str(store.atelier_dir))
+    monkeypatch.chdir(tmp_path)
+    job = store.create(_once((datetime.now(UTC) + timedelta(milliseconds=200)).isoformat()))
+    await daemon.start()
+    async with asyncio.timeout(15):
+        contender = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", CLI, "schedule", "daemon",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await contender.communicate()
+            assert contender.returncode == 1
+            assert f"scheduler already running (pid {os.getpid()})" in stderr.decode()
+            while not store.fired_at(job.id):
+                await asyncio.sleep(0.01)
+        finally:
+            if contender.returncode is None:
+                contender.kill()
+                await contender.wait()
+    await daemon.stop()
+    await daemon.start()
+    assert daemon._scheduler.get_job(job.id) is None
+    assert [j.id for j, _ in executor.calls] == [job.id]
+    assert len(store.run_history(job.id)) == 1
+
+
+async def test_lease_is_held_until_cancelled_dispatch_finishes(store):
+    started, cancelling, done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def executor(job, working_dir, report):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelling.set()
+            await done.wait()
+
+    owner = SchedulerDaemon(store, executor=executor)
+    successor = SchedulerDaemon(store)
+    job = store.create(_once((datetime.now(UTC) + timedelta(milliseconds=200)).isoformat()))
+    await owner.start()
+    async with asyncio.timeout(10):
+        await started.wait()
+        stopping = asyncio.create_task(owner.stop())
+        try:
+            await cancelling.wait()
+            with pytest.raises(SchedulerAlreadyRunning):
+                await successor.start()
+        finally:
+            done.set()
+            await stopping
+        await successor.start()
+        try:
+            assert store.fired_at(job.id)
+            assert successor._scheduler.get_job(job.id) is None
+        finally:
+            await successor.stop()
 
 
 async def test_start_registers_existing_schedules(daemon, store):

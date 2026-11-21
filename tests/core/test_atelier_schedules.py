@@ -5,16 +5,15 @@ import pytest
 
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.schemas.api import CreateScheduleInput, ScheduledJob
+from flow_atelier.services.scheduler import ScheduleStore
 
 
 @pytest.fixture
-def atelier(tmp_path, monkeypatch):
+def atelier(tmp_path):
     """Construct an Atelier instance rooted under tmp_path.
 
     :param tmp_path: pytest temp directory fixture.
-    :param monkeypatch: pytest monkeypatch fixture.
     """
-    monkeypatch.delenv("ATELIER_GLOBAL_ATELIER_DIR", raising=False)
     atelier = Atelier(base_dir=tmp_path / ".atelier")
     # create_schedule validates conduit_name against the store and rejects
     # inputs the conduit cannot use, so the conduit the fixtures schedule
@@ -232,3 +231,66 @@ def test_delete_schedule_unknown_raises_keyerror(atelier):
     """
     with pytest.raises(KeyError):
         atelier.delete_schedule("SCH-nope")
+
+
+def test_migration_preserves_fired_job_and_history_once(atelier, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    legacy = ScheduleStore(atelier.settings.atelier_dir)
+    job = legacy.create(_payload(
+        run_path="work", schedule={"name": "done", "mode": "once", "run_at": "2099-01-01T00:00Z"}
+    ))
+    legacy.mark_fired(job.id, "2026-01-01T01:23:45Z")
+    legacy.append_run_record(job.id, "succeeded", "FLOW-first")
+    legacy.increment_runs(job.id)
+    shared = atelier.schedule_store
+    shared.mark_fired("unrelated", "yesterday")
+
+    for _ in range(2):
+        shared.migrate_from(legacy.atelier_dir)
+        (moved,) = shared.list()
+        assert (moved.id, moved.run_path, moved.runs_completed) == (
+            job.id, str((tmp_path / "work").resolve()), 1
+        )
+        assert shared.fired_at(job.id) == "2026-01-01T01:23:45Z"
+        assert [r.flow_id for r in shared.run_history(job.id)] == ["FLOW-first"]
+        assert shared.fired_at("unrelated") == "yesterday"
+        assert legacy.list() == []
+        assert legacy.run_history(job.id) == []
+
+
+def test_migration_keeps_name_conflicts_at_source(atelier, caplog):
+    source = ScheduleStore(atelier.settings.atelier_dir)
+    old_job = source.create(_payload())
+    installed = atelier.create_schedule(_payload())
+    atelier.schedule_store.migrate_from(source.atelier_dir)
+    assert source.list() == [old_job]
+    assert atelier.list_schedules() == [installed]
+    assert "conflict" in caplog.text
+
+
+def test_migration_retries_after_file_publication(atelier, tmp_path, monkeypatch):
+    source = ScheduleStore(atelier.settings.atelier_dir)
+    job = source.create(_payload(run_path=str(tmp_path)))
+    source.mark_fired(job.id, "already-fired")
+    path, _ = source._find_job_file(job.id)
+    with monkeypatch.context() as patch:
+        def interrupt(_):
+            raise OSError("interrupted")
+        patch.setattr(type(path), "unlink", interrupt)
+        assert atelier.schedule_store.migrate_from(source.atelier_dir) == (0, 1)
+    assert atelier.schedule_store.migrate_from(source.atelier_dir) == (1, 0)
+    assert source.list() == []
+    assert atelier.list_schedules() == [job]
+    assert atelier.schedule_store.fired_at(job.id) == "already-fired"
+
+
+def test_corrupt_legacy_state_cannot_publish_a_one_shot(atelier):
+    source = ScheduleStore(atelier.settings.atelier_dir)
+    job = source.create(_payload(
+        schedule={"name": "one-shot", "mode": "once", "run_at": "2099-01-01T00:00Z"}
+    ))
+    source.state_path.write_text("incomplete")
+    assert atelier.schedule_store.migrate_from(source.atelier_dir) == (0, 1)
+    assert source.list() == [job]
+    assert source.state_path.read_text() == "incomplete"
+    assert atelier.list_schedules() == []

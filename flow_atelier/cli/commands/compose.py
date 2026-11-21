@@ -1,4 +1,4 @@
-"""`atelier compose` command — build a multi-agent conduit from CLI arguments.
+"""`atelier compose` command — build an agent conduit from CLI arguments.
 
 One task per `--step`, in the order given. Sequential by default: each step
 receives the shared brief and the previous step's result. `--parallel` gives
@@ -28,7 +28,7 @@ from flow_atelier.modules.engine import (
     validate_conduit,
 )
 from flow_atelier.modules.templating import extract_template_refs
-from flow_atelier.schemas.conduit import CONDUIT_NAME_RE, Conduit
+from flow_atelier.schemas.conduit import CONDUIT_NAME_RE, AgentPermissions, Conduit
 from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
 
 # The input every composed conduit declares, with no default, so `check`
@@ -219,6 +219,7 @@ def compose_document(
     steps: list[tuple[str, str]],
     parallel: bool,
     synthesis: tuple[str, str] | None,
+    permissions: AgentPermissions | None = None,
 ) -> dict[str, object]:
     """Build the conduit mapping for one composition.
 
@@ -227,6 +228,7 @@ def compose_document(
     :param steps: ``(tool, prompt)`` per worker, in the order given.
     :param parallel: when true the workers share no dependencies.
     :param synthesis: optional ``(tool, prompt)`` for the closing task.
+    :param permissions: optional permission level for every generated task.
     :returns: the conduit mapping, ready to validate and serialize.
     """
     doc: dict[str, object] = {"name": name, "description": description}
@@ -237,7 +239,11 @@ def compose_document(
     doc["inputs"] = {
         BRIEF_INPUT: {"description": "The shared task every agent works from"}
     }
-    doc["tasks"] = _tasks(steps, parallel, synthesis)
+    tasks = _tasks(steps, parallel, synthesis)
+    if permissions is not None:
+        for task in tasks:
+            task["permissions"] = permissions
+    doc["tasks"] = tasks
     return doc
 
 
@@ -276,6 +282,7 @@ def _build(
     steps: list[tuple[str, str]],
     parallel: bool,
     synthesis: tuple[str, str] | None,
+    permissions: AgentPermissions | None,
 ) -> tuple[Conduit, str]:
     """Validate a composition completely, before anything is written.
 
@@ -284,6 +291,7 @@ def _build(
     :param steps: ``(tool, prompt)`` per worker, in the order given.
     :param parallel: when true the workers share no dependencies.
     :param synthesis: optional ``(tool, prompt)`` for the closing task.
+    :param permissions: optional permission level for every generated task.
     :returns: the parsed conduit and the exact YAML text to write.
     :raises ComposeError: the composition is not a valid conduit.
     """
@@ -294,12 +302,16 @@ def _build(
         )
     shape = "parallel" if parallel else "sequential"
     agents = len(steps) + (1 if synthesis else 0)
+    default_description = (
+        "single-agent workflow" if agents == 1 else f"{shape} workflow across {agents} agents"
+    )
     doc = compose_document(
         name,
-        description or f"{shape} workflow across {agents} agents",
+        description or default_description,
         steps,
         parallel,
         synthesis,
+        permissions,
     )
     text = _dump(doc)
     try:
@@ -317,7 +329,7 @@ def compose_cmd(
         None,
         "--step",
         "-s",
-        help="HARNESS=PROMPT for one agent; repeat it, in order. At least two.",
+        help="HARNESS=PROMPT for one agent. Give at least one step, in execution order.",
     ),
     parallel: bool = typer.Option(
         False,
@@ -328,13 +340,16 @@ def compose_cmd(
         None,
         "--synthesize",
         help="HARNESS=PROMPT for a final task that reads every result "
-        "(requires --parallel).",
+        "(requires --parallel and at least two steps).",
     ),
     description: str = typer.Option(
         None, "--description", "-d", help="Conduit description."
     ),
+    permissions: AgentPermissions | None = typer.Option(
+        None, "--permissions", help="Permission level for all workers and the synthesizer."
+    ),
 ) -> None:
-    """Write a multi-agent conduit from a brief and a list of agents.
+    """Write a conduit from a brief and one or more agent steps.
 
     Each `--step HARNESS=PROMPT` becomes one task, named `step_1`, `step_2`
     and so on in the order you pass them. Every step is handed the conduit's
@@ -363,23 +378,23 @@ def compose_cmd(
     :param synthesize: optional ``HARNESS=PROMPT`` for the final synthesis
         task; only meaningful with ``--parallel``.
     :param description: optional description; one is generated if omitted.
+    :param permissions: optional permission level for every generated task.
     """
     try:
         parsed = [_parse_step(raw, "--step") for raw in steps or []]
-        if len(parsed) < 2:
-            raise ComposeError(
-                "compose needs at least two --step values; use "
-                "'atelier create' for a single-agent conduit"
-            )
+        if not parsed:
+            raise ComposeError("compose needs at least one --step")
         if synthesize is not None and not parallel:
             raise ComposeError(
                 "--synthesize needs --parallel; in a sequential composition "
                 "the last step already receives the previous result"
             )
+        if synthesize is not None and len(parsed) < 2:
+            raise ComposeError("--synthesize needs at least two --step values")
         synthesis = (
             _parse_step(synthesize, "--synthesize") if synthesize is not None else None
         )
-        conduit, text = _build(name, description, parsed, parallel, synthesis)
+        conduit, text = _build(name, description, parsed, parallel, synthesis, permissions)
 
         atelier = Atelier()
         unready = _unready(atelier, conduit)

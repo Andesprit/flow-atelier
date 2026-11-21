@@ -2,24 +2,28 @@
 from __future__ import annotations
 
 import json
+import signal
+import sys
+import threading
 import time
 from collections import deque
+from collections.abc import Iterator
+from heapq import merge
 
 import typer
-from rich.markup import escape
 
 from flow_atelier.cli._shared import (
     _flow_usage_totals,
     _format_usage,
     _resolve_flow_id,
+    cli_error,
     console,
 )
 from flow_atelier.cli.main import app
-from flow_atelier.cli.rendering.render import TIMELINE_MAX_STEPS, _render_log_entry
+from flow_atelier.cli.rendering.render import TIMELINE_MAX_STEPS, _render_log_entry, _render_step
 from flow_atelier.core.atelier import Atelier
-from flow_atelier.modules.liveness import is_crashed
-from flow_atelier.schemas.log import StepKind
-from flow_atelier.schemas.progress import FlowStatus
+from flow_atelier.modules.liveness import display_status
+from flow_atelier.schemas.log import LogEntry, StepKind, StepRecord
 
 _LOG_SHOW_CHOICES = ("output", "stdout", "stderr", "steps", "all")
 
@@ -33,11 +37,11 @@ def logs_cmd(
     task: str | None = typer.Option(
         None, "--task", "-t", help="Show only entries for this task."
     ),
-    show: str = typer.Option(
-        "output",
+    show: str | None = typer.Option(
+        None,
         "--show",
         "-s",
-        help="Which channel to print: output | stdout | stderr | steps | all.",
+        help="Channel: output | stdout | stderr | steps | all. Default: output (all for --jsonl).",
     ),
     last: int | None = typer.Option(
         None, "--last", "-n", help="Show only the last N entries."
@@ -51,6 +55,9 @@ def logs_cmd(
     json_mode: bool = typer.Option(
         False, "--json", help="Emit machine-readable JSON instead of panels."
     ),
+    jsonl: bool = typer.Option(
+        False, "--jsonl", help="Emit one JSON object per step, completed entry and stream end."
+    ),
 ) -> None:
     """Show recorded stdout/stderr/output for each task iteration in a flow.
 
@@ -60,32 +67,49 @@ def logs_cmd(
     :param last: when set, show only the last N entries.
     :param follow: when true, tail the logs until the flow finishes.
     :param json_mode: when true, emit machine-readable JSON instead of panels.
+    :param jsonl: when true, stream newline-delimited JSON records.
     """
+    if show is None:
+        show = "all" if jsonl else "output"
     if show not in _LOG_SHOW_CHOICES:
-        console.print(
-            f"[red]invalid --show value:[/red] {show}  "
-            f"(allowed: {', '.join(_LOG_SHOW_CHOICES)})"
+        raise cli_error(
+            "invalid_arguments",
+            f"invalid --show value: {show}  (allowed: {', '.join(_LOG_SHOW_CHOICES)})",
+            exit_code=2, json_mode=json_mode or jsonl, out=console,
+            parameter="--show", allowed=_LOG_SHOW_CHOICES,
         )
-        raise typer.Exit(code=2)
+    if json_mode and jsonl:
+        raise cli_error(
+            "invalid_arguments", "--json and --jsonl are mutually exclusive",
+            exit_code=2, json_mode=True, parameter="--jsonl",
+        )
     if follow and json_mode:
-        console.print("[red]--follow and --json are mutually exclusive[/red]")
-        raise typer.Exit(code=2)
+        raise cli_error(
+            "invalid_arguments", "--follow and --json are mutually exclusive",
+            exit_code=2, json_mode=True, parameter="--follow",
+        )
     if follow and last is not None:
-        console.print("[red]--follow and --last are mutually exclusive[/red]")
-        raise typer.Exit(code=2)
+        raise cli_error(
+            "invalid_arguments", "--follow and --last are mutually exclusive",
+            exit_code=2, json_mode=jsonl, out=console, parameter="--last",
+        )
+    if last is not None and last < 0:
+        raise typer.BadParameter("--last must be zero or positive", param_hint="--last")
 
     atelier = Atelier()
-    flow_id = _resolve_flow_id(atelier, flow_id)
+    flow_id = _resolve_flow_id(atelier, flow_id, json_mode=json_mode or jsonl)
 
-    if follow:
-        _follow_logs(atelier, flow_id, task, show)
+    if follow or jsonl:
+        _stream_logs(atelier, flow_id, task, show, follow, jsonl, last)
         return
 
     try:
         entries = atelier.store.read_logs(flow_id)
     except FileNotFoundError:
-        console.print(f"[red]unknown flow:[/red] {flow_id}")
-        raise typer.Exit(code=1)
+        raise cli_error(
+            "unknown_flow", f"unknown flow: {flow_id}", json_mode=json_mode,
+            out=console, flow_id=flow_id,
+        )
 
     if task is not None:
         entries = [e for e in entries if e.task == task]
@@ -103,11 +127,10 @@ def logs_cmd(
 
     if not entries and not orphans:
         scope = f"task {task!r}" if task else "this flow"
-        if json_mode:
-            typer.echo("[]")
-            raise typer.Exit(code=1)
-        console.print(f"[yellow]no log entries for {escape(scope)}[/yellow]")
-        raise typer.Exit(code=1)
+        raise cli_error(
+            "no_log_entries", f"no log entries for {scope}",
+            json_mode=json_mode, out=console, flow_id=flow_id,
+        )
 
     # `--last` bounds what gets *rendered*, so it counts entries and orphan
     # panels together in the order they are printed. Slicing only `entries`
@@ -115,8 +138,6 @@ def logs_cmd(
     renderable: list = [("entry", e) for e in entries]
     renderable += [("orphan", key, steps) for key, steps in orphans.items()]
     if last is not None:
-        if last < 0:
-            raise typer.BadParameter("--last must be zero or positive")
         # renderable[-0:] is the whole list, so handle 0 explicitly as "none".
         renderable = renderable[-last:] if last > 0 else []
     entries = [item[1] for item in renderable if item[0] == "entry"]
@@ -213,93 +234,114 @@ def _render_orphan_steps(task: str, iteration: int, steps: list, console) -> Non
     )
 
 
-def _follow_logs(
-    atelier: Atelier,
-    flow_id: str,
-    task: str | None,
+def _jsonl_records(
+    steps: list[StepRecord],
+    entries: list[LogEntry],
     show: str,
-    poll_seconds: float = 0.25,
+    live_iterations: set[tuple[str, int]],
+) -> Iterator[dict]:
+    """Interleave the two append-only journals by timestamp within this poll."""
+    def timestamp(record: StepRecord | LogEntry) -> str:
+        return record.step.timestamp if isinstance(record, StepRecord) else record.finished_at
+
+    live_iterations.update((step.task, step.iteration) for step in steps)
+    for record in merge(steps, entries, key=timestamp):
+        if isinstance(record, StepRecord):
+            if show in ("steps", "all") or show == record.step.kind.value:
+                yield {"kind": "step", **record.model_dump(mode="json")}
+            continue
+
+        # Older runs stored their timeline only inside the completed entry.
+        if (record.task, record.iteration) not in live_iterations and show != "output":
+            for step in record.steps:
+                if show in ("steps", "all") or show == step.kind.value:
+                    yield {
+                        "kind": "step", "task": record.task, "iteration": record.iteration,
+                        "step": step.model_dump(mode="json"),
+                    }
+        if show != "steps":
+            fields = None if show == "all" else {"task", "iteration", "exit_code", show}
+            entry = record.model_dump(mode="json", include=fields, exclude={"steps"})
+            yield {"kind": "entry", **entry}
+
+
+def _stream_logs(
+    atelier: Atelier, flow_id: str, task: str | None, show: str,
+    follow: bool, jsonl: bool, last: int | None,
 ) -> None:
-    """Render existing entries, then poll for new ones until the flow ends.
+    """Drain recorded work once, or poll the same cursors until termination."""
+    entries_offset = steps_offset = 0
+    live_iterations: set[tuple[str, int]] = set()
+    interrupted = False
+    writing = False
 
-    Exits cleanly when the flow's progress.json reports a terminal status
-    (``completed`` or ``failed``). Exits 130 on KeyboardInterrupt.
+    def request_interrupt(signum, frame):
+        nonlocal interrupted
+        if not writing:
+            raise KeyboardInterrupt
+        interrupted = True
 
-    :param atelier: Atelier instance used to read logs and progress.
-    :param flow_id: full flow id to follow.
-    :param task: when set, restrict tailing to entries for this task.
-    :param show: which channel to print for each entry.
-    :param poll_seconds: delay between polls for new entries.
-    """
-    rendered = 0
-    steps_offset = 0
-
-    def _read() -> list:
-        """Read all log entries for the flow, filtered by task when requested.
-
-        :returns: list of LogEntry objects optionally filtered by task name.
-        """
-        try:
-            entries = atelier.store.read_logs(flow_id)
-        except FileNotFoundError:
-            console.print(f"[red]unknown flow:[/red] {flow_id}")
-            raise typer.Exit(code=1)
-        if task is not None:
-            entries = [e for e in entries if e.task == task]
-        return entries
-
-    def _drain_and_render() -> None:
-        """Render log entries and live steps written since the last pass.
-
-        Steps come first: they arrive while a task is still running, whereas
-        its log entry only lands once it returns. Tailing them is what makes
-        a long agent task watchable from a second terminal.
-        """
-        nonlocal rendered, steps_offset
-        from flow_atelier.cli.rendering.render import _render_step
-
-        try:
-            # Resume from where the last poll stopped: steps.jsonl has no
-            # rotation, so re-reading it whole every poll costs more the
-            # longer the flow runs.
-            fresh, steps_offset = atelier.store.read_steps(flow_id, steps_offset)
-        except FileNotFoundError:
-            fresh = []
-        for record in fresh:
-            if task is not None and record.task != task:
-                continue
-            # A shell task's entry below prints the same lines when it ends.
-            if record.step.kind in (StepKind.stdout, StepKind.stderr):
-                continue
-            console.print(_render_step(record.step, task=record.task))
-
-        entries = _read()
-        for entry in entries[rendered:]:
-            _render_log_entry(entry, show, console)
-        rendered = len(entries)
-
+    previous_handler = None
+    if jsonl and threading.current_thread() is threading.main_thread():
+        # A pipe write can span several buffers. Finish its JSON line before
+        # acting on Ctrl-C so the end record always starts on a new line.
+        previous_handler = signal.signal(signal.SIGINT, request_interrupt)
     try:
         while True:
-            _drain_and_render()
+            # Read progress first so observing a terminal state always leads
+            # to a final drain of everything the runner wrote before it ended.
             try:
-                progress = atelier.store.read_progress(flow_id)
+                status = display_status(atelier.store.read_progress(flow_id))
             except FileNotFoundError:
-                # Flow vanished mid-stream; nothing more to do.
-                return
-            if progress.status != FlowStatus.running:
-                # Final pass to capture any entries written between the last
-                # read and the terminal state transition.
-                _drain_and_render()
-                return
-            if is_crashed(progress):
-                # Runner is provably dead but progress.json is frozen at
-                # running; drain and stop rather than polling forever.
-                _drain_and_render()
-                console.print(
-                    "[dim]— flow runner is no longer alive (crashed) —[/dim]"
+                status = "unknown"
+
+            try:
+                entries = atelier.store.read_logs(flow_id)
+                steps, steps_offset = atelier.store.read_steps(flow_id, steps_offset)
+            except FileNotFoundError:
+                raise cli_error(
+                    "unknown_flow", f"unknown flow: {flow_id}", json_mode=jsonl,
+                    out=console, flow_id=flow_id,
                 )
-                return
-            time.sleep(poll_seconds)
+            fresh_entries = entries[entries_offset:]
+            entries_offset = len(entries)
+            if task is not None:
+                steps = [record for record in steps if record.task == task]
+                fresh_entries = [entry for entry in fresh_entries if entry.task == task]
+
+            if jsonl:
+                records = _jsonl_records(steps, fresh_entries, show, live_iterations)
+                if last is not None:
+                    records = iter(deque(records, maxlen=min(last, sys.maxsize)))
+                for item in records:
+                    line = json.dumps(item, allow_nan=False)
+                    writing = True
+                    typer.echo(line)
+                    writing = False
+                    if interrupted:
+                        raise KeyboardInterrupt
+            else:
+                for record in steps:
+                    # A shell task's entry prints these lines when it ends.
+                    if record.step.kind not in (StepKind.stdout, StepKind.stderr):
+                        console.print(_render_step(record.step, task=record.task))
+                for entry in fresh_entries:
+                    _render_log_entry(entry, show, console)
+
+            if not follow or status != "running":
+                break
+            time.sleep(0.25)
     except KeyboardInterrupt:
+        status = "interrupted"
+    finally:
+        if previous_handler is not None:
+            signal.signal(signal.SIGINT, previous_handler)
+
+    if jsonl:
+        typer.echo(json.dumps({"kind": "end", "flow_id": flow_id, "status": status}))
+    elif status == "crashed":
+        console.print("[dim]— flow runner is no longer alive (crashed) —[/dim]")
+    elif status == "interrupted":
         console.print("[dim]— follow interrupted —[/dim]")
+    if status == "interrupted":
         raise typer.Exit(code=130)

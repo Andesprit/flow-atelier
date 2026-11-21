@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -12,6 +15,7 @@ from typer.testing import CliRunner
 
 from flow_atelier.cli import app
 from flow_atelier.schemas.conduit import split_harness_tool
+from flow_atelier.services.store.filesystem import FilesystemStore
 
 FAKE_AGENT = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
 
@@ -146,3 +150,163 @@ def test_ask_permissions_flag_sets_the_level(tmp_path, monkeypatch) -> None:
     ])
     assert result.exit_code == 2
     assert "full, edits, read-only" in unstyle(result.output)
+
+
+@pytest.fixture
+def machine_ask(tmp_path):
+    """Run each turn in a fresh CLI process with stdin closed and a scripted ACP adapter."""
+    def invoke(*args, script=None, success=True):
+        env = {
+            **os.environ,
+            "ATELIER_ATELIER_DIR": str(tmp_path / ".atelier"),
+            "ATELIER_HARNESSES": json.dumps({"fake": [
+                sys.executable, str(FAKE_AGENT), "--script", json.dumps(script or {}),
+            ]}),
+        }
+        proc = subprocess.run(
+            [sys.executable, "-m", "flow_atelier.main", "ask", *args, "--json"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, cwd=tmp_path,
+            env=env, timeout=15,
+        )
+        if success:
+            assert proc.returncode == 0, proc.stderr
+            return json.loads(proc.stdout)
+        assert proc.returncode != 0
+        assert proc.stdout == ""
+        return json.loads(proc.stderr)["error"]
+    return invoke
+
+
+@pytest.mark.parametrize("reload", ["resume", "load"])
+def test_read_and_answer_pending_session(machine_ask, tmp_path, reload):
+    records = tmp_path / "protocol"
+    records.mkdir()
+    script = {
+        "reload": reload, "record_path": str(records),
+        "turns": [{"chunks": ["Which colour (色)?"]}],
+        "replay": ["OLD HISTORY"],
+        "resumed_turns": [{"chunks": ["Blue it is. [ATELIER_DONE]"]}],
+    }
+    first = machine_ask("Pick a colour", "--path", ".", "--harness", "fake", script=script)
+    flow_id = first["flow_id"]
+    assert first["status"] == "needs_input" and first["question"] == "Which colour (色)?"
+    assert machine_ask(flow_id) == first
+    store = FilesystemStore(tmp_path / ".atelier")
+    pending = store.read_progress(flow_id)
+    assert pending.pending_ask and pending.runner_pid is None and pending.finished_at is None
+    assert machine_ask(flow_id, "--request-id", "stale", "--answer", "wrong", success=False)["code"] == "no_pending_question"
+    assert machine_ask(flow_id) == first
+
+    reply = ["latest", "--answer", "blue {{inputs.literal}}"]
+    if reload == "load":
+        reply += ["--request-id", first["request_id"]]
+    result = machine_ask(*reply, script=script)
+    assert result == {"flow_id": flow_id, "status": "completed", "answer": "Blue it is."}
+    assert machine_ask(flow_id) == result
+    assert machine_ask(*reply, script=script, success=False)["code"] == "no_pending_question"
+    progress = store.read_progress(flow_id)
+    assert progress.pending_ask is None
+    assert progress.started_at == pending.started_at
+    assert store.read_outputs(flow_id)["chat"] == result["answer"]
+
+    events = [json.loads(line) for f in records.glob("*.events") for line in f.read_text().splitlines()]
+    reopened = [e for e in events if e["event"] == f"{reload}_session"]
+    assert len(reopened) == 1 and reopened[0]["session_id"] == pending.pending_ask.session_id
+    assert sum(e["event"] == "new_session" for e in events) == 1
+    prompts = [json.loads(line)[0]["text"] for f in records.glob("*.jsonl") for line in f.read_text().splitlines()]
+    assert len(prompts) == 2 and any(p.startswith("blue {{inputs.literal}}") for p in prompts)
+
+
+def test_direct_answer_and_legacy_progress(machine_ask, tmp_path):
+    result = machine_ask(
+        "Say hello", "--path", ".", "--harness", "fake",
+        script={"turns": [{"chunks": ["Hello! [ATELIER_DONE]"]}]},
+    )
+    assert result["status"] == "completed" and result["answer"] == "Hello!"
+    path = tmp_path / ".atelier" / "flows" / result["flow_id"] / "progress.json"
+    progress = json.loads(path.read_text())
+    progress.pop("pending_ask", None)
+    path.write_text(json.dumps(progress))
+    assert machine_ask(result["flow_id"]) == result
+
+
+def test_machine_ask_reports_engine_value_error_as_json(machine_ask, tmp_path):
+    script = {"reload": "resume", "turns": [{"chunks": ["Which one?"]}]}
+    first = machine_ask("Choose", "--path", ".", "--harness", "fake", script=script)
+    flow_id = first["flow_id"]
+    # Reading an invalid UTF-8 outputs file raises ValueError during engine resume.
+    (tmp_path / ".atelier" / "flows" / flow_id / "outputs.yaml").write_bytes(b"\xff")
+    error = machine_ask(flow_id[:-4], "--answer", "blue", script=script, success=False)
+    assert error["code"] == "ask_failed"
+    assert error["flow_id"] == flow_id
+    assert "decode" in error["message"]
+
+
+def test_pending_ask_status_and_diagnosis(machine_ask, tmp_path, monkeypatch):
+    monkeypatch.setenv("ATELIER_ATELIER_DIR", str(tmp_path / ".atelier"))
+    script = {"reload": "resume", "turns": [{"chunks": ["Which one?"]}]}
+    first = machine_ask("Choose", "--path", ".", "--harness", "fake", script=script)
+    flow_id = first["flow_id"]
+    read = f"atelier ask {flow_id} --json"
+    for command in ("status", "diagnose"):
+        shown = CliRunner().invoke(app, [command, flow_id])
+        assert shown.exit_code == 0, shown.output
+        assert "needs input" in shown.stdout and read in shown.stdout
+        assert "--resume" not in shown.stdout
+    report = CliRunner().invoke(app, ["diagnose", flow_id, "--json"])
+    data = json.loads(report.stdout)
+    assert data["observed"]["state"] == "needs_input"
+    commands = [step["command"] for step in data["next_steps"]]
+    assert read in commands
+    assert not any("--resume" in (command or "") for command in commands)
+
+
+def test_machine_ask_cannot_substitute_a_fresh_session(machine_ask, tmp_path):
+    records = tmp_path / "protocol"
+    records.mkdir()
+    script = {"turns": [{"chunks": ["Question?"]}], "record_path": str(records)}
+    start = ["Help", "--path", ".", "--harness", "fake"]
+    unsupported = machine_ask(*start, script=script, success=False)
+    assert unsupported["code"] == "session_unsupported"
+    script.update(reload="resume", reload_fails="session expired")
+    question = machine_ask(*start, script=script)
+    failed = machine_ask(
+        question["flow_id"], "--request-id", question["request_id"], "--answer", "do it",
+        script=script, success=False,
+    )
+    assert failed["code"] == "session_unavailable"
+    assert machine_ask(question["flow_id"], "--answer", "do it", success=False)["code"] == "no_pending_question"
+    assert sum(len(p.read_text().splitlines()) for p in records.glob("*.jsonl")) == 2
+
+
+def test_ask_can_cancel_a_pending_turn(machine_ask, tmp_path):
+    script = {
+        "reload": "load", "turns": [{"chunks": ["Where?"]}],
+        "resumed_turns": [{"chunks": ["When?"]}],
+    }
+    first = machine_ask("Help", "--path", ".", "--harness", "fake", "--timeout", "2", script=script)
+    flow_id = first["flow_id"]
+    reply = [flow_id, "--answer", "here", "--request-id", first["request_id"]]
+    with FilesystemStore(tmp_path / ".atelier").lock_ask(flow_id) as acquired:
+        assert acquired
+        assert machine_ask(*reply, success=False)["code"] == "ask_busy"
+    time.sleep(2.1)
+    second = machine_ask(*reply, script=script)
+    assert second["status"] == "needs_input" and second["question"] == "When?"
+    assert second["request_id"] != first["request_id"]
+    assert machine_ask(*reply, success=False)["code"] == "no_pending_question"
+    assert machine_ask(flow_id, "--answer", "here", success=False)["code"] == "no_pending_question"
+    assert machine_ask(flow_id) == second
+    assert machine_ask(flow_id, "--cancel") == {"flow_id": flow_id, "status": "stopped"}
+    assert machine_ask(flow_id, "--answer", "here", "--request-id", first["request_id"], success=False)["code"] == "no_pending_question"
+
+
+@pytest.mark.parametrize(("turn", "message"), [
+    ({"delay_before": 5}, "timeout"),
+    ({"usage_limit": {"data": {"errorKind": "rate_limit"}}}, "usage limit"),
+])
+def test_machine_ask_bounds_active_execution(machine_ask, turn, message):
+    error = machine_ask("Help", "--path", ".", "--harness", "fake", "--timeout", "1",
+                        script={"turns": [turn]}, success=False)
+    assert message in error["message"]
+    assert machine_ask(error["flow_id"])["status"] == "failed"

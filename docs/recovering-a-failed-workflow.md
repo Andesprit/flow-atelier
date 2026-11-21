@@ -71,8 +71,10 @@ atelier run triage
 echo "exit: $?"
 ```
 
-The agent answers, the check fails, and the run stops. Note the `flow_id:` it
-printed — everything below can also find it with `latest`.
+The agent answers, the check fails, and the run stops. Copy the first recovery
+command, `atelier diagnose <flow-id>`. Both `run` and `wait` print the exact
+ID so you can inspect the same run even if another one starts. This exercise
+uses `latest` because its workspace contains just one run.
 
 ## 3. Ask what you have
 
@@ -108,6 +110,24 @@ a person:
 ```bash
 atelier diagnose latest --json | head -30 || exit 1
 ```
+
+### Observing a flow from a script
+
+`atelier wait <flow-id> --json` writes one terminal result to stdout, for
+example `{"flow_id":"20260101_aaaaaaaa_triage","status":"failed"}`. The exit
+code is 0 for completion or 1 for a failed, stopped or crashed flow.
+
+If the command cannot produce a result, stdout is empty. Stderr carries one
+JSON object with a stable error code and a human-readable message:
+
+```json
+{"error":{"code":"unknown_flow","message":"unknown flow: latest — no flows recorded yet","flow_id":"latest"}}
+```
+
+An ambiguous prefix reports `ambiguous_flow_id` and the full list of
+`candidates`. Invalid arguments exit 2 and may name the `parameter` and its
+`allowed` values or numeric bound. A timeout exits 124 with `wait_timeout`.
+Interrupting the wait exits 130 with `interrupted`. Both leave the runner active.
 
 ## 4. Repair, then finish
 

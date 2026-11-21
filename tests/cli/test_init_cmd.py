@@ -47,14 +47,18 @@ def test_init_fills_in_when_atelier_exists_without_hello(workdir):
     assert _conduit_file(workdir).exists()
 
 
-def test_init_is_noop_when_hello_conduit_present(workdir):
-    """Running init when the hello conduit already exists is a no-op."""
-    CliRunner().invoke(app, ["init"])
-    original = _conduit_file(workdir).read_text()
+def test_init_preserves_existing_starters(workdir, monkeypatch):
+    """Running init again preserves edits to every starter."""
+    _fake_clis(workdir, monkeypatch, "codex")
+    assert CliRunner().invoke(app, ["init"]).exit_code == 0
+    paths = [workdir / ".atelier" / "conduits" / name / "conduit.yaml"
+             for name in ("hello", "explain", "pair")]
+    for path in paths:
+        path.write_text("# customized\n")
     result = CliRunner().invoke(app, ["init"])
     assert result.exit_code == 0
     assert "already set up" in result.stdout
-    assert _conduit_file(workdir).read_text() == original
+    assert all(path.read_text() == "# customized\n" for path in paths)
 
 
 def _fake_clis(tmp_path, monkeypatch, *names):
@@ -85,30 +89,24 @@ def test_init_without_agents_writes_only_hello(workdir, monkeypatch):
     _fake_clis(workdir, monkeypatch)
     result = CliRunner().invoke(app, ["init"])
     assert result.exit_code == 0
-    assert not (workdir / ".atelier" / "conduits" / "explain").exists()
+    assert [p.name for p in (workdir / ".atelier" / "conduits").iterdir()] == ["hello"]
     assert "install Claude Code or Codex" in result.stdout
 
 
-def test_init_with_one_agent_writes_a_single_look(workdir, monkeypatch):
-    """One agent CLI yields a one-task explain conduit on that agent."""
-    _fake_clis(workdir, monkeypatch, "codex")
+@pytest.mark.parametrize(("clis", "reader"), [
+    (["codex"], "codex"),
+    (["codex", "claude"], "claude-code"),
+])
+def test_init_writes_one_read_only_look(workdir, monkeypatch, clis, reader):
+    """Explain uses one preferred reader regardless of other installed CLIs."""
+    _fake_clis(workdir, monkeypatch, *clis)
     result = CliRunner().invoke(app, ["init"])
     assert result.exit_code == 0
     conduit = _explain(workdir)
-    assert [t.tool for t in conduit.tasks] == ["harness:codex"]
+    look, = conduit.tasks
+    assert (look.name, look.tool, look.permissions) == ("look", f"harness:{reader}", "read-only")
     assert "atelier run explain" in result.stdout
-
-
-def test_init_with_two_agents_runs_them_in_parallel_then_merges(workdir, monkeypatch):
-    """Two agent CLIs look in parallel and the preferred one merges."""
-    _fake_clis(workdir, monkeypatch, "codex", "claude", "gemini")
-    CliRunner().invoke(app, ["init"])
-    tools = {t.name: t.tool for t in _explain(workdir).tasks}
-    assert tools == {
-        "look_claude_code": "harness:claude-code",
-        "look_codex": "harness:codex",
-        "merge": "harness:claude-code",
-    }
+    assert "atelier serve --no-scheduler" in result.stdout
 
 
 def test_init_adds_explain_to_an_existing_setup(workdir, monkeypatch):
@@ -142,19 +140,25 @@ def test_init_with_two_agents_pairs_them(workdir, monkeypatch):
         "revise": ("harness:claude-code", "worker"),
     }
     assert conduit.inputs["goal"].default
+    assert all(t.permissions == "read-only" for t in conduit.tasks)
 
 
-def test_init_with_one_agent_pairs_it_with_itself(workdir, monkeypatch):
+@pytest.mark.parametrize("others", [(), ("gemini", "opencode")])
+def test_init_with_one_agent_pairs_it_with_itself(workdir, monkeypatch, others):
     """One agent CLI plays worker, supervisor and reviewer."""
-    _fake_clis(workdir, monkeypatch, "codex")
+    _fake_clis(workdir, monkeypatch, "codex", *others)
     CliRunner().invoke(app, ["init"])
     conduit = _pair(workdir)
     assert conduit.interaction.supervisor.tool == "harness:codex"
     assert {t.tool for t in conduit.tasks} == {"harness:codex"}
+    assert all(t.permissions == "read-only" for t in conduit.tasks)
 
 
-def test_init_without_agents_writes_no_pair(workdir, monkeypatch):
-    """With no agent CLI on PATH, init writes no pair conduit."""
-    _fake_clis(workdir, monkeypatch)
-    CliRunner().invoke(app, ["init"])
-    assert not (workdir / ".atelier" / "conduits" / "pair").exists()
+def test_unsupported_agents_report_missing_read_only_harness(workdir, monkeypatch):
+    _fake_clis(workdir, monkeypatch, "gemini", "opencode")
+    for _ in range(2):
+        result = CliRunner().invoke(app, ["init"])
+        assert result.exit_code == 0
+        assert "No installed harness can enforce read-only" in result.stdout
+        assert "install Claude Code or Codex" in result.stdout
+        assert [p.name for p in _conduit_file(workdir).parents[1].iterdir()] == ["hello"]

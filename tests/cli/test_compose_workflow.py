@@ -106,6 +106,36 @@ def _flow_id(output: str) -> str:
     return match.group(1)
 
 
+def test_one_read_only_worker_checks_plans_and_runs(workspace, tmp_path, monkeypatch):
+    """One worker receives the brief and the author's acceptance criterion."""
+    modes = {
+        "current": "agent",
+        "available": [{"id": "agent", "name": "Agent"}, {"id": "read-only", "name": "Read only"}],
+    }
+    _register(monkeypatch, tmp_path, alpha={"modes": modes})
+    runner = CliRunner()
+    instruction = "Propose a fix. Acceptance check: name the replacement for cron."
+    composed = runner.invoke(
+        app, ["compose", "solo", "-s", f"alpha={instruction}", "--permissions", "read-only"]
+    )
+    assert composed.exit_code == 0, composed.output
+    checked = runner.invoke(app, ["check", "solo", "--json"])
+    assert checked.exit_code == 0, checked.output
+    assert json.loads(checked.stdout)[0]["required_inputs"] == ["brief"]
+    planned = runner.invoke(app, ["plan", "solo", "--json"])
+    assert planned.exit_code == 0, planned.output
+    waves = json.loads(planned.stdout)["waves"]
+    assert [[task["name"] for task in wave] for wave in waves] == [["step_1"]]
+
+    run = runner.invoke(app, ["run", "solo", "--input", f"brief={BRIEF}"])
+    assert run.exit_code == 0, run.output
+    (prompt,) = _prompts(tmp_path, "alpha")
+    assert instruction in prompt and BRIEF in prompt
+    output = Atelier().get_outputs(_flow_id(run.output))["step_1"]
+    assert "[mode_set:read-only]" in output
+    assert SAID["alpha"] in output
+
+
 def test_sequential_handoff_routes_the_brief_and_each_result(workspace, tmp_path, monkeypatch):
     """Two agents in a chain: the brief reaches both, the result reaches the second."""
     _register(monkeypatch, tmp_path)

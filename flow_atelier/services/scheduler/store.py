@@ -19,9 +19,11 @@ import os
 import re
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC
+from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, Concatenate
 
 import yaml
 
@@ -88,22 +90,78 @@ def _filename_for_name(name: str) -> str:
     return f"{_slug(name)}-{digest}.yaml"
 
 
+def _serialized[**P, R](
+    method: Callable[Concatenate[ScheduleStore, P], R],
+) -> Callable[Concatenate[ScheduleStore, P], R]:
+    """Serialize global store writers, including concurrent CLI processes and migrations."""
+    @wraps(method)
+    def write(self: ScheduleStore, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        self.atelier_dir.mkdir(parents=True, exist_ok=True)
+        with (self.atelier_dir / ".scheduler.lock").open("a+b") as lock:
+            if os.name == "nt":
+                import msvcrt
+
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            return method(self, *args, **kwargs)
+
+    return write
+
+
+class SchedulerAlreadyRunning(RuntimeError):
+    """Another process holds the daemon lease for this store."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        super().__init__(f"scheduler already running (pid {pid})")
+
+
 class ScheduleStore:
     """YAML-backed CRUD for :class:`ScheduledJob` records.
 
-    :param atelier_dir: project ``.atelier/`` directory; created if missing
+    :param atelier_dir: store directory, created on first write
     """
 
     def __init__(self, atelier_dir: Path | str) -> None:
         """Initialise the store rooted at ``atelier_dir``.
 
-        :param atelier_dir: project ``.atelier/`` directory; created if missing
+        :param atelier_dir: store directory, created on first write
         """
         self.atelier_dir = Path(atelier_dir)
-        self.atelier_dir.mkdir(parents=True, exist_ok=True)
         self.schedules_dir = self.atelier_dir / "schedules"
-        self.schedules_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.atelier_dir / "scheduler_state.json"
+
+    @_serialized
+    def acquire_daemon_lease(self) -> BinaryIO:
+        """Acquire the exclusive daemon lease. Closing the handle releases it."""
+        # Serialize PID publication with acquisition so contenders always see the owner.
+        lock = (self.atelier_dir / ".scheduler.daemon.lock").open("a+b", buffering=0)
+        try:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    # Lock beyond the PID so Windows lets contenders read it.
+                    lock.seek(32)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, PermissionError) as exc:
+                lock.seek(0)
+                pid = int(lock.read(32))
+                raise SchedulerAlreadyRunning(pid) from exc
+            lock.truncate(0)
+            lock.write(f"{os.getpid()}\n".encode("ascii"))
+            return lock
+        except BaseException:
+            lock.close()
+            raise
 
     # --------------------------------------------------------------- internals
 
@@ -124,11 +182,15 @@ class ScheduleStore:
         :param schedule_id: schedule identifier
         :returns: ``(path, job)`` or ``None`` if no file matches
         """
-        for path in self.schedules_dir.glob("*.yaml"):
+        for path in self._job_files():
             job = self._load_file(path)
             if job is not None and job.id == schedule_id:
                 return path, job
         return None
+
+    @staticmethod
+    def _read_job(path: Path) -> ScheduledJob:
+        return ScheduledJob.model_validate(yaml.safe_load(path.read_text()))
 
     def _load_file(self, path: Path) -> ScheduledJob | None:
         """Load and validate one schedule YAML; return None on failure.
@@ -136,16 +198,8 @@ class ScheduleStore:
         :param path: path to a ``*.yaml`` schedule file
         """
         try:
-            raw = yaml.safe_load(path.read_text())
-        except (yaml.YAMLError, OSError) as e:
-            logger.warning("skipping unreadable schedule %s: %s", path.name, e)
-            return None
-        if not isinstance(raw, dict):
-            logger.warning("skipping malformed schedule %s: not a mapping", path.name)
-            return None
-        try:
-            return ScheduledJob.model_validate(raw)
-        except Exception as e:  # noqa: BLE001 — skip malformed rows
+            return self._read_job(path)
+        except (OSError, ValueError, yaml.YAMLError) as e:
             logger.warning("skipping invalid schedule %s: %s", path.name, e)
             return None
 
@@ -158,22 +212,86 @@ class ScheduleStore:
         """
         if path is None:
             path = self._path_for_name(job.schedule.name)
+            path.parent.mkdir(parents=True, exist_ok=True)
         payload = job.model_dump(mode="json", exclude_none=True)
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
         tmp.write_text(yaml.safe_dump(payload, sort_keys=False))
         _atomic_replace(tmp, path)
 
+    def _job_files(self) -> list[Path]:
+        """Enumerate YAML files, treating only a missing directory as empty."""
+        try:
+            return [p for p in self.schedules_dir.iterdir() if p.match("*.yaml")]
+        except FileNotFoundError:
+            return []
+
     def _iter_jobs(self) -> list[ScheduledJob]:
         """Return every persisted schedule, sorted by ``created_at`` ascending."""
-        if not self.schedules_dir.exists():
-            return []
         jobs: list[ScheduledJob] = []
-        for path in self.schedules_dir.glob("*.yaml"):
+        for path in self._job_files():
             job = self._load_file(path)
             if job is not None:
                 jobs.append(job)
         jobs.sort(key=lambda j: j.created_at)
         return jobs
+
+    def migrate_from(
+        self, project_dir: Path, *, on_kept: Callable[[str], None] = logger.warning
+    ) -> tuple[int, int]:
+        """Move valid project jobs, report each retained file and return moved/kept counts."""
+        project = ScheduleStore(project_dir)
+        if project.schedules_dir.resolve() == self.schedules_dir.resolve():
+            return 0, 0
+        moved = kept = 0
+        for source in project._job_files():
+            try:
+                if self._migrate_file(project, source):
+                    moved += 1
+            except (OSError, ValueError, yaml.YAMLError) as exc:
+                on_kept(f"kept {source}: {exc}")
+                kept += 1
+        return moved, kept
+
+    @_serialized
+    def _migrate_file(self, project: ScheduleStore, source: Path) -> bool:
+        if not source.exists():
+            return False  # Another invocation already moved it.
+        job = project._read_job(source)
+        job = job.model_copy(update={"run_path": str(Path(job.run_path).absolute())})
+        destination = self._path_for_name(job.schedule.name)
+        existing = self.get(job.id)
+        if existing is not None:
+            # Resume after publication but before unlink, even if the job has since fired.
+            if (
+                existing.model_copy(update={"runs_completed": job.runs_completed}) != job
+                or existing.runs_completed < job.runs_completed
+            ):
+                raise ValueError(f"id conflict for {job.id}: reconcile the two schedules and retry")
+        elif destination.exists() or self.get_by_name(job.schedule.name) is not None:
+            raise ValueError(
+                f"name conflict for {job.schedule.name!r}: change schedule.name "
+                "in the legacy file and rerun atelier schedule migrate"
+            )
+
+        # Install the one-shot marker and history before the daemon can see the YAML.
+        old = project._read_state(strict=True)
+        if job.id in old["schedules"]:
+            state = self._read_state(strict=True)
+            if (
+                job.id in state["schedules"]
+                and state["schedules"][job.id] != old["schedules"][job.id]
+            ):
+                raise ValueError(f"history conflict for {job.id}: reconcile its history and retry")
+            if job.id not in state["schedules"]:
+                state["schedules"][job.id] = old["schedules"][job.id]
+                self._write_state(state)
+        if existing is None:
+            self._save_job(job)
+        if job.id in old["schedules"]:
+            del old["schedules"][job.id]
+            project._write_state(old)
+        source.unlink()
+        return True
 
     # --------------------------------------------------------------- list / get
 
@@ -203,6 +321,7 @@ class ScheduleStore:
 
     # --------------------------------------------------------------- create / delete
 
+    @_serialized
     def create(self, payload: CreateScheduleInput) -> ScheduledJob:
         """Persist a new :class:`ScheduledJob` derived from ``payload``.
 
@@ -237,6 +356,7 @@ class ScheduleStore:
         self._save_job(job)
         return job
 
+    @_serialized
     def delete(self, schedule_id: str) -> ScheduledJob:
         """Remove the schedule's YAML file and clear its fired marker.
 
@@ -249,9 +369,10 @@ class ScheduleStore:
             raise KeyError(f"schedule not found: {schedule_id}")
         path, job = hit
         path.unlink(missing_ok=True)
-        self.clear_fired(schedule_id)
+        self._clear_fired(schedule_id)
         return job
 
+    @_serialized
     def increment_runs(self, schedule_id: str) -> None:
         """Bump ``runs_completed`` for ``schedule_id`` if it still exists.
 
@@ -272,7 +393,7 @@ class ScheduleStore:
 
     # --------------------------------------------------------------- fired state
 
-    def _read_state(self) -> dict[str, Any]:
+    def _read_state(self, *, strict: bool = False) -> dict[str, Any]:
         """Load the ``scheduler_state.json`` payload, returning a safe default."""
         if not self.state_path.exists():
             return {"schedules": {}}
@@ -280,22 +401,29 @@ class ScheduleStore:
         # locks the file (ERROR_SHARING_VIOLATION). Returning the empty default
         # on such a blip would make the caller's read-modify-write clobber live
         # markers, so wait for the writer's short-lived handle to clear first.
-        text: str | None = None
         delay = 0.005
         for _ in range(10):
             try:
-                text = self.state_path.read_text()
+                data = json.loads(self.state_path.read_text())
                 break
+            except (ValueError, RecursionError) as exc:
+                if strict:
+                    raise ValueError(
+                        f"invalid scheduler state in {self.state_path}: {exc}"
+                    ) from exc
+                if isinstance(exc, json.JSONDecodeError):
+                    return {"schedules": {}}
+                raise
             except OSError:
                 time.sleep(delay)
                 delay = min(delay * 2, 0.1)
-        if text is None:
+        else:
+            if strict:
+                raise OSError(f"cannot read scheduler state: {self.state_path}")
             return {"schedules": {}}
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            return {"schedules": {}}
-        if not isinstance(data, dict) or "schedules" not in data:
+        if not isinstance(data, dict) or not isinstance(data.get("schedules"), dict):
+            if strict:
+                raise ValueError(f"invalid scheduler state: {self.state_path}")
             return {"schedules": {}}
         return data
 
@@ -304,6 +432,7 @@ class ScheduleStore:
 
         :param data: full state payload to persist
         """
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(f".json.tmp.{uuid.uuid4().hex}")
         tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
         _atomic_replace(tmp, self.state_path)
@@ -320,6 +449,7 @@ class ScheduleStore:
         value = entry.get("fired_at_iso")
         return value if isinstance(value, str) else None
 
+    @_serialized
     def mark_fired(self, schedule_id: str, scheduled_at_iso: str | None = None) -> None:
         """Record that ``schedule_id`` has fired.
 
@@ -341,6 +471,7 @@ class ScheduleStore:
         data["schedules"][schedule_id] = entry
         self._write_state(data)
 
+    @_serialized
     def clear_fired(self, schedule_id: str) -> None:
         """Drop the fired-once marker for ``schedule_id`` if present.
 
@@ -349,6 +480,9 @@ class ScheduleStore:
 
         :param schedule_id: schedule identifier
         """
+        self._clear_fired(schedule_id)
+
+    def _clear_fired(self, schedule_id: str) -> None:
         data = self._read_state()
         if schedule_id in data["schedules"]:
             del data["schedules"][schedule_id]
@@ -356,6 +490,7 @@ class ScheduleStore:
 
     # --------------------------------------------------------------- run history
 
+    @_serialized
     def append_run_record(
         self, schedule_id: str, status: str, flow_id: str | None
     ) -> None:

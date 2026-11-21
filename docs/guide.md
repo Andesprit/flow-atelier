@@ -53,6 +53,7 @@ check.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Andesprit/flow-atelier/main/install.sh | bash
+export PATH="$HOME/.atelier/bin:$PATH"
 ```
 
 **Windows (PowerShell):**
@@ -64,7 +65,7 @@ irm https://raw.githubusercontent.com/Andesprit/flow-atelier/main/install.ps1 | 
 Prebuilt binaries are published for **Linux x86_64**, **macOS arm64
 (Apple Silicon)**, and **Windows x86_64**. Intel Macs are not supported
 (no Rosetta fallback exists for an arm64 binary). Open a new terminal
-after installing so the updated `PATH` takes effect.
+after installing on Windows so the updated `PATH` takes effect.
 
 ### Install with uv (for Python users)
 
@@ -246,15 +247,28 @@ atelier list flows --conduit hello          # lists previous runs
 
 `atelier init` writes a one-line `hello` conduit that only runs a
 shell command, so this works end-to-end before you install any AI
-tool. When it finds an agent CLI on your `PATH` (`claude`, `codex`,
-`gemini`, `cursor-agent`, `opencode` or `copilot`), it also writes
-`explain`, where your agents read the current project and brief you,
-and `pair`, where one agent drafts a change while another answers its
-questions as [supervisor](interaction.md) and reviews the draft.
-Run `atelier init` again after installing an agent to add it.
+tool. Look for `hello world` and a flow ID. When it finds Claude Code or
+Codex on your `PATH`, it also writes the read-only starters `explain` and
+`pair`. In `explain`, Claude Code (or Codex if installed alone) reads the
+project and writes a brief for a newcomer. In `pair`, that agent proposes a
+change and revises it after review. With both installed, Codex supervises
+and reviews. With one, the same harness fills both roles. [Interaction policies](interaction.md)
 
-Ready for a real one? [Your first workflow: run it, break it, recover
-it](first-workflow.md) is a 5-minute Bash-only exercise that builds a
+Every task in both starters declares `permissions: read-only`. By default,
+if a harness cannot enforce that level, the task stops before sending the
+prompt and reports `permissions read-only cannot be enforced` with the reason.
+Run `atelier init` again after installing an agent to add any missing starters.
+Existing recipes keep their contents.
+
+For the first agent run, start `atelier serve --no-scheduler` in one
+terminal. In another terminal in the same project, run
+`atelier check pair --probe && atelier run pair`. Follow the printed run-page link.
+
+Give one agent its skills, a goal and one checkable result. Split for clean
+context, parallel work, an independent test or review, or a different permission
+level or agent. [Ask one agent or compose one repeatable task](first-workflow.md).
+
+The [first workflow guide](first-workflow.md#try-failure-and-recovery-with-bash) includes a Bash exercise that builds a
 three-step conduit, fails it on purpose, diagnoses it from saved history, and
 shows what `--resume` keeps that `--again` redoes.
 
@@ -310,13 +324,14 @@ name already taken stops here instead of running something else:
 ```bash
 atelier harness check claude-code || exit 1
 atelier harness check codex || exit 1
-atelier compose triage \
+atelier compose triage --permissions read-only \
   -s "claude-code=Propose one concrete fix. Say what you would change and why." \
   -s "codex=Review the proposal above. Name what breaks, or say it is sound." \
   || exit 1
 atelier check triage || exit 1
-atelier run triage --input brief="The nightly billing job is late." || exit 1
-atelier outputs latest --task step_2 || exit 1
+atelier run triage --input brief="The nightly billing job is late." --json > triage.json || exit 1
+flow_id=$(python3 -c 'import json; print(json.load(open("triage.json"))["flow_id"])') || exit 1
+atelier outputs "$flow_id" --task step_2 || exit 1
 ```
 
 `harness check` opens a session and closes it without sending a prompt, so it
@@ -623,6 +638,34 @@ YAML comment or a file beside the conduit. And if you exported
 `conduit.schema.json` before upgrading, run `atelier schema` again:
 the old copy still accepts the typo your editor should now be
 underlining.
+
+### Reading JSON command errors
+
+When a command with `--json` fails before it has a result, stdout is empty.
+Stderr contains one JSON object. Branch on `error.code` and display
+`error.message` to the user. For example, `atelier logs missing --follow --json`
+exits 2 and writes this object to stderr.
+
+```json
+{"error":{"code":"invalid_arguments","message":"--follow and --json are mutually exclusive","parameter":"--follow"}}
+```
+
+Warnings from inspection commands go to stderr with a result or into
+`error.diagnostics` with a command error. Streaming commands keep stderr live.
+
+An unknown flow exits 1 with `unknown_flow` and the requested `flow_id`.
+An ambiguous prefix exits 1 with `ambiguous_flow_id` and a `candidates` array
+of matching IDs. An invalid choice can include an `allowed` array.
+For `rm --json`, supply `--yes` to confirm deletion.
+
+A nonzero exit can also accompany a result on stdout. `check --json` returns
+its report even when a conduit fails validation. Read each row's advisory
+`warnings` when present; a serial agent handoff or a loop marker an agent can
+print may warrant a change even when `ok` is true. An allocated `run --json`
+returns `{"flow_id":"…","status":"failed"}` on failure, so the caller can
+diagnose that exact run. `wait --json` returns the
+observed terminal status for failed, stopped and crashed flows. A wait that
+times out exits 124 with a `wait_timeout` error on stderr.
 
 ### Checking conduits from a script or an agent
 
@@ -982,7 +1025,7 @@ tasks:
       task: deploy_to_env
       tool: tool:conduit
       depends_on:
-        - "approve.output.match(confirm: 'yes')"
+        - "approve.output.match((?m)^confirm: 'yes'$)"
       inputs:
         target_env: "{{inputs.env}}"
         build_path: /tmp/build
@@ -1384,12 +1427,46 @@ answer as YAML, `confirm: 'yes'`:
       task: make deploy
       tool: tool:bash
       depends_on:
-        - "approve.output.match(confirm: 'yes')"
+        - "approve.output.match((?m)^confirm: 'yes'$)"
 ```
 
 Any other answer skips `deploy`. `atelier check` warns about a step that
 depends on a gate named for an approval (its name or an input mentions
 approve or confirm) without such a condition.
+
+#### Approving an exact patch
+
+Suppose `release.patch` adds one new file to a Git worktree. Run this shell
+command there in a step named `preview` before prompting for approval.
+Git stores the proposed bytes and returns their digest.
+
+```bash
+digest=$(git hash-object -w --no-filters release.patch) && printf '%s' "$digest"
+```
+
+Make `approve` depend on `preview`. Set its prompt to
+`Review git cat-file -p {{preview.output}} before answering.` Run that
+command in the worktree to inspect the exact patch. Keep the affirmative
+dependency on `deploy` shown above. For this local deployment, use the
+following shell command in the same worktree.
+
+```bash
+set -eo pipefail
+current=$(git hash-object --no-filters release.patch)
+if [[ "$current" != "$OUTPUT_PREVIEW" ]]; then
+  echo 'Patch changed since approval. Start a new run.' >&2
+  exit 1
+fi
+if git cat-file blob "$current" | git apply --reverse --check - 2>/dev/null; then
+  exit 0
+fi
+git cat-file blob "$current" | git apply -
+```
+
+The apply reads the verified blob. If a run stops just after creating the
+file, the reverse check recognizes the applied patch on resume. For a
+remote deployment, use the approved digest and target as the deployment
+service's idempotency key so the service can recognize a repeated request.
 
 ### Long AI conversations (`interactive: true`)
 
@@ -1519,9 +1596,9 @@ flow folder under `.atelier/flows/` in the current working directory.
 atelier init
 atelier create <name> [--description <text>] [--template hello|code-review|fix-loop]
                                                        # scaffold a starter conduit
-atelier compose <name> --step <harness>=<prompt> --step ... [--parallel]
-                       [--synthesize <harness>=<prompt>] [--description <text>]
-                                                       # write a multi-agent conduit: a handoff chain,
+atelier compose <name> --step <harness>=<prompt> [--step ...] [--parallel]
+                       [--synthesize <harness>=<prompt>] [--description <text>] [--permissions <level>]
+                                                       # write one task, a handoff chain,
                                                        # or parallel workers plus one synthesis step
                                                        # see docs/multi-agent-workflow.md
 atelier check [<conduit>] [--json] [--recursive]        # validate conduit(s) without running
@@ -1533,9 +1610,11 @@ atelier schema                                         # print the conduit.yaml 
 # <flow_id> below accepts a unique prefix, or 'latest' for the most recently started flow
 # running
 atelier run <conduit> [--input key=value ...] [--input-file key=path ...]
-                      [--show-steps/--hide-steps]
+                      [--show-steps/--hide-steps] [--json]
                                                        # --input-file loads a UTF-8 text file into one input
 atelier ask <query> --path <directory> [--harness <name>] [--permissions <level>]   # interactive agent session (default: claude-code)
+atelier ask <query> --path <directory> --json [--timeout <seconds>]   # one bounded turn
+atelier ask <flow_id> --json [--answer <text> --request-id <id> | --cancel]
 atelier run --resume <flow_id>                         # resume a failed/crashed flow
 atelier run --again <flow_id>                          # fresh run reusing a past flow's inputs
 atelier stop <flow_id>                                 # gracefully halt a running flow
@@ -1544,7 +1623,8 @@ atelier stop <flow_id>                                 # gracefully halt a runni
 atelier status <flow_id>
 atelier diagnose <flow_id> [--json]                    # post-mortem: what failed, what is kept, what to do next
 atelier wait <flow_id> [--timeout 60]                  # block until it finishes; exit 0 only if it did
-atelier logs <flow_id> [--task <name>] [--follow] [--json]
+atelier logs <flow_id> [--task <name>] [--json]         # saved text or JSON array
+atelier logs <flow_id> --jsonl [--follow]               # one record per line
 atelier outputs <flow_id> [--task <name>] [--json]    # read back a finished flow's results
 atelier timing <flow_id> [--json]                      # wall time, per-task duration and agent startup
 atelier list conduits
@@ -1562,6 +1642,7 @@ atelier uninstall <package>                            # delete a package's cond
 
 # scheduling
 atelier schedule add <file.{json,yaml}>
+atelier schedule migrate
 atelier schedule rm <id-or-name>
 atelier schedule run-now <id-or-name>
 atelier schedule history <id-or-name>
@@ -1570,7 +1651,7 @@ atelier schedule daemon [--reload-interval 30] [--log-level INFO]
 # HTTP + WebSocket server
 atelier serve [--host 127.0.0.1] [--port 8000] \
               [--reload-interval 30] [--cors-origin URL]* \
-              [--log-level INFO] [--idle-exit MINUTES]
+              [--log-level INFO] [--idle-exit MINUTES] [--no-scheduler]
 
 # maintenance
 atelier self-update                                    # prebuilt binary only; uv installs use `uv tool upgrade`
@@ -1624,9 +1705,28 @@ left alone.
 ## Running on a schedule
 
 `atelier schedule daemon` runs conduits on a wall-clock schedule. Each
-schedule is one YAML file under `.atelier/schedules/<name>.yaml`. The
-daemon is one foreground process you can put under `systemd`,
-`launchd`, or any supervisor.
+schedule is one YAML file in `~/.atelier/schedules/`. The CLI, API and daemon
+share this directory. Set `ATELIER_GLOBAL_ATELIER_DIR` in the environment to
+change the global root. Both `schedule add` and scheduler-enabled `serve`
+print the schedule directory. A new schedule's relative `run_path` is anchored
+to the working directory where you add it.
+
+**Upgrading project schedules.** Stop old project daemons. In each directory
+where one used to run, use `atelier list schedules` to discover legacy jobs,
+then `atelier schedule migrate` to move them without starting a daemon.
+Scheduling-enabled `serve`, `schedule daemon`, and writable schedule commands
+also migrate that project's jobs. The source is the configured project store
+(`ATELIER_ATELIER_DIR`, default `./.atelier`). Migration preserves IDs,
+fire markers, history and run counts, and anchors relative run paths to the
+current directory. A conflict or unreadable state leaves the affected job in
+place. Migration reports its path and the reason, then continues with the
+remaining jobs. `atelier schedule migrate` prints the moved and kept counts.
+
+The first `atelier schedule daemon` or `atelier serve` to start holds the
+scheduler lease for the shared store. While it runs, another `schedule daemon`
+reports the owner's PID and exits with an error. Another `serve` reports the
+PID and serves its dashboard and API without dispatching jobs. Use
+`atelier serve --no-scheduler` to open a dashboard explicitly in that mode.
 
 To register a schedule, write a YAML file like the one below and run
 `atelier schedule add <file>`:
@@ -1668,7 +1768,9 @@ immediately, bypassing the daemon.
 
 `atelier serve` boots a single process that hosts both the HTTP /
 WebSocket API and the scheduler daemon. It is the entry point the
-Flow Atelier visual frontend connects to.
+Flow Atelier visual frontend connects to. Startup prints the project store and
+the active schedule directory. With `--no-scheduler` the API remains available
+and startup reports that the scheduler is disabled.
 
 
 | Method   | Path                  | Notes                                     |
@@ -1704,11 +1806,11 @@ driving the CLI can hand the link to you. The page loads only while
 `atelier serve` runs from the same project directory as the run. Set
 `ATELIER_SERVE_URL` when you serve on another host or port. If the server is absent,
 unresponsive, or serves another project, the CLI gives an instruction instead:
-run `atelier serve --port 0` from this project, then open `/runs/<flow_id>` at
+run `atelier serve --port 0 --no-scheduler` from this project, then open `/runs/<flow_id>` at
 the address it prints. Port 0 chooses a free port.
 
 A server started only to show a run page does not need to live forever.
-`atelier serve --idle-exit 30` stops itself after 30 minutes with no open page,
+`atelier serve --no-scheduler --idle-exit 30` skips scheduling and stops itself after 30 minutes with no open page,
 no request, no running flow in that directory and no scheduled run in progress.
 Without the flag it runs until you stop it.
 
@@ -1931,9 +2033,6 @@ The `.atelier` directory lives in the working directory where
 .atelier/
 ├── conduits/
 │   └── <conduit_name>/conduit.yaml
-├── schedules/
-│   └── <schedule_name>.yaml                # one YAML file per schedule
-├── scheduler_state.json                    # fired-once markers
 └── flows/
     └── <flow_id>/                          # <YYYYMMDD>_<uuid8>_<conduit>
         ├── input.yaml                      # the inputs this run was given
@@ -1942,6 +2041,11 @@ The `.atelier` directory lives in the working directory where
         ├── outputs.yaml                    # per-task outputs (written as tasks finish)
         └── flows/
             └── <child_flow_id>/...         # nested tool:conduit runs
+
+~/.atelier/
+├── schedules/
+│   └── <slug>-<hash>.yaml                  # one YAML file per shared schedule
+└── scheduler_state.json                    # fired-once markers and run history
 ```
 
 

@@ -6,10 +6,10 @@ import json
 
 import typer
 from pydantic import ValidationError
-from rich.markup import escape
 
 from flow_atelier.cli._shared import (
     _exit_unknown_conduit,
+    cli_error,
     console,
     parse_agents_option,
     parse_worktrees_option,
@@ -67,11 +67,11 @@ def plan_cmd(
     :param worktrees_raw: repeated ``TASK`` names to preview isolating.
     """
     atelier = Atelier()
-    agents = parse_agents_option(agents_raw)
-    worktrees = parse_worktrees_option(worktrees_raw)
+    agents = parse_agents_option(agents_raw, json_mode=json_mode)
+    worktrees = parse_worktrees_option(worktrees_raw, json_mode=json_mode)
     sources = dict(atelier.store.list_conduits_with_source())
     if conduit_name not in sources:
-        _exit_unknown_conduit(conduit_name, list(sources))
+        _exit_unknown_conduit(conduit_name, list(sources), json_mode=json_mode)
 
     recipe = None
     try:
@@ -82,19 +82,25 @@ def plan_cmd(
             atelier, conduit, recipe, agents, parsed=parsed,
             isolation=_isolation(conduit, worktrees),
         )
-    except BindingError as e:
-        console.print(f"[red]{escape(str(e))}[/red]")
-        raise typer.Exit(code=e.code)
+    except (BindingError, WorkspaceError) as e:
+        raise cli_error(
+            "invalid_arguments", str(e), exit_code=e.code, json_mode=json_mode, out=console,
+            parameter="--agent" if isinstance(e, BindingError) else "--worktree",
+        ) from e
     except ValidationError as e:
         message = format_conduit_error(e)
         if recipe is None:
             path = atelier.store.conduit_dir(conduit_name) / "conduit.yaml"
             message = "\n".join(validation_errors(e, RecipeSource(str(path), conduit_name)))
-        console.print(f"[red]FAIL: {escape(message)}[/red]")
-        raise typer.Exit(code=1)
+        raise cli_error(
+            "invalid_conduit", f"FAIL: {message}", json_mode=json_mode,
+            out=console, conduit=conduit_name,
+        ) from e
     except (ConduitValidationError, ValueError) as e:
-        console.print(f"[red]FAIL: {escape(format_conduit_error(e))}[/red]")
-        raise typer.Exit(code=1)
+        raise cli_error(
+            "invalid_conduit", f"FAIL: {format_conduit_error(e)}", json_mode=json_mode,
+            out=console, conduit=conduit_name,
+        ) from e
 
     if json_mode:
         payload = dataclasses.asdict(plan)
@@ -161,11 +167,7 @@ def _isolation(conduit, tasks: list[str]) -> PlanIsolation | None:
     """
     if not tasks:
         return None
-    try:
-        check_selectors(conduit, tasks)
-    except WorkspaceError as exc:
-        console.print(f"[red]{escape(str(exc))}[/red]")
-        raise typer.Exit(code=exc.code) from exc
+    check_selectors(conduit, tasks)
     try:
         source = resolve_source_repo(None)
     except WorkspaceError as exc:

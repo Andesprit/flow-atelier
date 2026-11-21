@@ -17,6 +17,8 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
+from flow_atelier.schemas.log import ExecutionResult
+
 if TYPE_CHECKING:
     from flow_atelier.schemas.log import IntermediateStep
 
@@ -83,6 +85,25 @@ class PromptSink(Protocol):
         chance to emit their summary before the task ends.
         """
         ...
+
+
+class AskQuestion(ExecutionResult):
+    """A machine ask finished its turn and needs a reply to continue."""
+
+    question: str
+
+
+class AskTurnSink(PromptSink):
+    """A script reads persisted turns, so display hooks intentionally do nothing."""
+
+    def __init__(self) -> None:
+        self.error_code = "ask_failed"
+
+    async def display(self, text: str) -> None:
+        pass
+
+    async def request_input(self, prompt: str) -> str:
+        raise RuntimeError("terminal input unavailable in a machine ask")
 
 
 class TerminalPromptSink:

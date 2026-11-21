@@ -1,12 +1,16 @@
 """CLI tests for `atelier check` readiness gating + required-input listing."""
 from __future__ import annotations
 
+import json
 import os
+import sys
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from flow_atelier.cli import app
+from flow_atelier.cli.commands.create import Template
 
 
 @pytest.fixture
@@ -38,6 +42,79 @@ def _write_conduit(workdir, name: str, body: str) -> None:
     cdir = workdir / ".atelier" / "conduits" / name
     cdir.mkdir(parents=True)
     (cdir / "conduit.yaml").write_text(body)
+
+
+@pytest.mark.parametrize(("change", "warns"), [
+    ({}, True),
+    ({"permissions": "read-only"}, False),
+    ({"session": "fresh"}, False),
+    ({"tool": "harness:codex"}, False),
+    ({"depends_on": ["draft.output.match(ready)"]}, False),
+    ({"description": "Independent review"}, False),
+    ({"task": "Use a clean context to assess the draft"}, False),
+])
+def test_handoff_advice_respects_task_boundaries(workdir, monkeypatch, change, warns):
+    for agent in ("CLAUDE", "CODEX"):
+        monkeypatch.setenv(f"ATELIER_{agent}_LAUNCH_CMD", json.dumps([sys.executable]))
+    draft = dict(name="draft", description="outline", task="Outline the memo",
+                 tool="harness:claude-code")
+    finish = dict(draft, name="finish", task="Finish {{draft.output}}", depends_on=["draft"])
+    finish.update(change)
+    _write_conduit(workdir, "memo", yaml.safe_dump({
+        "name": "memo", "description": "d", "tasks": [draft, finish],
+    }))
+    result = CliRunner().invoke(app, ["check", "memo"])
+    assert result.exit_code == 0, result.output
+    assert ("draft -> finish" in result.output) is warns
+    assert ("one checkable result" in " ".join(result.output.split())) is warns
+
+
+def test_starter_recipes_have_no_advisories(workdir, monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setenv("ATELIER_CLAUDE_LAUNCH_CMD", json.dumps([sys.executable]))
+    monkeypatch.setattr("flow_atelier.cli.commands.init.installed_harnesses", lambda: ["claude-code"])
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    for template in Template:
+        result = runner.invoke(app, ["create", f"starter-{template.value}", "--template", template.value])
+        assert result.exit_code == 0, result.output
+    result = runner.invoke(app, ["check", "--recursive", "--json"])
+    assert result.exit_code == 0, result.output
+    assert all("warnings" not in row for row in json.loads(result.stdout))
+
+
+def test_parallel_consumers_keep_their_handoffs(workdir, monkeypatch):
+    monkeypatch.setenv("ATELIER_CODEX_LAUNCH_CMD", json.dumps([sys.executable]))
+    _write_conduit(workdir, "memo", """\
+name: memo
+description: one outline used twice
+tasks:
+  - outline: {tool: 'harness:codex', description: outline, task: Outline the memo}
+  - summary: {tool: 'harness:codex', description: summary, task: Summarize, depends_on: [outline]}
+  - details: {tool: 'harness:codex', description: details, task: Expand, depends_on: [outline]}
+""")
+    result = CliRunner().invoke(app, ["check", "memo", "--json"])
+    assert result.exit_code == 0, result.output
+    assert "warnings" not in json.loads(result.stdout)[0]
+
+
+@pytest.mark.parametrize(("tool", "warns"), [("harness:codex", True), ("tool:bash", False)])
+def test_single_task_loop_warns_for_agent_prose(workdir, monkeypatch, tool, warns):
+    monkeypatch.setenv("ATELIER_CODEX_LAUNCH_CMD", json.dumps([sys.executable]))
+    _write_conduit(workdir, "loop", f"""\
+name: loop
+description: retry until done
+tasks:
+  - name: retry
+    description: produce the result
+    tool: {tool}
+    task: echo DONE
+    repeat: 3
+    until: output.match(DONE)
+    on_exhaust: fail
+""")
+    result = CliRunner().invoke(app, ["check", "loop"])
+    assert result.exit_code == 0, result.output
+    assert ("reads the agent's reply" in " ".join(result.output.split())) is warns
 
 
 def test_check_ok_for_bash_only(workdir):

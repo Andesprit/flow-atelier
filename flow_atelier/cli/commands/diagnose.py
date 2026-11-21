@@ -10,8 +10,8 @@ from rich.table import Table
 from flow_atelier.cli._shared import (
     _format_duration_seconds,
     _resolve_flow_id,
+    cli_error,
     console,
-    err_console,
 )
 from flow_atelier.cli.main import app
 from flow_atelier.core.atelier import Atelier
@@ -29,6 +29,7 @@ _STATE_STYLE = {
     "failed": "red",
     "crashed": "red",
     "running": "yellow",
+    "needs_input": "yellow",
     "stopped": "yellow",
     "completed": "green",
 }
@@ -105,19 +106,20 @@ def diagnose_cmd(
     :param flow_id: flow id (or unique prefix) to diagnose.
     :param json_mode: when true, emit one machine-readable JSON object.
     """
-    out = err_console if json_mode else console
+    latest = flow_id == "latest"
     atelier = Atelier()
-    flow_id = _resolve_flow_id(atelier, flow_id)
+    flow_id = _resolve_flow_id(atelier, flow_id, json_mode=json_mode)
     try:
         report = build_report(atelier, flow_id)
     except DiagnoseError as exc:
-        out.print(f"[red]{escape(str(exc))}[/red]")
-        if exc.hint:
-            # Unwrapped: a command broken across two lines cannot be copied.
-            out.print(f"[cyan]{escape(exc.hint)}[/cyan]", soft_wrap=True)
-        raise typer.Exit(code=1) from exc
+        raise cli_error(
+            "diagnosis_failed", str(exc), json_mode=json_mode, out=console,
+            hint=exc.hint or "", flow_id=flow_id,
+        ) from exc
 
     if json_mode:
+        if latest:
+            typer.echo(f"latest: {flow_id}", err=True)
         typer.echo(json.dumps(report.model_dump(mode="json"), indent=2))
         return
     _render(report)

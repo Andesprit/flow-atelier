@@ -5,8 +5,13 @@ Nothing outside ``flow_atelier.cli`` should import from this module.
 from __future__ import annotations
 
 import difflib
+import json
+import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager, redirect_stderr
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
 
 import typer
@@ -32,6 +37,54 @@ err_console = Console(stderr=True)
 # speak up only during genuine silence (npx cold start, a long tool call,
 # a tool:bash task that emits no steps at all).
 _last_activity: float = time.monotonic()
+
+
+class _JsonDiagnostics(StringIO):
+    """Hold stderr until the command either produces a result or raises cli_error."""
+
+    error: dict[str, object] | None = None
+
+
+@contextmanager
+def json_diagnostics() -> Iterator[None]:
+    """Replay warnings on success or attach them to the single JSON error."""
+    pending = _JsonDiagnostics()
+    try:
+        with redirect_stderr(pending):
+            yield
+    finally:
+        output = pending.getvalue()
+        if pending.error is not None:
+            if output:
+                pending.error["diagnostics"] = output.splitlines()
+            output = json.dumps({"error": pending.error}) + "\n"
+        if output:
+            typer.echo(output, err=True, nl=False)
+
+
+def cli_error(
+    code: str, message: str, *, exit_code: int = 1, json_mode: bool = False,
+    out: Console = err_console, hint: str = "", **details: object,
+) -> typer.Exit:
+    """Return the exit to raise. Machine errors are one JSON object on stderr.
+
+    Use a stable snake_case code and plain text. Optional fields such as
+    ``candidates`` and ``allowed`` belong to the nested ``error`` object.
+    Human callers can select their existing console and add a recovery hint.
+    """
+    if json_mode:
+        if hint:
+            details["hint"] = hint
+        error = {"code": code, "message": message, **details}
+        if isinstance(sys.stderr, _JsonDiagnostics):
+            sys.stderr.error = error
+        else:
+            typer.echo(json.dumps({"error": error}), err=True)
+    else:
+        out.print(escape(message), style="red", soft_wrap=True)
+        if hint:
+            out.print(escape(hint), style="dim", soft_wrap=True)
+    return typer.Exit(code=exit_code)
 
 
 def mark_activity() -> None:
@@ -67,7 +120,9 @@ def _parse_inputs(pairs: list[str]) -> dict[str, str]:
     return out
 
 
-def parse_agents_option(raw: list[str], out: Console | None = None) -> dict[str, str]:
+def parse_agents_option(
+    raw: list[str], out: Console | None = None, *, json_mode: bool = False
+) -> dict[str, str]:
     """Parse ``--agent TASK=HARNESS`` values, exiting with the diagnostic.
 
     Shared by ``run``, ``plan`` and ``check`` so they can never disagree about
@@ -82,11 +137,13 @@ def parse_agents_option(raw: list[str], out: Console | None = None) -> dict[str,
     try:
         return parse_agent_bindings(raw)
     except BindingError as exc:
-        (out or console).print(f"[red]{escape(str(exc))}[/red]")
-        raise typer.Exit(code=exc.code) from exc
+        raise cli_error(
+            "invalid_arguments", str(exc), exit_code=exc.code, json_mode=json_mode,
+            out=out or console, parameter="--agent",
+        ) from exc
 
 
-def parse_worktrees_option(raw: list[str]) -> list[str]:
+def parse_worktrees_option(raw: list[str], *, json_mode: bool = False) -> list[str]:
     """Parse ``--worktree TASK`` values, exiting with the diagnostic.
 
     Shared by ``run`` and ``plan`` so a preview and the run it previews can
@@ -98,8 +155,10 @@ def parse_worktrees_option(raw: list[str]) -> list[str]:
     try:
         return parse_worktree_selectors(raw)
     except WorkspaceError as exc:
-        console.print(f"[red]{escape(str(exc))}[/red]")
-        raise typer.Exit(code=exc.code) from exc
+        raise cli_error(
+            "invalid_arguments", str(exc), exit_code=exc.code, json_mode=json_mode,
+            out=console, parameter="--worktree",
+        ) from exc
 
 
 def _read_input_file(key: str, raw_path: str) -> str:
@@ -174,7 +233,7 @@ def _parse_input_files(pairs: list[str], taken: dict[str, str]) -> dict[str, str
 
 
 def _exit_unknown_conduit(
-    name: str, known: list[str], out: Console | None = None
+    name: str, known: list[str], out: Console | None = None, *, json_mode: bool = False
 ) -> None:
     """Print the ``unknown conduit`` error, suggest close names, and exit 1.
 
@@ -183,14 +242,12 @@ def _exit_unknown_conduit(
     :param out: console to write the guidance to; defaults to stdout, which
         is what every command whose output is prose already wants.
     """
-    out = out or console
-    out.print(
-        f"[red]unknown conduit:[/red] {escape(name)} — try 'atelier list conduits'"
-    )
     close = difflib.get_close_matches(name, known, n=3)
-    if close:
-        out.print(f"[dim]did you mean: {escape(', '.join(close))}?[/dim]")
-    raise typer.Exit(code=1)
+    message = f"unknown conduit: {name} — try 'atelier list conduits'"
+    raise cli_error(
+        "unknown_conduit", message, json_mode=json_mode, out=out or console,
+        conduit=name, candidates=close, hint=f"did you mean: {', '.join(close)}?" if close else "",
+    )
 
 
 def _latest_flow_id(atelier: Atelier) -> str | None:
@@ -214,7 +271,7 @@ def _latest_flow_id(atelier: Atelier) -> str | None:
     return max(atelier.list_flows(), key=_started, default=None)
 
 
-def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
+def _resolve_flow_id(atelier: Atelier, candidate: str, *, json_mode: bool = False) -> str:
     """Resolve ``candidate`` to a full flow id, supporting git-style prefixes.
 
     - ``latest`` → the most recently started top-level flow. The resolved id
@@ -232,14 +289,18 @@ def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
 
     :param atelier: Atelier instance used to enumerate known flows.
     :param candidate: full flow id or unique prefix supplied by the user.
+    :param json_mode: emit machine errors and suppress the alias announcement.
     :returns: the resolved full flow id.
     """
     if candidate == "latest":
         latest = _latest_flow_id(atelier)
         if latest is None:
-            console.print("[red]unknown flow:[/red] latest — no flows recorded yet")
-            raise typer.Exit(code=1)
-        typer.echo(f"latest: {latest}", err=True)
+            raise cli_error(
+                "unknown_flow", "unknown flow: latest — no flows recorded yet",
+                json_mode=json_mode, out=console, flow_id=candidate,
+            )
+        if not json_mode:
+            typer.echo(f"latest: {latest}", err=True)
         return latest
     all_flows = atelier.list_flows()
     if candidate in all_flows:
@@ -259,17 +320,17 @@ def _resolve_flow_id(atelier: Atelier, candidate: str) -> str:
     if len(matches) == 1:
         return matches[0]
     if len(matches) == 0:
-        console.print(
-            f"[red]unknown flow:[/red] {escape(candidate)}"
-            " — try 'atelier list flows' or 'latest'"
+        raise cli_error(
+            "unknown_flow", f"unknown flow: {candidate} — try 'atelier list flows' or 'latest'",
+            json_mode=json_mode, out=console, flow_id=candidate,
         )
-        raise typer.Exit(code=1)
-    console.print(f"[red]ambiguous flow id:[/red] {candidate} matches:")
-    for m in matches[:10]:
-        console.print(f"  - {m}")
+    hint = "\n".join(f"  - {fid}" for fid in matches[:10])
     if len(matches) > 10:
-        console.print(f"  … and {len(matches) - 10} more")
-    raise typer.Exit(code=1)
+        hint += f"\n  … and {len(matches) - 10} more"
+    raise cli_error(
+        "ambiguous_flow_id", f"ambiguous flow id: {candidate} matches:",
+        json_mode=json_mode, out=console, hint=hint, flow_id=candidate, candidates=matches,
+    )
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
@@ -413,10 +474,20 @@ def _format_next_fire(value: datetime | None) -> str:
     return value.astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()
 
 
-def _schedule_store() -> ScheduleStore:
-    """Build a :class:`ScheduleStore` rooted at the configured atelier dir.
+def _migrate_schedules(store: ScheduleStore, project_dir: Path) -> tuple[int, int]:
+    """Report each retained legacy job on stderr, including on automatic migration."""
+    return store.migrate_from(project_dir, on_kept=lambda reason: typer.echo(reason, err=True))
 
-    :returns: a ScheduleStore bound to the current atelier directory.
-    """
+
+def _schedule_store(*, migrate: bool = True) -> ScheduleStore:
+    """Open the shared schedule store, moving this project's jobs on writable commands."""
     settings = AtelierSettings()
-    return ScheduleStore(settings.atelier_dir)
+    store = ScheduleStore(settings.global_atelier_dir)
+    if migrate:
+        _migrate_schedules(store, settings.atelier_dir)
+    elif (
+        settings.atelier_dir.resolve() != settings.global_atelier_dir.resolve()
+        and ScheduleStore(settings.atelier_dir).list()
+    ):
+        typer.echo("Legacy project schedules found. Run atelier schedule migrate here.", err=True)
+    return store

@@ -28,6 +28,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from flow_atelier.modules.binding import bind_conduit, child_bindings, provenance_note
 from flow_atelier.modules.conditions import (
@@ -75,6 +76,7 @@ from flow_atelier.schemas.log import (
 from flow_atelier.schemas.progress import (
     FlowStatus,
     LoopOutcome,
+    PendingAsk,
     Progress,
     TaskProgress,
     TaskStatus,
@@ -82,6 +84,7 @@ from flow_atelier.schemas.progress import (
 )
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext
 from flow_atelier.services.executor.bash import to_bash_path
+from flow_atelier.services.executor.prompt_sink import AskQuestion
 from flow_atelier.services.store.base import StoreBase
 
 TaskEventCallback = Callable[[TaskEvent], None]
@@ -692,7 +695,7 @@ class Engine:
                 t.name: TaskProgress(status=TaskStatus.pending, of=t.repeat)
                 for t in conduit.tasks
             },
-            started_at=_now(),
+            started_at=prior.started_at if resume_from and prior.pending_ask else _now(),
             runner_pid=os.getpid(),
             runner_host=socket.gethostname(),
             run_path=run_path,
@@ -1097,6 +1100,8 @@ class Engine:
                     :param name: the resolved session name, or ``None``.
                     :returns: the executor's :class:`ExecutionResult`.
                     """
+                    if resume_from and prior.pending_ask:
+                        ctx.resume_session = prior.pending_ask.session_id
                     if name is None:
                         return await executor.execute(t, prompt, ctx)
                     harness = t.tool.split(":")[1]
@@ -1325,6 +1330,18 @@ class Engine:
                                     session=result.session,
                                 ),
                             )
+                            if isinstance(result, AskQuestion):
+                                assert result.agent_session_id is not None
+                                progress.pending_ask = PendingAsk(
+                                    # The exact flow ID also identifies its first question.
+                                    request_id=uuid4().hex if resume_from else flow_id,
+                                    question=result.question,
+                                    session_id=result.agent_session_id,
+                                    tool=t.tool,
+                                    permissions=t.permissions or self.agent_permissions or "full",
+                                    timeout=effective_timeout,
+                                )
+                                return
                             if result.success:
                                 break
                             # A nested run fails at once and hands the limit
@@ -1565,6 +1582,15 @@ class Engine:
                     await asyncio.gather(*running.values(), return_exceptions=True)
                     running.clear()
 
+            if progress.pending_ask:
+                # No process waits between machine ask turns. Keep wait/prune semantics
+                # for a running flow, and never leave a stale signal target behind.
+                progress.runner_pid = None
+                progress.runner_host = None
+                progress.stoppable = False
+                self.store.write_progress(flow_id, progress)
+                return flow_id
+
             # Mark any still-pending tasks (due to fail-fast) as cancelled
             for name, s in statuses.items():
                 if s == TaskStatus.pending:
@@ -1609,6 +1635,7 @@ class Engine:
             progress.current_tasks = []
             progress.finished_at = _now()
             if progress.status == FlowStatus.running:
+                progress.pending_ask = None
                 progress.status = (
                     FlowStatus.stopped if stop_requested else FlowStatus.failed
                 )

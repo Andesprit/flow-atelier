@@ -5,6 +5,9 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from flow_atelier.schemas.conduit import AgentPermissions
+from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
+
 
 class TaskStatus(str, Enum):
     pending = "pending"
@@ -71,6 +74,17 @@ class Workspaces(BaseModel):
     """
 
 
+class PendingAsk(BaseModel):
+    """One unanswered question from a resumable ACP session."""
+
+    request_id: str
+    question: str
+    session_id: str
+    tool: str = Field(pattern=HARNESS_TOOL_PATTERN)
+    permissions: AgentPermissions
+    timeout: int = Field(ge=1)
+
+
 class Progress(BaseModel):
     status: FlowStatus = FlowStatus.running
     current_tasks: list[str] = Field(default_factory=list)
@@ -95,3 +109,4 @@ class Progress(BaseModel):
     # ordinary shared working directory — and on every flow recorded before
     # per-task checkouts existed, which keeps reading exactly as it did.
     workspaces: Workspaces | None = None
+    pending_ask: PendingAsk | None = None

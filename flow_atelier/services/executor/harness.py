@@ -48,6 +48,8 @@ from flow_atelier.schemas.log import (
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext, child_environ
 from flow_atelier.services.executor.interaction import InteractionRouter
 from flow_atelier.services.executor.prompt_sink import (
+    AskQuestion,
+    AskTurnSink,
     PromptSink,
     TerminalPromptSink,
 )
@@ -927,6 +929,7 @@ class _BufferingClient:
         # earlier one. See :meth:`AcpHarnessExecutor._open_session`.
         self.agent_session_id: str | None = None
         self.session_continued = False
+        self.can_continue = False
         # True while a reloaded session replays its history: those updates
         # are an earlier task's output, not this one's.
         self.replaying = False
@@ -1872,9 +1875,8 @@ class AcpHarnessExecutor(ExecutorBase):
                 # tools, servers or shells the agent started running.
                 _signal_agent_group(agent_proc, signal.SIGKILL)
 
-    @staticmethod
     async def _open_session(
-        conn, init, cwd: str, client: _BufferingClient, resume_session: str | None
+        self, conn, init, cwd: str, client: _BufferingClient, resume_session: str | None
     ):
         """Continue ``resume_session`` when the agent can, else open a new session.
 
@@ -1884,7 +1886,7 @@ class AcpHarnessExecutor(ExecutorBase):
         agent that offers neither, or refuses this id (a session it has
         pruned, or one made on another machine), gets a new session: the task
         still runs, only without the earlier context, and the fallback is
-        logged.
+        logged. A machine ask requires the original session and fails on refusal.
 
         :param conn: the active ACP connection.
         :param init: the agent's ``initialize`` response, carrying capabilities.
@@ -1895,9 +1897,12 @@ class AcpHarnessExecutor(ExecutorBase):
         :returns: an object with ``session_id``, ``modes``, ``models`` and
             ``config_options``, like a ``NewSessionResponse``.
         """
+        caps = getattr(init, "agent_capabilities", None)
+        sessions = getattr(caps, "session_capabilities", None)
+        client.can_continue = getattr(sessions, "resume", None) is not None or bool(
+            getattr(caps, "load_session", False)
+        )
         if resume_session is not None:
-            caps = getattr(init, "agent_capabilities", None)
-            sessions = getattr(caps, "session_capabilities", None)
             try:
                 if getattr(sessions, "resume", None) is not None:
                     opened = await conn.resume_session(cwd=cwd, session_id=resume_session)
@@ -1910,7 +1915,10 @@ class AcpHarnessExecutor(ExecutorBase):
                         client.replaying = False
                 else:
                     raise RuntimeError("the agent cannot reload sessions")
-            except Exception as exc:  # noqa: BLE001 — any refusal means start fresh
+            except Exception as exc:  # noqa: BLE001
+                if isinstance(self.sink, AskTurnSink):
+                    self.sink.error_code = "session_unavailable"
+                    raise RuntimeError(f"cannot continue session {resume_session}: {exc}") from exc
                 logger.warning(
                     "could not continue agent session %s (%s); starting a new one",
                     resume_session, exc,
@@ -2225,6 +2233,16 @@ class AcpHarnessExecutor(ExecutorBase):
                 continue
             if resp.stop_reason != "end_turn":
                 break
+            if isinstance(self.sink, AskTurnSink):
+                if not turn_text.strip():
+                    raise RuntimeError("agent returned no answer or follow-up question")
+                if not client.can_continue:
+                    self.sink.error_code = "session_unsupported"
+                    raise RuntimeError("agent asked a question but cannot resume or load sessions")
+                return AskQuestion(
+                    question=turn_text.strip(), output=buffer_text, stdout=buffer_text,
+                    steps=client.steps, usage=_usage_from_client(client),
+                )
             try:
                 if client.router is None:
                     user_reply = await self.sink.request_input(turn_text)

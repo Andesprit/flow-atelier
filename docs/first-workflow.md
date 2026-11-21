@@ -1,274 +1,166 @@
-# Your first workflow: run it, break it, recover it
+# Your first workflow
 
-A 5-minute exercise that takes one three-step conduit all the way through its
-real life cycle: a successful run, a deliberate failure, a diagnosis from saved
-history, a repair that keeps the work already done, and a clean re-run from the
-top. Everything runs locally with `bash`. No AI account, no API key, no Git
-repository, and no network access after installing Atelier.
+## Ask one agent
 
-By the end you will have seen the four things that a single agent conversation
-does not give you:
+From a project with Codex installed and logged in, give the agent a skill it
+has, a goal and an acceptance check. For example, if it has a code-review
+skill, ask for one finding you can verify yourself.
 
-- a failure stops the steps downstream instead of running them on bad input,
-- the diagnosis survives the terminal session and is addressable by flow id,
-- `--resume` keeps the steps that already succeeded,
-- `--again` starts a brand-new run with its own identity.
+```bash
+atelier ask "Use your code-review skill on the last commit. Give one regression with file, line and a way to reproduce it, or say no finding." --path . --harness codex --permissions read-only
+```
 
-New to Atelier? Install it and run the `hello` conduit first — see the
-[Quickstart](guide.md#quickstart).
+Enter submits a reply. Alt+Enter, or Escape then Enter, inserts a newline.
+Atelier records the conversation as a flow. If the adapter cannot enforce
+read-only access under the default policy, the task fails before the prompt.
 
-## Before you start
+### Call from a script
 
-- `atelier` on your `PATH` (`atelier --version` should answer).
-- `bash`, plus `mkdir`, `cat`, `echo` and `mktemp`. macOS, Linux, or a Bash
-  shell on Windows such as WSL or Git Bash. The blocks below are Bash; they are
-  not PowerShell.
+The Bash examples that read JSON use Python 3. This call returns after one
+agent turn, with a 60-second timeout. Keep stdout and stderr separate.
 
-Everything happens inside one throwaway directory. Nothing is installed
-globally, nothing in your existing projects is touched, and nothing is deleted
-for you.
+```bash
+atelier ask "Review the last commit. Ask which caller to focus on if needed." \
+  --path . --harness codex --permissions read-only --timeout 60 --json > turn.json
+flow_id=$(python3 -c 'import json; print(json.load(open("turn.json"))["flow_id"])')
+atelier ask "$flow_id" --json
+```
 
-## 1. A disposable workspace
+A completed turn has an `answer`. For `needs_input`, read the `question`
+and answer that specific request. Answering requires an adapter that can
+reopen the original session and still report an enforceable read-only mode.
+
+```bash
+request_id=$(python3 -c 'import json; print(json.load(open("turn.json"))["request_id"])')
+atelier ask "$flow_id" --answer "Focus on the CLI caller." --request-id "$request_id" --json
+```
+
+To end a pending question instead, run this from the same project.
+
+```bash
+atelier ask "$flow_id" --cancel --json
+```
+
+### Save the assignment
+
+For repeated or scheduled work, compose a named, non-interactive task.
+`brief` varies on each run. `check` reports advisory warnings, including
+serial handoffs that could serve one outcome and loop checks based on agent
+prose. Read the warnings even when validation succeeds.
+
+```bash
+atelier compose commit-review --permissions read-only \
+  --step "codex=Use your code-review skill. Give one finding with file, line and reproduction, or say no finding."
+atelier check commit-review
+atelier run commit-review --input brief="Review the last commit." --json > run.json
+flow_id=$(python3 -c 'import json; print(json.load(open("run.json"))["flow_id"])')
+atelier outputs "$flow_id" --task step_1
+atelier logs "$flow_id" --jsonl
+```
+
+`run --json` writes one completion record such as
+`{"flow_id":"…","status":"completed"}`. A failed allocated run also returns
+its ID and status, with a nonzero exit. A command error before a result exists
+leaves stdout empty and writes a JSON object with `error.code` and
+`error.message` to stderr. Logs in JSON Lines format have one record per
+line. Add `--follow` to stream a running flow.
+
+For example, deliberately omit the required `brief` to see a pre-run error.
+Expect exit 2, an empty `result.json` and `missing_inputs` in `error.json`.
+
+```bash
+if atelier run commit-review --json > result.json 2> error.json; then
+  echo "Expected a missing brief" >&2
+  exit 1
+fi
+cat error.json
+```
+
+### Schedule it
+
+To register a weekly review, run this once from the project you want reviewed.
+The relative `run_path` is saved against that directory.
+
+```bash
+cat > weekly-review.yaml <<'YAML'
+conduit_name: commit-review
+inputs: {brief: "Review the last commit."}
+run_path: .
+schedule:
+  name: weekly-commit-review
+  mode: recurring
+  days: [1]
+  times: ["09:00"]
+YAML
+atelier schedule add weekly-review.yaml
+atelier list schedules --json
+```
+
+Schedules live in the shared `~/.atelier/schedules/` store. Use one scheduler for that store and
+`atelier serve --no-scheduler` for a dashboard that only watches.
+[Schedule file and registration](guide.md#running-on-a-schedule)
+
+## Try failure and recovery with Bash
+
+This separate exercise needs only Bash and Python 3. In a fresh directory,
+create a recipe that prepares once, checks a script, then executes it.
 
 ```bash
 tutorial_dir="$(mktemp -d)/atelier tutorial"
 mkdir -p "$tutorial_dir"
 cd "$tutorial_dir"
-echo "working in: $tutorial_dir"
-```
-
-Keep this shell open. Every later command assumes you are still in
-`$tutorial_dir`, because the workflow calls a script that lives here.
-
-The space in the folder name is deliberate. Real project paths have them, and
-every command below quotes its paths so they keep working.
-
-## 2. The conduit
-
-A conduit is a YAML file describing tasks and what each one depends on. This
-one has three:
-
-```bash
 mkdir -p .atelier/conduits/script-check
 cat > .atelier/conduits/script-check/conduit.yaml <<'YAML'
 name: script-check
-description: Prepare, check and run a shell script
+description: Check a script before running it
 tasks:
   - prepare:
-      description: record one preparation run
-      task: "echo prepared >> preparation.log"
+      description: Count preparations
       tool: tool:bash
-      depends_on: []
+      task: echo prepared >> preparation.log
   - syntax:
-      description: check demo.sh for syntax errors
-      task: "bash -n demo.sh"
+      description: Check Bash syntax
       tool: tool:bash
+      task: bash -n demo.sh
       depends_on: [prepare]
   - execute:
-      description: run demo.sh
-      task: "bash demo.sh"
+      description: Run the checked script
       tool: tool:bash
+      task: bash demo.sh
       depends_on: [syntax]
 YAML
-```
-
-`prepare` only appends a line to `preparation.log`. That file is the tutorial's
-counter: it makes "did this step run again?" something you can read, instead of
-something you have to trust. In a real project these three tasks become your
-own setup, your own validation, and your own build or deploy command.
-
-Now the script the workflow works on:
-
-```bash
-cat > demo.sh <<'SH'
-echo "workflow works"
-SH
-```
-
-## 3. Look before you run
-
-```bash
+echo 'echo "workflow works"' > demo.sh
 atelier check script-check --json
 atelier plan script-check
-```
-
-`check` answers "is this file valid and are its tools usable?" — you should see
-`"ok": true`. `plan` prints the three waves in dependency order and runs
-nothing.
-
-Note what `check` does **not** do: it never opens `demo.sh`. It validates the
-conduit and its tools, not the contents of every shell command or external
-script they call. That is exactly the gap the `syntax` task exists to close.
-
-## 4. The first run
-
-```bash
 atelier run script-check
 ```
 
-The run happens in the foreground and prints a transcript: three tasks, all
-green, `workflow works` in the `execute` panel, and a final `flow_id:` line.
-
-That transcript is for you. To get the same result back in a form a script or a
-coding agent can use, ask for the flow by id:
+Break the script. Capture the failed run’s own ID, so another run starting
+in the same directory cannot change which failure you diagnose.
 
 ```bash
-flow_id=$(atelier wait latest --timeout 5)
-atelier outputs "$flow_id" --task execute
-```
-
-```text
-workflow works
-```
-
-`atelier wait` prints **only** the resolved flow id on stdout, and exits
-non-zero if the run did not complete. So `flow_id=$(atelier wait ...)` gives the
-next command an exact run to address, instead of resolving `latest` a second
-time and possibly landing on a newer one.
-
-## 5. Break it on purpose
-
-Now make `demo.sh` invalid — an `if` with no `fi`:
-
-```bash
-cat > demo.sh <<'SH'
-if true; then
-  echo "workflow works"
-SH
-```
-
-The next run is **supposed to fail**. The block below expects that, and says so
-loudly if the failure does not happen:
-
-```bash
-if atelier run script-check; then
-  echo "UNEXPECTED: the broken script passed the syntax check"
-else
-  echo "the run failed on purpose; that is this step's expected result"
+echo 'if true; then' > demo.sh
+if atelier run script-check --json > broken.json; then
+  echo "Expected the syntax check to fail" >&2
+  exit 1
 fi
+failed=$(python3 -c 'import json; print(json.load(open("broken.json"))["flow_id"])')
+atelier diagnose "$failed"
+atelier logs "$failed" --task syntax --show stderr
 ```
 
-In the transcript: `prepare` is green, `syntax` is red with Bash's own
-complaint, and `execute` is `cancelled (upstream failed)`. `execute` never ran
-the broken script — the dependency graph stopped it. That is the difference
-between a workflow and a chain of `&&`: the failure is recorded as a state, not
-just a non-zero exit that scrolls away.
-
-## 6. Read the failure back
+The syntax error cancels `execute`. Repair the file and resume. The two lines
+in `preparation.log` show that the completed preparation was kept. Running
+again allocates a new ID and adds a third line.
 
 ```bash
-atelier status latest --json
-atelier logs latest --task syntax --show stderr
+echo 'echo "workflow works"' > demo.sh
+atelier run --resume "$failed"
+cat preparation.log
+atelier run --again "$failed"
 cat preparation.log
 ```
 
-`status --json` gives you the per-task verdict:
-
-```text
-"prepare": { "status": "completed" ... }
-"syntax":  { "status": "failed", "reason": "exit=2 stderr=demo.sh: line 3: ..." }
-"execute": { "status": "cancelled" ... }
-```
-
-`logs --task syntax --show stderr` prints Bash's diagnostic itself, saved on
-disk: `demo.sh: line 3: syntax error: unexpected end of file`. Reopen this
-terminal tomorrow and it is still there.
-
-`preparation.log` now has **two** lines. Each `atelier run` is a new flow, so
-`prepare` ran once for each.
-
-## 7. Repair, then resume
-
-Fix the script and continue the same run:
-
-```bash
-cat > demo.sh <<'SH'
-echo "workflow works"
-SH
-atelier run --resume latest
-cat preparation.log
-```
-
-Three things to notice:
-
-- The transcript starts at `syntax`, not at `prepare`. Only two tasks run.
-- `preparation.log` still has **two** lines. The completed work was kept.
-- The final `flow_id:` is the **same id** as the failed run. This is that run,
-  finishing — not a new one.
-
-## 8. A fresh run with `--again`
-
-```bash
-recovered_flow_id=$(atelier wait latest --timeout 5)
-atelier run --again "$recovered_flow_id"
-cat preparation.log
-```
-
-This time everything runs, including `prepare`, so `preparation.log` reaches
-**three** lines — and the final `flow_id:` is a new id, different from the one
-you just recovered.
-
-```bash
-fresh_flow_id=$(atelier wait latest --timeout 5)
-atelier outputs "$fresh_flow_id" --json
-atelier list flows --conduit script-check
-```
-
-```text
-{
-  "prepare": "",
-  "syntax": "",
-  "execute": "workflow works\n"
-}
-```
-
-Three flows are listed. The `prepare` counter went 1 → 2 → 2 → 3: one per new
-flow, and unchanged by the resume. That single number is the whole distinction
-between the two recovery commands.
-
-## What `--resume` and `--again` actually do
-
-**`--resume <flow_id>`** continues that same flow. It reuses the inputs saved
-with the run, skips the tasks whose completion was already written to disk, and
-re-reads the conduit and any files on disk **as they are now** — which is why
-editing `demo.sh` was enough. It is not a snapshot or a checkout, and it is not
-exactly-once: a task that finished but was killed before its result was saved
-runs again. Use it when the earlier work is still good and expensive to repeat.
-
-**`--again <flow_id>`** allocates a new flow and runs the conduit from the top,
-reusing the source run's saved inputs (override individual ones with `--input`).
-Use it when earlier results are stale and must be recomputed.
-
-Both run in your **current directory**. A run started from the CLI does not pin
-itself to the folder it began in, so resume and re-run from the same place, or
-the scripts the tasks call will not be where they expect.
-
-One honest limit of this exercise: it only edits `demo.sh`, an external file the
-unfinished step reads. Changing the *definition* of a task that already
-completed will not make `--resume` re-run it — that task is done as far as the
-flow is concerned. Use `--again` for that.
-
-## `latest` versus real flow ids
-
-This walkthrough uses `latest` because its directory has exactly one run at a
-time. `latest` means "the most recently started run in this project", so the
-moment two runs overlap — a scheduler, a second terminal, an agent working in
-parallel — it stops being the run you meant.
-
-For anything beyond a tutorial, capture the id and use it:
-
-```bash
-flow_id=$(atelier wait latest --timeout 60) && atelier outputs "$flow_id" --json
-```
-
-`atelier status <id> --json` and `atelier list flows --json` both report
-`flow_id`, so a coding agent can diagnose and recover a specific run without
-parsing a transcript.
-
-## Done
-
-Remove the workspace whenever you like: `rm -rf "$tutorial_dir"`. Nothing
-outside it was changed.
-
-Next: swap the three tasks for your own commands, or add an AI step — see
-[Your first AI workflow](guide.md#your-first-ai-workflow-review-what-you-staged).
+Resume reads the current recipe and workspace. A task interrupted before
+its result was saved can repeat its side effects. Use a fresh run when you
+need to repeat a completed task.

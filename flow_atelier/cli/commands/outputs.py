@@ -5,7 +5,7 @@ import json
 
 import typer
 
-from flow_atelier.cli._shared import _resolve_flow_id, console
+from flow_atelier.cli._shared import _resolve_flow_id, cli_error, console
 from flow_atelier.cli.main import app
 from flow_atelier.core.atelier import Atelier
 
@@ -27,13 +27,15 @@ def outputs_cmd(
     :param json_mode: when true, emit machine-readable JSON.
     """
     atelier = Atelier()
-    flow_id = _resolve_flow_id(atelier, flow_id)
+    flow_id = _resolve_flow_id(atelier, flow_id, json_mode=json_mode)
     outputs = atelier.get_outputs(flow_id)
 
     if task is not None:
         if task not in outputs:
-            console.print(f"[red]unknown task:[/red] {task}")
-            raise typer.Exit(code=1)
+            raise cli_error(
+                "unknown_task", f"unknown task: {task}", json_mode=json_mode,
+                out=console, flow_id=flow_id, task=task, allowed=list(outputs),
+            )
         value = outputs[task]
         if json_mode:
             typer.echo(json.dumps(value, indent=2))

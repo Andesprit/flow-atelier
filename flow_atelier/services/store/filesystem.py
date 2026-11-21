@@ -22,6 +22,8 @@ import os
 import shutil
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -94,15 +96,7 @@ class FilesystemStore(StoreBase):
         :param global_dir: optional user-level directory for shared conduits
         """
         self.base_dir = Path(base_dir)
-        (self.base_dir / "conduits").mkdir(parents=True, exist_ok=True)
-        (self.base_dir / "flows").mkdir(parents=True, exist_ok=True)
         self.global_dir: Path | None = Path(global_dir) if global_dir else None
-        if self.global_dir is not None:
-            try:
-                (self.global_dir / "conduits").mkdir(parents=True, exist_ok=True)
-            except OSError:
-                # Read-only HOME / sandbox — degrade to project-only mode.
-                self.global_dir = None
         # Both caches grow with distinct flow ids and are never pruned;
         # entries are tiny and bounded by process lifetime, so that's fine.
         self._log_locks: dict[str, asyncio.Lock] = {}
@@ -274,11 +268,13 @@ class FilesystemStore(StoreBase):
 
         :param root: directory expected to contain ``<name>/conduit.yaml``
         """
-        if not root.exists():
+        try:
+            entries = list(root.iterdir())
+        except FileNotFoundError:
             return []
         return sorted(
             p.name
-            for p in root.iterdir()
+            for p in entries
             if p.is_dir() and (p / "conduit.yaml").exists()
         )
 
@@ -449,10 +445,12 @@ class FilesystemStore(StoreBase):
             ``conduit_name`` are returned.
         """
         root = self.base_dir / "flows"
-        if not root.exists():
+        try:
+            entries = list(root.iterdir())
+        except FileNotFoundError:
             return []
         ids: list[str] = []
-        for p in root.iterdir():
+        for p in entries:
             if not p.is_dir():
                 continue
             if conduit_name is None:
@@ -677,6 +675,25 @@ class FilesystemStore(StoreBase):
     # synchronous: the files are tiny, writes are atomic-replace, and
     # crash-resume depends on state transitions hitting disk in order.
 
+    @contextmanager
+    def lock_ask(self, flow_id: str) -> Iterator[bool]:
+        """Exclude concurrent answers/cancellation; a crashed process releases its lock."""
+        with (self._flow_dir(flow_id) / ".ask.lock").open("a+b") as lock:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, PermissionError):
+                yield False
+                return
+            yield True
+
     def write_progress(self, flow_id: str, progress: Progress) -> None:
         """Atomically write ``progress.json`` for ``flow_id``.
 
@@ -685,7 +702,8 @@ class FilesystemStore(StoreBase):
         """
         path = self._flow_dir(flow_id) / "progress.json"
         tmp = path.with_suffix(f".json.tmp.{uuid.uuid4().hex}")
-        tmp.write_text(progress.model_dump_json(indent=2))
+        # Pending questions may contain characters outside the local Windows code page.
+        tmp.write_text(json.dumps(progress.model_dump(mode="json"), indent=2), encoding="ascii")
         _atomic_replace(tmp, path)
 
     def read_progress(self, flow_id: str) -> Progress:
@@ -707,7 +725,7 @@ class FilesystemStore(StoreBase):
         path = self._flow_dir(flow_id) / "outputs.yaml"
         if not path.exists():
             return {}
-        loaded = _load_flow_yaml(path.read_text())
+        loaded = _load_flow_yaml(path.read_text(encoding="utf-8"))
         return loaded if isinstance(loaded, dict) else {}
 
     def write_outputs(self, flow_id: str, outputs: dict[str, Any]) -> None:
@@ -719,7 +737,7 @@ class FilesystemStore(StoreBase):
         """
         path = self._flow_dir(flow_id) / "outputs.yaml"
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
-        tmp.write_text(_dump_flow_yaml(outputs))
+        tmp.write_text(_dump_flow_yaml(outputs), encoding="utf-8")
         _atomic_replace(tmp, path)
 
     # ------------------------------------------------------------------ sessions.yaml

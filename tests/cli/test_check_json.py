@@ -4,8 +4,10 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 
 import pytest
+import yaml
 from click import unstyle
 from typer.testing import CliRunner
 
@@ -136,6 +138,43 @@ def _assert_shape(row):
         # empty list a caller would read as "no inputs needed".
         assert isinstance(row["error"], str) and row["error"]
         assert row["required_inputs"] is None
+
+
+@pytest.mark.parametrize("named_child", [True, False])
+@pytest.mark.parametrize(("command", "masked"), [
+    ("if make test; then echo PASS; else echo FAIL; fi", True),
+    ("make test || echo FAIL", True),
+    ("make test; echo PASS", True),
+    ("make test && echo PASS", False),
+])
+def test_loop_and_handoff_advice_reach_the_root_report(workdir, monkeypatch, named_child, command, masked):
+    monkeypatch.setenv("ATELIER_CODEX_LAUNCH_CMD", json.dumps([sys.executable]))
+    body = [
+        dict(name="plan", tool="harness:codex", task="Outline the change", description="plan"),
+        dict(name="build", tool="harness:codex", task="Implement {{plan.output}}",
+             description="build", depends_on=["plan"]),
+        dict(name="check", tool="tool:bash", task=command,
+             description="run tests", depends_on=["build"]),
+    ]
+    loop = dict(name="repair", description="repair", tool="tool:conduit", repeat=3,
+                until="output.match(PASS)", on_exhaust="fail")
+    if named_child:
+        _write(workdir, "child", yaml.safe_dump(dict(name="child", description="d", tasks=body)))
+        loop["task"] = "child"
+    else:
+        loop["tasks"] = body
+    _write(workdir, "parent", yaml.safe_dump(dict(name="parent", description="d", tasks=[loop])))
+    _, [row] = _report(["parent"], expect_exit=0)
+    _, [recursive] = _report(["parent", "--recursive"], expect_exit=0)
+    warnings = recursive["warnings"]
+    if named_child:
+        assert "warnings" not in row
+    else:
+        assert row["warnings"] == warnings
+    assert recursive["ok"] and len(warnings) == (2 if masked else 1)
+    assert any("repair: output.match(PASS) checks every child output" in w and
+               "nonzero on failure" in w for w in warnings) is masked
+    assert any("plan ->" in w and "build:" in w and "one checkable result" in w for w in warnings)
 
 
 def test_named_success_is_one_clean_row(workdir):

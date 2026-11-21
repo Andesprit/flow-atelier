@@ -3,7 +3,7 @@
 The published blocks are executed verbatim, in order, in one shell with stdin
 closed and a workspace path containing a space. Only the agents are faked:
 `claude-code` and `codex` are two scripted ACP writers that rewrite
-``NOTES.md`` in whatever directory they were started in, and `gemini` is a
+``billing.sh`` in whatever directory they were started in, and `gemini` is a
 reviewer that only replies. All three record every prompt they are handed.
 
 The second test breaks the guide's own prerequisite check and asserts that
@@ -33,11 +33,11 @@ _BASH_BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 # broken run, resume, again.
 _EXPECTED_BLOCKS = 10
 
-GEMINI_SAID = "GEMINI_REPLY: keep the codex version, it names the escalation."
-CLAUDE_EDIT = "Page the on-call. Runbook: /ops/billing.\n"
-CODEX_EDIT = "If billing overruns, see /ops/billing and page the on-call.\n"
-CLAUDE_SAID = "CLAUDE_REPLY: rewrote it around the runbook."
-CODEX_SAID = "CODEX_REPLY: rewrote it around the escalation path."
+GEMINI_SAID = "Choose step_1. The other candidate misses the boundary."
+CLAUDE_EDIT = 'if [ "$1" -ge 15 ]; then echo late; else echo ok; fi\n'
+CODEX_EDIT = "(( $1 > 15 )) && echo late || echo ok\n"
+CLAUDE_SAID = "Implemented the shell test."
+CODEX_SAID = "Implemented the arithmetic test."
 
 
 def _guide_script() -> str:
@@ -75,15 +75,19 @@ def _agent_env(record_dir: Path, text: str, edit: str | None = None) -> str:
 
     :param record_dir: directory the agent writes its per-process prompt log to.
     :param text: what the agent replies.
-    :param edit: the contents it writes to ``NOTES.md`` in its own directory;
+    :param edit: the contents it writes to ``billing.sh`` in its own directory;
         ``None`` for a reviewer that only reads and replies.
     :returns: the JSON argv for an ``ATELIER_*_LAUNCH_CMD`` variable.
     """
     record_dir.mkdir(parents=True, exist_ok=True)
     turn: dict[str, object] = {"chunks": [text]}
     if edit is not None:
-        turn["write"] = {"path": "NOTES.md", "text": edit}
+        turn["write"] = {"path": "billing.sh", "text": edit}
     script = {"turns": [turn], "record_path": str(record_dir)}
+    if edit is None:
+        script["modes"] = {"current": "read-only", "available": [
+            {"id": "read-only", "name": "Read Only"},
+        ]}
     return json.dumps([sys.executable, str(_FAKE_AGENT), "--script", json.dumps(script)])
 
 
@@ -173,27 +177,27 @@ def test_the_published_guide_runs_and_separates_the_two_agents(tmp_path, guide_e
 
     # Two agents, one filename, two surviving results.
     spaces = work / ".atelier" / "workspaces" / flow_id
-    assert (spaces / "step_1" / "NOTES.md").read_text(encoding="utf-8") == CLAUDE_EDIT
-    assert (spaces / "step_2" / "NOTES.md").read_text(encoding="utf-8") == CODEX_EDIT
+    assert (spaces / "step_1" / "billing.sh").read_text(encoding="utf-8") == CLAUDE_EDIT
+    assert (spaces / "step_2" / "billing.sh").read_text(encoding="utf-8") == CODEX_EDIT
 
     # The user's own checkout never moved.
     base = _git("rev-parse", "HEAD", cwd=work)
-    assert "nightly billing job" in (work / "NOTES.md").read_text(encoding="utf-8")
+    assert (work / "billing.sh").read_text(encoding="utf-8") == "echo ok\n"
     assert _git("status", "--porcelain", "--untracked-files=no", cwd=work) == ""
     assert _git("rev-parse", "HEAD", cwd=spaces / "step_1") == base
 
     # The synthesis was told where each candidate lives, without the recipe
-    # naming a single path.
+    # hardcoding any checkout location.
     # This flow's synthesis prompt; the guide runs gemini in later flows too,
     # and per-process logs are not in time order on Windows.
     merged = [
         p for p in _prompts(records["gemini"])
-        if "WORKSPACE PROVENANCE" in p and flow_id in p
+        if flow_id in p
     ]
     assert merged, _prompts(records["gemini"])
-    named = dict(re.findall(r"^(step_\d) worked in (.+)$", merged[0], re.MULTILINE))
-    assert Path(named["step_1"]).samefile(spaces / "step_1")
-    assert Path(named["step_2"]).samefile(spaces / "step_2")
+    for label, task in (("First", "step_1"), ("Second", "step_2")):
+        match = re.search(rf"^{label} checkout: (.+)$", merged[0], re.MULTILINE)
+        assert match and Path(match[1]).samefile(spaces / task)
 
     # The resume went back to the same directory and kept what was in it.
     draft = work / ".atelier" / "workspaces" / broken_id / "synthesis" / "DRAFT.md"
@@ -204,7 +208,13 @@ def test_the_published_guide_runs_and_separates_the_two_agents(tmp_path, guide_e
     assert (work / ".atelier" / "workspaces" / broken_id / "step_1").is_dir()
 
     # Three runs, and the recipe on disk is byte-identical.
-    assert "byte-identical after three runs" in done.stdout
+    assert (work / "recipe.snapshot").read_bytes() == (
+        work / ".atelier/conduits/candidates/conduit.yaml"
+    ).read_bytes()
+    assert "step_1 | pass" in merged[0]
+    assert "step_2 | fail" in merged[0]
+    assert "15: expected late, got ok" in merged[0]
+    assert len(_prompts(records["codex"])) == len(_prompts(records["claude"])) == 3
 
 
 @pytest.mark.parametrize("guide_env", [True], indirect=True)

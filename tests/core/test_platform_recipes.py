@@ -34,7 +34,7 @@ def test_install_platform_in_two_repos(tmp_path, monkeypatch, _isolate_global_at
     assert cli.invoke(app, args).exit_code == 0
     assert recipe.read_text() == edited
     lock = json.loads((home / "installed.json").read_text())["platform"]
-    assert lock["version"] == 1 and set(lock["conduits"]) == NAMES
+    assert lock["version"] == 2 and set(lock["conduits"]) == NAMES
     assert lock["source"] == "builtin:platform"
     assert not list((home / "schedules").glob("*.yaml"))
     local = repos[1] / ".atelier/conduits/error-to-pr"

@@ -2093,6 +2093,7 @@ two projects can share a folder while retaining their separate identities.
 `atelier install builtin:platform --no-project` installs the bundled version
 in the global conduit store. The manifest lists `error-to-pr`,
 `idea-to-product`, `continuous-improvement` and `meetings-to-tasks`.
+Version 2 includes [error-to-pr](error-webhooks.md#error-to-pr).
 Meeting intake has an opt-in five-minute schedule. Configure the account
 and test a manual poll before enabling it. [Meeting intake setup](meetings-to-tasks.md)
 

@@ -81,6 +81,7 @@ from flow_atelier.services.package import (
     write_lockfile,
 )
 from flow_atelier.services.scheduler.store import ScheduleStore
+from flow_atelier.services.store.events import RunRecordError
 from flow_atelier.services.store.filesystem import FilesystemStore
 
 logger = logging.getLogger(__name__)
@@ -1179,10 +1180,10 @@ class Atelier:
 
     # ------------------------------------------------------------------ history
 
-    def list_prior_flows(self) -> list[PriorFlow]:
+    def list_prior_flows(self, project: Path | None = None) -> list[PriorFlow]:
         """Return :class:`PriorFlow` summaries for every flow on disk."""
         out: list[PriorFlow] = []
-        for flow_id in self.store.list_flows():
+        for flow_id, directory in self.store.flow_projects(project).items():
             try:
                 conduit_name, _, _ = parse_flow_id(flow_id)
             except ValueError:
@@ -1192,6 +1193,8 @@ class Atelier:
                 status = progress.status.value
                 started_at = progress.started_at
                 finished_at = progress.finished_at
+            except RunRecordError:
+                raise
             except (FileNotFoundError, ValueError):
                 status = "unknown"
                 started_at = None
@@ -1200,6 +1203,7 @@ class Atelier:
                 PriorFlow(
                     flow_id=flow_id,
                     conduit_name=conduit_name,
+                    project=str(directory),
                     started_at=started_at,
                     finished_at=finished_at,
                     status=status,

@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { FLOW_HISTORY_SCROLL_THRESHOLD } from "@/constants/dashboard";
 import { cn } from "@/lib/cn";
 import type { ScheduledJob } from "@/types/schedule";
@@ -64,6 +65,7 @@ export function FlowHistory({
   const [selectedFlowId, setSelectedFlowId] = useState<string | undefined>();
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const [pendingCancelFlowId, setPendingCancelFlowId] = useState<string | undefined>();
+  const [project, setProject] = useState("all");
   const [priorFlows, setPriorFlows] = useState<PriorFlow[]>([]);
   const [sort, setSort] = useState<{ col: SortCol; asc: boolean }>({ col: "started", asc: false });
   const { conduits } = useConduits();
@@ -147,8 +149,18 @@ export function FlowHistory({
     [priorFlows, liveFlowIds],
   );
 
+  const projectByFlow = useMemo(() => {
+    const paths = new Map(liveRuns.filter(r => !r.parentFlowId).map(r => [r.flowId, r.runPath]));
+    for (const run of priorFlows) {
+      if (run.project) paths.set(run.flowId, run.project);
+    }
+    return paths;
+  }, [liveRuns, priorFlows]);
+  const projects = [...new Set(projectByFlow.values())].filter(Boolean).sort();
+
   const rows = useMemo(() => {
     const sorted = [...liveRows, ...priorRows]
+      .filter(row => project === "all" || projectByFlow.get(row.flowId) === project)
       .sort((a, b) => {
         const dir = sort.asc ? 1 : -1;
         switch (sort.col) {
@@ -163,7 +175,7 @@ export function FlowHistory({
         }
       });
     return sorted;
-  }, [liveRows, priorRows, sort]);
+  }, [liveRows, priorRows, sort, project, projectByFlow]);
 
   const toggleSort = (col: SortCol) =>
     setSort((s) => (s.col === col ? { col, asc: !s.asc } : { col, asc: true }));
@@ -333,6 +345,18 @@ export function FlowHistory({
           </button>
         ))}
       </div>
+
+      {activeTab === "flows" && projects.length > 0 && (
+        <Select value={project} onValueChange={setProject}>
+          <SelectTrigger aria-label="Filter by project" className="mb-3 max-w-full sm:w-auto [&>span]:truncate">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All projects</SelectItem>
+            {projects.map(path => <SelectItem key={path} value={path}>{path}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      )}
 
       {activeTab === "flows" ? (
         rows.length === 0 ? (

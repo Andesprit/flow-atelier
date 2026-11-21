@@ -1,5 +1,6 @@
 export interface PriorFlow {
   flowId: string;
+  project?: string;
   conduitName: string;
   startedAt: number;
   finishedAt?: number;

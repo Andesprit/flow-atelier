@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from pathlib import Path
 from textwrap import shorten
 
 import typer
@@ -14,6 +15,7 @@ from flow_atelier.cli._shared import (
     _flow_duration_seconds,
     _format_clock,
     _format_duration_seconds,
+    cli_error,
     console,
 )
 from flow_atelier.cli.main import list_app
@@ -26,6 +28,7 @@ from flow_atelier.core.atelier import Atelier
 from flow_atelier.modules.liveness import display_status, is_crashed
 from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.progress import Progress
+from flow_atelier.services.store.events import RunRecordError
 
 
 @list_app.callback()
@@ -130,21 +133,26 @@ def list_flows_cmd(
     conduit: str | None = typer.Option(
         None, "--conduit", "-c", help="Show only flows of this conduit."
     ),
+    project: Path | None = typer.Option(None, "--project", help="Filter by target directory."),
     json_mode: bool = typer.Option(
         False, "--json", help="Emit machine-readable JSON instead of a table."
     ),
 ) -> None:
-    """List all flows, optionally filtered by conduit.
+    """List global run history, optionally filtered by project and conduit.
 
     :param conduit: optional conduit name to filter flows by.
+    :param project: optional target directory to filter flows by.
     :param json_mode: when true, emit machine-readable JSON instead of a table.
     """
     atelier = Atelier()
-    flows = atelier.list_flows(conduit)
+    try:
+        flows = atelier.store.flow_projects(project, conduit)
+    except RunRecordError as exc:
+        raise cli_error("invalid_run_record", str(exc), json_mode=json_mode) from exc
 
     rows: list[dict[str, object]] = []
     progresses: dict[str, Progress | None] = {}
-    for fid in flows:
+    for fid, directory in flows.items():
         try:
             conduit_name, _uuid, _ts = parse_flow_id(fid)
         except ValueError:
@@ -152,6 +160,8 @@ def list_flows_cmd(
         progress: Progress | None
         try:
             progress = atelier.store.read_progress(fid)
+        except RunRecordError as exc:
+            raise cli_error("invalid_run_record", str(exc), json_mode=json_mode) from exc
         except Exception:  # noqa: BLE001
             progress = None
         progresses[fid] = progress
@@ -159,6 +169,7 @@ def list_flows_cmd(
             rows.append(
                 {
                     "flow_id": fid,
+                    "project": str(directory),
                     "conduit": conduit_name,
                     "status": None,
                     "started_at": None,
@@ -174,6 +185,7 @@ def list_flows_cmd(
         rows.append(
             {
                 "flow_id": fid,
+                "project": str(directory),
                 "conduit": conduit_name,
                 "status": progress.status.value,
                 "crashed": is_crashed(progress),
@@ -202,7 +214,7 @@ def list_flows_cmd(
         "conduit", overflow="ignore", no_wrap=True,
         min_width=max(len(str(r["conduit"])) for r in rows),
     )
-    for col in ("status", "started", "duration", "tasks"):
+    for col in ("status", "started", "duration", "tasks", "project"):
         table.add_column(col, no_wrap=True)
     for r in rows:
         progress = progresses[str(r["flow_id"])]
@@ -219,6 +231,7 @@ def list_flows_cmd(
                 _format_duration_seconds(_flow_duration_seconds(progress)),
                 _task_status_summary(progress),
             )
+        cells += (escape(str(r["project"])),)
         for column, cell in zip(table.columns, cells, strict=True):
             rendered = Text.from_markup(cell) if isinstance(cell, str) else cell
             column.min_width = max(column.min_width or 0, rendered.cell_len)

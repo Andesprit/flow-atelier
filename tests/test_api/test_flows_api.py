@@ -10,13 +10,11 @@ from flow_atelier.services.api.app import FastApiServer
 
 
 @pytest.fixture
-async def fixture(tmp_path, monkeypatch):
+async def fixture(tmp_path):
     """Yield an httpx client wired to a fresh Atelier instance.
 
     :param tmp_path: pytest temp directory fixture.
-    :param monkeypatch: pytest monkeypatch fixture.
     """
-    monkeypatch.delenv("ATELIER_GLOBAL_ATELIER_DIR", raising=False)
     atelier = Atelier(base_dir=tmp_path / ".atelier")
     app = FastApiServer().create_app(atelier)
     transport = httpx.ASGITransport(app=app)

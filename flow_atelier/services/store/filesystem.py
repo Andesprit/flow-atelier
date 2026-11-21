@@ -233,11 +233,38 @@ class FilesystemStore(StoreBase):
         holder = self._flow_dir(flow_id).parent.parent
         return None if holder == self.base_dir else holder.name
 
+    def flow_projects(
+        self, project: Path | None = None, conduit_name: str | None = None,
+    ) -> dict[str, Path]:
+        """Scan global headers and this store's pre-migration top-level records."""
+        found: dict[str, Path] = {}
+        for journal, header in self._journals(project):
+            if header["parent_flow_id"] or (conduit_name and header["conduit"] != conduit_name):
+                continue
+            run = journal.path.stem
+            if run in found:
+                raise AmbiguousFlowId(f"ambiguous flow id: {run}")
+            found[run] = Path(header["project"])
+        legacy = FilesystemStore(self.base_dir)
+        origin = self.base_dir.resolve().parent
+        target = project.resolve() if project is not None else None
+        for run in legacy.list_flows(conduit_name):
+            directory = origin
+            try:
+                progress = legacy.read_progress(run)
+            except (OSError, ValueError):
+                pass  # Older or damaged records still belong in the listing.
+            else:
+                if progress.run_path:
+                    directory = (origin / progress.run_path).resolve()
+            if target is None or target == directory:
+                if run in found:
+                    raise AmbiguousFlowId(f"ambiguous flow id: {run}")
+                found[run] = directory
+        return dict(sorted(found.items()))
+
     def list_project_flows(self, project: Path | None = None) -> list[str]:
-        ids = [j.path.stem for j, h in self._journals(project) if h["parent_flow_id"] is None]
-        if project is None or project.resolve() == self.base_dir.resolve().parent:
-            ids.extend(FilesystemStore(self.base_dir).list_flows())
-        return sorted(ids)
+        return list(self.flow_projects(project))
 
     def _flow_dir(self, flow_id: str) -> Path:
         """Resolve and cache the directory for ``flow_id``.

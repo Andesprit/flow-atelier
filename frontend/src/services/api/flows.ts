@@ -4,6 +4,7 @@ import type { PriorFlow } from "@/types/flow";
 import type { LogEntry } from "@/types/task";
 
 interface BackendPriorFlow {
+  project?: string;
   flowId: string;
   conduitName: string;
   startedAt: string | null;
@@ -55,6 +56,7 @@ function toPriorFlow(raw: BackendPriorFlow): PriorFlow {
   const finishedAt = parseTs(raw.finishedAt) ?? undefined;
   return {
     flowId: raw.flowId,
+    project: raw.project,
     conduitName: raw.conduitName,
     startedAt,
     finishedAt,

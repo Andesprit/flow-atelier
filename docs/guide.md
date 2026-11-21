@@ -1586,7 +1586,10 @@ then the global folder. A project-level conduit silently overrides a
 global one with the same name.
 
 Each new run gets an event file under `~/.atelier/projects/<project>/`.
-Older records remain readable in the project’s `.atelier/flows/` directory.
+Open the dashboard from any project to see global history. Choose a target
+directory in the project filter, or use `atelier list flows --project .`.
+The API accepts the same filter at `GET /flows?project=<directory>`.
+Older records remain readable from the original project’s `.atelier/flows/` directory.
 
 ## Commands
 

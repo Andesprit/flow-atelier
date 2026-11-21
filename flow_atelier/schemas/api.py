@@ -490,6 +490,7 @@ class PriorFlow(BaseModel):
 
     flow_id: str
     conduit_name: str
+    project: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
     status: str

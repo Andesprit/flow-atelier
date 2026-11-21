@@ -1,6 +1,8 @@
 """``/flows`` REST routes."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from flow_atelier.core.atelier import Atelier
@@ -17,13 +19,15 @@ router = APIRouter(prefix="/flows", tags=["flows"])
 
 
 @router.get("", response_model=list[PriorFlow])
-async def list_flows(atelier: Atelier = Depends(get_atelier)) -> list[PriorFlow]:
+async def list_flows(
+    project: str | None = None, atelier: Atelier = Depends(get_atelier),
+) -> list[PriorFlow]:
     """List prior flow runs known to the facade.
 
     :param atelier: injected :class:`Atelier` facade.
     :returns: :class:`PriorFlow` entries for each prior flow.
     """
-    return atelier.list_prior_flows()
+    return atelier.list_prior_flows(Path(project) if project is not None else None)
 
 
 @router.get("/{flow_id}/logs", response_model=FlowLogsOutput)

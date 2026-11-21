@@ -81,7 +81,7 @@ def test_started_expiry_and_restart_never_relaunch(tmp_path):
     job = local.poll(plane).job
     worker = Worker(local, plane)
     with local.db() as db:
-        db.execute("INSERT INTO jobs VALUES (?,?,?,?,?)", (jid, fid, "run", "existing", "started"))
+        db.execute("INSERT INTO jobs(job,folder,conduit,run,state) VALUES (?,?,?,?,?)", (jid, fid, "run", "existing", "started"))
     from flow_atelier.schemas.runner import Result
     plane.post("result", Result(job=jid, status="started"), local.identity()["token"])
     plane.now += 61
@@ -145,3 +145,44 @@ def test_lost_start_ack_reuses_preallocated_run(tmp_path):
     assert plane.job_view("one", jid) == "completed"
     with local.db() as db:
         assert db.execute("SELECT run FROM jobs").fetchone()[0] == run
+
+async def test_runner_diagnostics_are_local_and_poll_retries(tmp_path, monkeypatch, capsys):
+    import sqlite3
+
+    from typer.testing import CliRunner
+
+    from flow_atelier.cli import app
+
+    plane = Plane()
+    local, fid = prepared(tmp_path, plane, "user")
+    worker = Worker(local, plane)
+    jid = plane.enqueue("one", {local.identity()["id"]: fid}, "unlisted", hostile=True)
+    await worker.tick()
+    await worker.active
+    output = capsys.readouterr().err
+    assert jid in output and "claim" in output and "conduit requires local approval" in output
+    assert "conduit requires local approval" not in str(plane.traffic)
+    done = plane.enqueue("one", {local.identity()["id"]: fid}, "run")
+    await worker.tick()
+    await worker.active
+    assert done in capsys.readouterr().err
+    errors = iter([ConnectionError("private payload"), ValueError("private payload"),
+                   sqlite3.OperationalError("private payload"), PermissionError("revoked")])
+    async def broken():
+        raise next(errors)
+    waits = []
+    async def sleep(seconds):
+        waits.append(seconds)
+    worker.active = None
+    monkeypatch.setattr(worker, "tick", broken)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    with pytest.raises(PermissionError):
+        await worker.serve()
+    assert len(waits) == 3 and min(waits) > 0
+    errors_logged = capsys.readouterr().err
+    assert "ConnectionError" in errors_logged and "OperationalError" in errors_logged
+    assert "private payload" not in errors_logged
+    monkeypatch.setenv("ATELIER_GLOBAL_ATELIER_DIR", str(local.user_dir))
+    report = CliRunner().invoke(app, ["runner", "status"])
+    assert "last error" in report.output.lower()
+    assert jid in report.output and "conduit requires local approval" in report.output

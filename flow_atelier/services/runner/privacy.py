@@ -17,7 +17,9 @@ _TOKEN = re.compile(
 
 def private_values(root: Path, bearer: str) -> set[str]:
     """Load local redactions at both capture and replay so additions take effect immediately."""
-    values = {bearer, *os.environ.values()}
+    values = {value for name, value in os.environ.items()
+              if len(value) >= 8 or re.search(r"TOKEN|KEY|SECRET|PASS|AUTH|CRED", name, re.I)}
+    values.add(bearer)
     for filename in (root.parent / "settings.json", root / "redact.json"):
         try:
             obj = json.loads(filename.read_text(encoding="utf-8"))

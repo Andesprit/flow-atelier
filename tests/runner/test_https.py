@@ -66,10 +66,26 @@ def test_https_cli_pairs_polls_without_inbound_socket(tmp_path, monkeypatch):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            def no_listen(*args):
+            # Windows asyncio uses a private loopback socketpair for its wakeup pipe.
+            pair_scope = threading.local()
+            socketpair, bind = socket.socketpair, socket.socket.bind
+
+            def local_pair(*args, **kwargs):
+                pair_scope.active = True
+                try:
+                    return socketpair(*args, **kwargs)
+                finally:
+                    pair_scope.active = False
+
+            def no_listen(sock, address):
+                if getattr(pair_scope, "active", False):
+                    return bind(sock, address)
                 pytest.fail("runner tried to listen")
+
+            monkeypatch.setattr(socket, "socketpair", local_pair)
             monkeypatch.setattr(socket.socket, "bind", no_listen)
             origin = f"https://localhost:{server.server_port}"
+            monkeypatch.setattr(ssl, "_create_default_https_context", ssl._create_unverified_context)
             client = Client(origin, tmp_path / "user/runner")
             with pytest.raises(ssl.SSLCertVerificationError):
                 client.post("pair", Pair(), "unused")
@@ -87,8 +103,9 @@ def test_https_cli_pairs_polls_without_inbound_socket(tmp_path, monkeypatch):
             local.poll(client)
             rid = local.identity()["id"]
             assert plane.view("one")[0]["folders"][0]["id"] == fid
-            recipe(tmp_path, "catalog", [step("tool:bash", "echo ok > marker")])
-            approved = cli.invoke(app, ["runner", "approve", fid, "catalog"])
+            directory = recipe(tmp_path, "catalog", [step("tool:bash", 'bash "{{conduit_dir}}/helper"')])
+            (directory / "helper").write_text("echo ok > marker")
+            approved = cli.invoke(app, ["runner", "approve", fid, "catalog", "--yes"])
             assert approved.exit_code == 0, approved.exception
             jid = plane.enqueue("one", {rid: fid}, "catalog")
 

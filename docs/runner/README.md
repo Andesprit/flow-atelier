@@ -10,13 +10,28 @@ atelier runner approve FOLDER_ID build
 atelier runner start
 ```
 
-Use `atelier runner status` in another terminal to see the last acknowledged heartbeat and the
-runner's local online/offline estimate.
+Approval prints the digest, conduit source directories, bundled files and their executable bits,
+and each agent task's harness and permissions. Confirm the digest at the prompt or pass
+`--yes` in scripts. Both `approve` and `start` warn when the privacy filter hides a label or name.
+
+Use `atelier runner folders` to list local paths, folder IDs, labels and approved digests.
+`atelier runner revoke FOLDER [CONDUIT]` withdraws one approval or all approvals in the folder.
+`atelier runner unexpose FOLDER` removes the registration and its approvals. The project stays
+on disk. To forget the identity, stop the runner and run `atelier runner unpair`. This also clears
+its registrations, approvals, job mappings and buffered records. Revoke its bearer on the control
+plane to invalidate other copies.
+
+`atelier runner start` prints job IDs, outcomes, local refusal reasons and connection errors.
+Use `atelier runner status` in another terminal for heartbeat time, online state, the last error
+and the five most recent refusals.
 
 The pairing command prompts for a single-use invitation with echo disabled. A successful exchange
 creates a runner identity in the user store's private `runner/` directory. One identity is bound to
-one HTTPS origin. The service can revoke its bearer token. Choose public labels and conduit names.
-The runner advertises only those names and locally generated folder IDs.
+one HTTPS origin. It connects directly and ignores `HTTPS_PROXY` and other proxy variables.
+The bearer is stored in plaintext in `runner/runner.sqlite3`. Helpers and agents running as the
+same OS user can read it and impersonate the runner, including claiming jobs and reporting results.
+Choose public labels and conduit names. The runner advertises those names and locally generated
+folder IDs.
 
 ## Wire contract
 
@@ -53,8 +68,9 @@ remain local execution dependencies. Conduits execute with their ordinary local 
 For a shell task, v1 accepts a literal `true`, `false`, `pwd`, `echo` or `printf` command, or a
 bundled executable entry point such as `bash "{{conduit_dir}}/scripts/build.sh"`. The supported
 interpreters are bash, sh, python, python3 and node. A helper may take simple literal arguments.
-Put complex shell programs in the bundle. Package their helper dependencies there too and resolve
-them relative to the script. Locally approved helpers and agents are trusted code with access to
+Use a bundled helper for shell redirection. The runner refuses `tool:hitl` steps, including in
+child conduits, because it runs unattended. Package complex shell programs and their helper
+dependencies in the bundle and resolve them relative to the script. Locally approved helpers and agents are trusted code with access to
 the working tree and installed tools.
 V1 launches with locally defined recipe defaults. Remote input and tool overrides are outside this
 version. Reapprove locally after a bundle edit.
@@ -79,8 +95,10 @@ status. A task may include its name. Location comes from the job's local folder 
 projection discards environment fields, paths, hostnames, session contents, shell output, chat
 text, error details and other unmapped fields. The runner never opens a transcript for upload.
 
-The runner omits names containing an environment value, a string value from user settings, a
-known token pattern or the local hostname. To add private values, put a JSON array of strings in
+The runner omits names containing the bearer, a string value from user settings, a known token
+pattern or the local hostname. It also omits names containing environment values at least eight
+characters long. For variable names containing TOKEN, KEY, SECRET, PASS, AUTH or CRED
+(case-insensitive), it filters every nonempty value. Add private values as a JSON array of strings in
 `~/.atelier/runner/redact.json` (relative to the configured global store). A filtered public folder
 label falls back to the folder ID. The same rules apply before buffering and again on transmission,
 including retransmission. A runner has no command or protocol option for raw uploads.
@@ -91,3 +109,8 @@ checks the owner and folder of each job, rejects gaps, and commits the batch ato
 previously committed sequence numbers do not create additional records. A tenant view reads
 these rows in sequence order. It displays `online` and the last heartbeat from the runner's most
 recent authenticated poll. See the [test reference peer](../../tests/runner/plane.py).
+
+The runner applies the user setting `cleanupPeriodDays` at startup on its first successful poll
+and daily thereafter. It removes expired verified conduit copies while idle and expires buffered
+records after the server acknowledges their sequence. Unacknowledged records stay available for
+replay. Sequence numbers continue across cleanup, and job mappings continue to prevent reruns.

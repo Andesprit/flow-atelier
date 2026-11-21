@@ -1,5 +1,7 @@
 """The only event upload path. Store and send a closed, filtered projection."""
 
+import time
+
 from flow_atelier.schemas.runner import Job, Record, Records
 from flow_atelier.services.runner.local import Local
 from flow_atelier.services.runner.privacy import private_values, public_name
@@ -9,9 +11,6 @@ class Events:
     def __init__(self, local: Local):
         self.local = local
         self.token = local.identity()["token"]
-        with local.db() as db:
-            db.execute("""CREATE TABLE IF NOT EXISTS records (
-                sequence INTEGER PRIMARY KEY, body TEXT NOT NULL)""")
 
     def _project(self, job: Job, kind: str, data: dict, sequence: int) -> Record:
         # Only the structured task name can carry local text. A path or host drops out,
@@ -30,10 +29,11 @@ class Events:
                           "WHERE jobs.job=? AND jobs.folder=? AND jobs.conduit=?",
                           (job.id, job.folder, job.conduit)).fetchone():
             raise ValueError("record has no local job mapping")
-        seq = db.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM records").fetchone()[0]
+        db.execute("UPDATE runner_state SET sequence=sequence+1")
+        seq = db.execute("SELECT sequence FROM runner_state").fetchone()[0]
         record = self._project(job, kind, data, seq)
-        db.execute("INSERT INTO records VALUES (?,?)",
-                   (seq, record.model_dump_json(exclude_none=True)))
+        db.execute("INSERT INTO records(sequence,body,created) VALUES (?,?,?)",
+                   (seq, record.model_dump_json(exclude_none=True), time.time()))
 
     def replay(self, after: int, client) -> None:
         with self.local.db() as db:

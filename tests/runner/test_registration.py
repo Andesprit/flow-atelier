@@ -81,7 +81,7 @@ def step(tool, task):
 
 @pytest.mark.parametrize("command", [
     "bash ./helper", 'bash "{{conduit_dir}}/../helper"', 'bash "{{conduit_dir}}/missing"',
-    "echo $(bash ./helper)", "true; bash ./helper",
+    "echo ok > marker", "printf text >> marker", "echo $(bash ./helper)", "true; bash ./helper",
 ])
 def test_external_or_dynamic_shell_entry_points_need_packaging(tmp_path, command):
     project = tmp_path / "project"
@@ -121,3 +121,90 @@ def test_local_policy_includes_children_helpers_and_rejects_symlinks(tmp_path):
     project.symlink_to(elsewhere, target_is_directory=True)
     with pytest.raises(ValueError):
         local.approve(fid, "root")
+
+
+def test_short_environment_values_and_secret_names(tmp_path, monkeypatch):
+    plane = Plane()
+    local = Local(tmp_path / "user")
+    local.pair(plane, plane.invite("one"))
+    fid = local.expose(tmp_path, "Customer Docs")
+    for key, value in {"SHLVL": "1", "XPC_SERVICE_NAME": "0", "LANG": "C",
+                       "DEPLOY_PASS": "xy", "CUSTOM": "longvalue"}.items():
+        monkeypatch.setenv(key, value)
+    for name in ["build1", "release-2026", "buildxy", "build-longvalue"]:
+        recipe(tmp_path, name, [step("tool:bash", "true")])
+        local.approve(fid, name)
+    job = plane.enqueue("one", {local.identity()["id"]: fid}, "build1")
+    assert local.poll(plane).job.id == job
+    assert plane.view("one")[0]["folders"] == [
+        {"id": fid, "label": "Customer Docs", "conduits": ["build1", "release-2026"]}]
+
+
+def test_approval_manifest_and_management_cli(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from flow_atelier.cli import app
+    from flow_atelier.services.runner.worker import Worker
+
+    cli = CliRunner()
+
+    def invoke(*args, answer=None):
+        return cli.invoke(app, ["runner", *args], input=answer)
+
+    project = tmp_path / "project"
+    root = recipe(project, "build", [step("tool:conduit", "child")])
+    child = recipe(tmp_path, "child", [{**step("harness:codex", "review"), "permissions": "edits"}])
+    helper = child / "helper"
+    helper.write_text("true")
+    helper.chmod(0o755)
+    local = Local(tmp_path / ".atelier")
+    monkeypatch.setenv("ATELIER_GLOBAL_ATELIER_DIR", str(local.user_dir))
+    plane = Plane()
+    local.pair(plane, plane.invite("one"))
+    fid = local.expose(project, "Manuals")
+    before = invoke("approve", fid, "build", answer="n\n")
+    assert not local.inventory()[0].conduits
+    for value in (ascii(str(root)), ascii(str(child)), "helper", "conduit.yaml",
+                  "harness:codex", "permissions=edits"):
+        assert value in before.output
+    executable = "+x" if helper.stat().st_mode & 0o111 else "-x"
+    assert f"{executable} 'conduits/child/helper'" in before.output
+    assert invoke("approve", fid, "build", answer="\n").exit_code != 0
+    assert not local.inventory()[0].conduits
+    (local.root / "redact.json").write_text('["build","Manuals"]')
+    approved = invoke("approve", fid, "build", "--yes")
+    assert approved.exit_code == 0, approved.exception
+    assert "advertised" in approved.output
+
+    async def stop(_self):
+        pass
+
+    monkeypatch.setattr(Worker, "serve", stop)
+    assert "advertised" in invoke("start").output
+    with local.db() as db:
+        digest = db.execute("SELECT digest FROM approvals").fetchone()[0]
+    assert digest in approved.output
+    listing = invoke("folders").output
+    assert all(word in listing for word in [fid, "Manuals", ascii(str(project)), "build", digest[:8]])
+    local.approve(fid, "child")
+    assert invoke("revoke", fid, "build").exit_code == 0
+    assert local.inventory()[0].conduits == ["child"]
+    assert invoke("revoke", fid).exit_code == 0
+    assert local.inventory()[0].conduits == []
+    assert invoke("unexpose", fid).exit_code == 0
+    assert not local.inventory() and project.is_dir()
+    assert invoke("unpair").exit_code == 0
+    with pytest.raises(ValueError, match="pair"):
+        local.identity()
+    local.pair(plane, plane.invite("second"))
+    assert local.status() == (False, None)
+
+
+def test_detached_runner_refuses_child_hitl(tmp_path):
+    local = Local(tmp_path / "user")
+    recipe(tmp_path, "root", [step("tool:conduit", "child")])
+    recipe(tmp_path, "child", [step("tool:hitl", "input")])
+    fid = local.expose(tmp_path, "docs")
+    with pytest.raises(ValueError, match="hitl"):
+        local.approve(fid, "root")
+    assert not local.inventory()[0].conduits

@@ -202,3 +202,24 @@ async def test_resume_and_stop_require_exact_project_run(actions, tmp_path):
         )
     finally:
         await asyncio.gather(running, return_exceptions=True)
+
+
+async def test_linux_trial_exposes_only_the_same_python_runtime_alias(tmp_path, monkeypatch):
+    from flow_atelier.services.api import chat_cli
+
+    runtime = tmp_path / "python-versioned"
+    (runtime / "bin").mkdir(parents=True)
+    alias = tmp_path / "python-stable"
+    alias.symlink_to(runtime, target_is_directory=True)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "base_prefix", str(runtime))
+    monkeypatch.setattr(sys, "_base_executable", str(alias / "bin/python3"))
+
+    def inspect_mounts(_, roots):
+        assert alias in roots and runtime in roots
+        assert tmp_path not in roots
+        raise RuntimeError("mounts checked")
+
+    monkeypatch.setattr(chat_cli, "sandbox", inspect_mounts)
+    with pytest.raises(RuntimeError, match="mounts checked"):
+        await chat_cli.cli(tmp_path, tmp_path, "list", trial=True)

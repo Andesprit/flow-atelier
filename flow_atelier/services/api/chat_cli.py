@@ -94,6 +94,11 @@ async def cli(
         roots = {Path(sys.prefix), Path(sys.base_prefix), PACKAGE}
         if is_frozen_binary():
             roots.update([Path(sys.executable), Path(sys._MEIPASS)])
+        elif sys.platform == "linux":
+            # uv venvs can link via an unversioned alias of the same Python installation.
+            alias = Path(sys._base_executable).parent.parent
+            if alias.resolve() == Path(sys.base_prefix).resolve():
+                roots.add(alias)
         prefix = sandbox(project, roots)
         env = dict(
             PATH=os.defpath,

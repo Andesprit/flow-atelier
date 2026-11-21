@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import typer
 from rich.markup import escape
@@ -29,6 +30,7 @@ from flow_atelier.schemas.flow import parse_flow_id
 @app.command("status")
 def status_cmd(
     flow_id: str = typer.Argument(..., help="Flow id to inspect (unique prefix or 'latest' ok)."),
+    context: bool = typer.Option(False, "--context", help="Include saved inputs and project."),
     json_mode: bool = typer.Option(
         False, "--json", help="Emit machine-readable JSON instead of a table."
     ),
@@ -57,6 +59,11 @@ def status_cmd(
         for task in payload["tasks"].values():
             if task.get("loop_outcome") is None:
                 task.pop("loop_outcome", None)
+        if context:
+            project = atelier.store.flow_projects().get(flow_id)
+            payload["project"] = str(project or Path(progress.run_path or Path.cwd()).resolve())
+            payload["store"] = str(atelier.for_flow(flow_id).settings.atelier_dir.resolve())
+            payload["inputs"] = atelier.store.read_input(flow_id)
         payload["flow_id"] = flow_id
         payload["duration_seconds"] = _flow_duration_seconds(progress)
         payload["display_status"] = display_status(progress)

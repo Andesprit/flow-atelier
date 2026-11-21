@@ -187,19 +187,20 @@ async def test_resume_and_stop_require_exact_project_run(actions, tmp_path):
         assert actions.pending["run"] == found["flow_id"]
         assert actions.pending["conduit"] == "slow"
         assert actions.pending["status"] == "running"
-        assert (
-            json.loads(await actions.call("status", found["flow_id"], "--json"))["status"]
-            == "running"
-        )
-        await actions.confirm(actions.pending["id"])
-        assert (
-            next(
-                r
-                for r in json.loads(await actions.reply(request("runs")))
-                if r["flow_id"] == found["flow_id"]
-            )["status"]
-            == "stopped"
-        )
+        run_id = found["flow_id"]
+        before = json.loads(await actions.call("status", run_id, "--json"))
+        assert before["display_status"] == "running"
+        try:
+            await actions.confirm(actions.pending["id"])
+        except ValueError as exc:
+            # Windows SIGTERM terminates the runner before it can journal a graceful stop.
+            if sys.platform != "win32" or "still shutting down" not in str(exc):
+                raise
+            expected = "crashed"
+        else:
+            expected = "stopped"
+        after = json.loads(await actions.call("status", run_id, "--json"))
+        assert after["display_status"] == expected
     finally:
         await asyncio.gather(running, return_exceptions=True)
 

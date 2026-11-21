@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Ack": {
+      "additionalProperties": false,
+      "properties": {},
+      "title": "Ack",
+      "type": "object"
+    },
+    "Dispatch": {
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Job"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after": {
+          "minimum": 0,
+          "title": "After",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "job",
+        "after"
+      ],
+      "title": "Dispatch",
+      "type": "object"
+    },
+    "Folder": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9 _-]+$",
+          "title": "Label",
+          "type": "string"
+        },
+        "conduits": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "title": "Conduits",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "conduits"
+      ],
+      "title": "Folder",
+      "type": "object"
+    },
+    "Identity": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "token": {
+          "format": "password",
+          "title": "Token",
+          "type": "string",
+          "writeOnly": true
+        }
+      },
+      "required": [
+        "id",
+        "token"
+      ],
+      "title": "Identity",
+      "type": "object"
+    },
+    "Job": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "folder": {
+          "pattern": "^[0-9a-f]{32}$",
+          "title": "Folder",
+          "type": "string"
+        },
+        "conduit": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Conduit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "folder",
+        "conduit"
+      ],
+      "title": "Job",
+      "type": "object"
+    },
+    "Pair": {
+      "additionalProperties": false,
+      "properties": {},
+      "title": "Pair",
+      "type": "object"
+    },
+    "Poll": {
+      "additionalProperties": false,
+      "properties": {
+        "folders": {
+          "items": {
+            "$ref": "#/$defs/Folder"
+          },
+          "title": "Folders",
+          "type": "array"
+        },
+        "claim": {
+          "title": "Claim",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "folders",
+        "claim"
+      ],
+      "title": "Poll",
+      "type": "object"
+    },
+    "Record": {
+      "additionalProperties": false,
+      "properties": {
+        "sequence": {
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "job": {
+          "pattern": "^[0-9a-f]{32}$",
+          "title": "Job",
+          "type": "string"
+        },
+        "folder": {
+          "pattern": "^[0-9a-f]{32}$",
+          "title": "Folder",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "event",
+            "log",
+            "chat"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "started",
+            "completed",
+            "failed",
+            "skipped",
+            "cancelled",
+            "delivered"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "task": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Task"
+        }
+      },
+      "required": [
+        "sequence",
+        "job",
+        "folder",
+        "kind",
+        "status"
+      ],
+      "title": "Record",
+      "type": "object"
+    },
+    "Records": {
+      "additionalProperties": false,
+      "properties": {
+        "records": {
+          "items": {
+            "$ref": "#/$defs/Record"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Records",
+          "type": "array"
+        }
+      },
+      "required": [
+        "records"
+      ],
+      "title": "Records",
+      "type": "object"
+    },
+    "Result": {
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "pattern": "^[0-9a-f]{32}$",
+          "title": "Job",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "started",
+            "completed",
+            "failed",
+            "refused",
+            "unknown"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job",
+        "status"
+      ],
+      "title": "Result",
+      "type": "object"
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "Pair": {
+      "$ref": "#/$defs/Pair"
+    },
+    "Identity": {
+      "$ref": "#/$defs/Identity"
+    },
+    "Poll": {
+      "$ref": "#/$defs/Poll"
+    },
+    "Dispatch": {
+      "$ref": "#/$defs/Dispatch"
+    },
+    "Result": {
+      "$ref": "#/$defs/Result"
+    },
+    "Ack": {
+      "$ref": "#/$defs/Ack"
+    },
+    "Records": {
+      "$ref": "#/$defs/Records"
+    }
+  }
+}

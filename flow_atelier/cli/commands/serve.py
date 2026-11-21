@@ -275,7 +275,8 @@ def serve_cmd(
             # The schedules API can resync jobs immediately on the owning daemon.
             atelier.scheduler_daemon = daemon  # type: ignore[attr-defined]
             try:
-                yield
+                async with server_lifespan(app):
+                    yield
             finally:
                 del atelier.scheduler_daemon
                 await daemon.stop()

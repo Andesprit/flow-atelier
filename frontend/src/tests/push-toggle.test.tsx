@@ -1,0 +1,19 @@
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import { PushToggle } from "@/features/dashboard/components/push-toggle";
+
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+it("asks for permission only after Enable and leaves a denied device unsubscribed", async () => {
+  const requestPermission = vi.fn().mockResolvedValue("denied");
+  vi.stubGlobal("Notification", { permission: "default", requestPermission });
+  vi.stubGlobal("PushManager", {});
+  const register = vi.fn();
+  vi.stubGlobal("navigator", { serviceWorker: { getRegistration: async () => undefined, register } });
+  render(<PushToggle />);
+  expect(requestPermission).not.toHaveBeenCalled();
+  fireEvent.click(await screen.findByRole("button", { name: "Enable completion notifications" }));
+  await screen.findByText(/blocked in your browser settings/i);
+  expect(register).not.toHaveBeenCalled();
+});
+

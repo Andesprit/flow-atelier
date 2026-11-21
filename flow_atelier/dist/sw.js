@@ -18,7 +18,22 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (request.method !== "GET" || request.mode !== "navigate" ||
       url.origin !== self.location.origin || url.search || request.headers.has("Authorization")) return;
-  if (!/^\/(?:dashboard|launch|designer|kanban|runs\/[\w.-]+)?$/.test(url.pathname)) return;
+  if (!/^\/(?:dashboard|launch|designer|kanban|runs\/[\w.-]+|notice\/[a-f0-9]{32})?$/.test(url.pathname)) return;
   event.respondWith(fetch(request).catch(async () => (await caches.open(cacheName)).match(offlinePage)));
+});
+
+self.addEventListener("push", (event) => {
+  if (!event.data) return;
+  const { run_id, status } = event.data.json();
+  if (!/^[a-f0-9]{32}$/.test(run_id) || !["completed", "failed", "stopped"].includes(status)) return;
+  event.waitUntil(self.registration.showNotification("Run " + status, {
+    icon: "/pwa/icon-192.png", tag: run_id, data: { run_id },
+  }));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const token = event.notification.data?.run_id;
+  if (/^[a-f0-9]{32}$/.test(token)) event.waitUntil(self.clients.openWindow("/notice/" + token));
 });
 

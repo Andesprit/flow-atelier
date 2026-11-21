@@ -73,6 +73,7 @@ export async function fetchJson<TResponse>(
   const send = (token: string) =>
     fetch(url, {
       method,
+      cache: "no-store",
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),

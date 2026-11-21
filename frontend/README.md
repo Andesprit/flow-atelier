@@ -21,6 +21,19 @@ A web UI for building, scheduling, and running conduit workflows — DAG-based p
 
 ## Getting Started
 
+### Install on a phone
+
+Open the dashboard from your authenticated Atelier server over HTTPS. Use
+**Install app** in Chromium or **Add to Home Screen** in Safari. The installed
+app opens the mobile launcher. Pick a project on the server, select a conduit,
+fill its inputs and tap **Launch**. The local server continues the run when
+you close the app. Use the interactive dashboard for live human-input steps.
+
+Tap **Enable completion notifications** in the launcher to subscribe that
+device. The server must be running to send notifications. Tapping one opens
+the run through the usual API-token check. **Disable completion notifications**
+removes the subscription. Offline, the app displays a connection message.
+
 ### Prerequisites
 
 - **Node.js** ≥ 18

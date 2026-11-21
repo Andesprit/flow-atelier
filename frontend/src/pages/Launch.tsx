@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { PushToggle } from "@/features/dashboard/components/push-toggle";
 import { Input } from "@/components/ui/input";
 import { BASE_URL, fetchJson } from "@/services/client";
 import { inputDefault, inputHint, submittedInputs, type Conduit } from "@/types/conduit";
@@ -84,7 +85,7 @@ export default function Launch() {
   }
 
   return (
-    <main className="mx-auto grid max-w-xl gap-5 px-4 py-6">
+    <div className="mx-auto grid max-w-xl gap-5 px-4 py-6">
       <h1 className="font-display text-panel">Launch a conduit</h1>
       <label>Project folder
         <select className={selectStyle} disabled={busy || !projects.length}
@@ -127,7 +128,8 @@ export default function Launch() {
           <Button type="submit" disabled={!online || busy}>{busy ? "Launching…" : "Launch"}</Button>
         </form>
       )}
-    </main>
+      <PushToggle />
+    </div>
   );
 }
 

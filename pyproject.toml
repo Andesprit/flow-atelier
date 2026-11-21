@@ -19,6 +19,7 @@ dependencies = [
     "fastapi>=0.136.1",
     "uvicorn[standard]>=0.46.0",
     "prompt-toolkit>=3.0",
+    "pywebpush>=2.5.0",
 ]
 
 [project.scripts]

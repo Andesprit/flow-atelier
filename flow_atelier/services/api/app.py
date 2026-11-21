@@ -7,7 +7,7 @@ facade; routes do at most: validate → call facade → serialize.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -25,6 +25,7 @@ from flow_atelier.core.atelier import Atelier
 from flow_atelier.services.api.base import ApiServerBase, origin_permitted
 from flow_atelier.services.store.events import AmbiguousFlowId, RunRecordError
 from flow_atelier.services.store.retention import daily_cleanup
+from flow_atelier.services.web_push import WebPush
 
 # Bundled SPA assets. Lives inside the package (flow_atelier/dist/) so it ships
 # in the wheel and is found both from a source checkout and an installed wheel.
@@ -165,15 +166,17 @@ class FastApiServer(ApiServerBase):
         """
         @asynccontextmanager
         async def lifespan(app):
-            async with daily_cleanup(
+            # The owning scheduler already runs retention for this global store.
+            cleanup = nullcontext() if hasattr(atelier, "scheduler_daemon") else daily_cleanup(
                 atelier.settings.global_atelier_dir, atelier.settings.cleanup_period_days
-            ):
-                async with create_task_group() as runs:
-                    app.state.mobile_runs = runs
-                    try:
-                        yield
-                    finally:
-                        runs.cancel_scope.cancel()
+            )
+            async with cleanup, create_task_group() as runs:
+                app.state.mobile_runs = runs
+                runs.start_soon(WebPush(atelier.settings.global_atelier_dir).watch, atelier)
+                try:
+                    yield
+                finally:
+                    runs.cancel_scope.cancel()
 
         app = FastAPI(title="flow-atelier", version=__version__, lifespan=lifespan)
 

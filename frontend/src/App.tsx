@@ -13,6 +13,7 @@ const Designer = lazy(() => import("@/pages/Designer"));
 const Kanban = lazy(() => import("@/pages/kanban"));
 const Run = lazy(() => import("@/pages/Run"));
 const Launch = lazy(() => import("@/pages/Launch"));
+const PushNotice = lazy(() => import("@/pages/PushNotice"));
 
 // Expose the runner on window for smoke checks — dev only, so the debug hook
 // is not part of the shipped surface.
@@ -62,6 +63,7 @@ export default function App() {
                     <Route path="/" element={<Navigate to="/dashboard" replace />} />
                     <Route path="/dashboard" element={<Dashboard />} />
                     <Route path="/launch" element={<Launch />} />
+                    <Route path="/notice/:token" element={<PushNotice />} />
                     <Route path="/designer" element={<Designer />} />
                     <Route path="/kanban" element={<Kanban />} />
                     <Route path="/runs/:flowId" element={<Run />} />

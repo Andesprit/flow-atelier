@@ -1,4 +1,4 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { cn } from "@lib/cn";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotifyToggle } from "./NotifyToggle";
@@ -11,6 +11,7 @@ const NAV = [
 ] as const;
 
 export function TopBar() {
+  const launcher = useLocation().pathname === "/launch";
   return (
     <header
       data-testid="top-bar"
@@ -47,6 +48,7 @@ export function TopBar() {
               cn(
                 "flex h-11 items-center rounded-sm px-1.5 font-mono text-mini uppercase tracking-[0.08em] text-muted-foreground hover:text-foreground sm:px-2.5 sm:text-label sm:tracking-[0.12em]",
                 isActive && "text-foreground bg-muted",
+                launcher && n.to !== "/dashboard" && "hidden sm:flex",
               )
             }
           >
@@ -54,7 +56,7 @@ export function TopBar() {
           </NavLink>
         ))}
       </nav>
-      <NotifyToggle />
+      <NotifyToggle className={launcher ? "hidden sm:inline-flex" : undefined} />
       <ThemeToggle />
     </header>
   );

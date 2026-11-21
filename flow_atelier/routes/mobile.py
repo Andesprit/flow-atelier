@@ -38,7 +38,7 @@ def _project(base: Atelier, path: str) -> Atelier:
 @router.get("/projects")
 def projects(atelier: Atelier = Depends(get_atelier)) -> list[str]:
     current = str(atelier.settings.atelier_dir.parent.resolve())
-    known = {run.project for run in atelier.list_prior_flows() if run.project}
+    known = {str(path) for path in atelier.store.flow_projects().values()}
     return [current, *sorted(known - {current})]
 
 
@@ -67,6 +67,8 @@ async def launch(
         try:
             conduit = runner.store.read_conduit(payload.conduit_name)
             check_unknown_inputs(conduit, payload.inputs, subject="mobile launch")
+            if any(task.tool == "tool:hitl" for task in conduit.tasks):
+                raise ValueError("Use the interactive dashboard for human-input steps.")
             await runner.engine.run(
                 conduit, payload.inputs, on_flow_started=on_start, show_steps=False,
                 working_dir=runner.settings.atelier_dir.parent,

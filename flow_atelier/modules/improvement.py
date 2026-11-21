@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager
@@ -25,6 +26,7 @@ from flow_atelier.modules.improvement_metrics import (
 )
 from flow_atelier.schemas.conduit import Conduit, TaskDefinition
 from flow_atelier.services.executor.base import PUBLISHER_ENV, child_environ, drop_credential_env
+from flow_atelier.services.executor.bash import to_bash_path
 from flow_atelier.services.store.claims import EventClaims
 
 LOG = Path("docs/improvement-log.md")
@@ -105,18 +107,22 @@ def _settings(base: Path, goal: str) -> MetricsSettings:
     return MetricsSettings.model_validate({"unit": units[goal], **config})
 
 
-def _driver(base: Path, checkout: Path, name: str, *args: str, check: bool = True):
+def _driver(base: Path, checkout: Path, name: str, *files: Path, check: bool = True):
     script = _local(base, DRIVERS / f"{name}.sh")
     if not script.is_file():
         raise ValueError(f"missing fixed driver {DRIVERS}/{name}.sh")
-    return _cmd(checkout, "bash", "-e", "-o", "pipefail", str(script), *args, check=check)
+    bash = shutil.which("bash")
+    if bash is None:
+        raise ValueError("improvement drivers require bash on PATH")
+    return _cmd(checkout, bash, "-e", "-o", "pipefail",
+                to_bash_path(script), *map(to_bash_path, files), check=check)
 
 
 def _sample(base: Path, checkout: Path, goal: str, settings: MetricsSettings) -> float | dict:
     if goal == "ux":
         with tempfile.TemporaryDirectory() as tmp:
             report = Path(tmp) / "lighthouse.json"
-            task = _driver(base, checkout, goal, str(report))
+            task = _driver(base, checkout, goal, report)
             if not report.is_file():
                 raise ValueError("UX driver did not produce a Lighthouse report")
             return browser_sample(task.stdout, report.read_text(encoding="utf-8"))

@@ -117,6 +117,19 @@ def active(atelier, project):
     return atelier.store.create_flow("continuous-improvement", {}, project=project)
 
 
+def test_driver_uses_the_resolved_bash_and_its_path_namespace(tmp_path, monkeypatch):
+    from flow_atelier.modules import improvement
+
+    script = tmp_path / improvement.DRIVERS / "ux.sh"
+    script.parent.mkdir(parents=True)
+    script.touch()
+    monkeypatch.setattr("flow_atelier.services.executor.bash._bash_namespace", lambda: "msys")
+    monkeypatch.setattr(improvement, "_cmd", lambda cwd, *argv, check: argv)
+    argv = improvement._driver(tmp_path, tmp_path, "ux", Path(r"D:\report dir\report.json"))
+    assert argv == (shutil.which("bash"), "-e", "-o", "pipefail",
+                    to_bash_path(script), "/d/report dir/report.json")
+
+
 @pytest.mark.parametrize(("new", "accepted"), [("70", True), ("99", False), ("120", False), ("50", False)])
 async def test_latency_pr_contains_only_the_earned_changes(repo, new, accepted):
     from flow_atelier.modules.improvement import experiment, propose

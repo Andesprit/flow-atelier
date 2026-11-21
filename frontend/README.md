@@ -29,6 +29,9 @@ through Caddy on the same machine:
 1. Choose a hostname you control (shown here as `atelier.example.com`). Point its
    DNS record at Caddy and route TCP ports 80 and 443 to Caddy. Keep the Atelier
    backend bound to loopback.
+   Always set `ATELIER_API_TOKEN` before exposing the port, because a raw TCP
+   forward such as `ssh -R` or `socat` adds no proxy headers and can expose an
+   unauthenticated server even when it listens only on loopback.
 2. Install Atelier with the optional push extra on the serving machine if you
    want notifications, for example `uv tool install 'flow-atelier[push]'`. The
    standalone binary supports the launcher, and push delivery requires the

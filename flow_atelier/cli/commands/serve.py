@@ -243,6 +243,7 @@ def serve_cmd(
         api_token=settings.api_token or None,
         allowed_hosts=allowed_hosts,
     )
+    scheduler_status = "Scheduler disabled"
     if not no_scheduler:
         _migrate_schedules(atelier.schedule_store, settings.atelier_dir)
         daemon = SchedulerDaemon(
@@ -252,18 +253,22 @@ def serve_cmd(
             default_working_dir=Path.cwd(),
             reload_interval_seconds=reload_interval,
         )
+
         @asynccontextmanager
         async def _lifespan(app):
             """FastAPI lifespan context that starts and stops the scheduler daemon.
 
             :param app: the FastAPI application receiving the lifespan event.
             """
+            nonlocal scheduler_status
             try:
                 await daemon.start()
             except SchedulerAlreadyRunning as exc:
+                scheduler_status = f"Scheduler disabled (running in pid {exc.pid})"
                 typer.echo(f"{exc}; serving without scheduler", err=True)
                 yield
                 return
+            scheduler_status = f"Schedule store: {atelier.schedule_store.schedules_dir.resolve()}"
             # The schedules API can resync jobs immediately on the owning daemon.
             atelier.scheduler_daemon = daemon  # type: ignore[attr-defined]
             try:
@@ -330,8 +335,7 @@ def serve_cmd(
             f"[bold]http://{host}:{actual}[/bold]{stops}"
         )
         typer.echo(f"Project store: {settings.atelier_dir.resolve()}")
-        schedule_path = atelier.schedule_store.schedules_dir.resolve()
-        typer.echo("Scheduler disabled" if no_scheduler else f"Schedule store: {schedule_path}")
+        typer.echo(scheduler_status)
         await serve_task
         if idle_watch is not None:
             idle_watch.cancel()

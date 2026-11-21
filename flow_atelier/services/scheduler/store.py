@@ -115,6 +115,10 @@ def _serialized[**P, R](
 class SchedulerAlreadyRunning(RuntimeError):
     """Another process holds the daemon lease for this store."""
 
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        super().__init__(f"scheduler already running (pid {pid})")
+
 
 class ScheduleStore:
     """YAML-backed CRUD for :class:`ScheduledJob` records.
@@ -151,7 +155,7 @@ class ScheduleStore:
             except (BlockingIOError, PermissionError) as exc:
                 lock.seek(0)
                 pid = int(lock.read(32))
-                raise SchedulerAlreadyRunning(f"scheduler already running (pid {pid})") from exc
+                raise SchedulerAlreadyRunning(pid) from exc
             lock.truncate(0)
             lock.write(f"{os.getpid()}\n".encode("ascii"))
             return lock

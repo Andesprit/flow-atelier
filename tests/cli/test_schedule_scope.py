@@ -116,6 +116,8 @@ def test_corrupt_legacy_state_is_reported_by_migrate_add_and_serve(tmp_path, mon
     assert served.exit_code == 0, served.exception
     assert warning in served.stderr
     assert f"scheduler already running (pid {os.getpid()}); serving without scheduler" in served.stderr
+    assert f"Scheduler disabled (running in pid {os.getpid()})" in served.stdout.splitlines()
+    assert "Schedule store:" not in served.stdout
     assert local.state_path.read_text() == "{broken"
 
 

@@ -35,6 +35,10 @@ def _isolate_global_atelier_dir(tmp_path_factory, monkeypatch):
     :param monkeypatch: pytest monkeypatch fixture.
     """
     global_dir = tmp_path_factory.mktemp("global_atelier")
+    # Several CLI tests intentionally clear ATELIER_* to exercise defaults.
+    user_home = tmp_path_factory.mktemp("user_home")
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
     monkeypatch.setenv("ATELIER_GLOBAL_ATELIER_DIR", str(global_dir))
     monkeypatch.setenv("ATELIER_NO_UPDATE_CHECK", "1")
     yield Path(global_dir)

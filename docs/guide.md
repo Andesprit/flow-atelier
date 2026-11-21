@@ -2043,9 +2043,17 @@ The `.atelier` directory lives in the working directory where
             └── <child_flow_id>/...         # nested tool:conduit runs
 
 ~/.atelier/
+├── projects/<encoded-project>/
+│   ├── <flow_id>.jsonl                     # one versioned event per line
+│   └── <flow_id>/
+│       ├── steps.jsonl                     # live tool steps
+│       └── outputs/<task>/<sequence>       # output text over 100,000 UTF-8 bytes
 ├── schedules/
 │   └── <slug>-<hash>.yaml                  # one YAML file per shared schedule
 └── scheduler_state.json                    # fired-once markers and run history
 ```
 
-
+Set `ATELIER_GLOBAL_ATELIER_DIR` in the process environment to relocate the
+entire global store. A run header records the full resolved project path.
+The folder name replaces each non-alphanumeric character with a hyphen, so
+two projects can share a folder while retaining their separate identities.

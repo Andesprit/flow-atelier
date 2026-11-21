@@ -40,6 +40,7 @@ from flow_atelier.schemas.flow import new_flow_id, parse_flow_id
 from flow_atelier.schemas.log import LogEntry, StepRecord
 from flow_atelier.schemas.progress import Progress
 from flow_atelier.services.store.base import ConduitSource, StoreBase
+from flow_atelier.services.store.events import RunJournal, project_folder
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +174,47 @@ class FilesystemStore(StoreBase):
         """
         conduit_dir = self._global_conduit_dir(name)
         return conduit_dir / "conduit.yaml" if conduit_dir is not None else None
+
+    def _journals(
+        self, project: Path | None = None, pattern: str = "*.jsonl"
+    ) -> Iterator[tuple[RunJournal, dict[str, Any]]]:
+        if self.global_dir is None:
+            return
+        root = self.global_dir / "projects"
+        paths = (root.glob(f"*/{pattern}") if project is None
+                 else (root / project_folder(project)).glob(pattern))
+        for path in paths:
+            journal = RunJournal(path)
+            header = journal.header()
+            if project is None or header["project"] == str(project.resolve()):
+                yield journal, header
+
+    def journal(self, flow_id: str) -> RunJournal | None:
+        if not self._safe_flow_id(flow_id):
+            raise FileNotFoundError(f"flow not found: {flow_id}")
+        matches = [j for j, _ in self._journals(pattern=f"{flow_id}.jsonl")]
+        if matches and (self.base_dir / "flows").is_dir():
+            try:
+                self._flow_dir(flow_id)
+            except FileNotFoundError:
+                pass
+            else:
+                raise ValueError(f"ambiguous flow id: {flow_id} has a local and global record")
+        if len(matches) > 1:
+            raise ValueError(f"ambiguous flow id: {flow_id}")
+        return matches[0] if matches else None
+
+    def parent_flow_id(self, flow_id: str) -> str | None:
+        if journal := self.journal(flow_id):
+            return journal.header()["parent_flow_id"]
+        holder = self._flow_dir(flow_id).parent.parent
+        return None if holder == self.base_dir else holder.name
+
+    def list_project_flows(self, project: Path) -> list[str]:
+        ids = [j.path.stem for j, h in self._journals(project) if h["parent_flow_id"] is None]
+        if project.resolve() == self.base_dir.resolve().parent:
+            ids.extend(FilesystemStore(self.base_dir).list_flows())
+        return sorted(ids)
 
     def _flow_dir(self, flow_id: str) -> Path:
         """Resolve and cache the directory for ``flow_id``.
@@ -475,6 +517,10 @@ class FilesystemStore(StoreBase):
         :returns: child flow ids in the order they last started (a resumed
             child counts from its resume), so the last one is the most recent
         """
+        if self.journal(parent_flow_id):
+            children = [j.path.stem for j, h in self._journals()
+                        if h["parent_flow_id"] == parent_flow_id]
+            return sorted(children, key=lambda i: (self.read_progress(i).started_at or "", i))
         children_dir = self._flow_dir(parent_flow_id) / "flows"
         if not children_dir.exists():
             return []
@@ -559,6 +605,8 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :returns: parsed list of :class:`LogEntry` — empty if missing/unreadable
         """
+        if journal := self.journal(flow_id):
+            return [LogEntry.model_validate(e) for e in journal.logs()]
         flow_dir = self._flow_dir(flow_id)
         jsonl_path = flow_dir / "logs.jsonl"
         if jsonl_path.exists():
@@ -634,7 +682,9 @@ class FilesystemStore(StoreBase):
         :returns: tuple of the parsed records and the byte offset just past
             the last complete line consumed
         """
-        path = self._flow_dir(flow_id) / "steps.jsonl"
+        journal = self.journal(flow_id)
+        directory = journal.side if journal else self._flow_dir(flow_id)
+        path = directory / "steps.jsonl"
         if not path.exists():
             return [], offset
         with path.open("rb") as f:
@@ -711,6 +761,8 @@ class FilesystemStore(StoreBase):
 
         :param flow_id: flow identifier
         """
+        if journal := self.journal(flow_id):
+            return Progress.model_validate(journal.latest("progress"))
         path = self._flow_dir(flow_id) / "progress.json"
         return Progress.model_validate_json(path.read_text())
 
@@ -722,6 +774,8 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :returns: mapping of task name to output string
         """
+        if journal := self.journal(flow_id):
+            return journal.outputs()
         path = self._flow_dir(flow_id) / "outputs.yaml"
         if not path.exists():
             return {}
@@ -748,6 +802,8 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :returns: mapping of session name to ``{"id", "harness"}``
         """
+        if journal := self.journal(flow_id):
+            return journal.latest("sessions")
         path = self._flow_dir(flow_id) / "sessions.yaml"
         if not path.exists():
             return {}
@@ -772,6 +828,8 @@ class FilesystemStore(StoreBase):
 
         :param flow_id: flow identifier
         """
+        if journal := self.journal(flow_id):
+            return journal.inputs()
         path = self._flow_dir(flow_id) / "input.yaml"
         if not path.exists():
             return {}

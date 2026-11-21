@@ -33,17 +33,6 @@ Reply in plain language a newcomer can follow:
 Read only: do not edit files, install anything, or run commands that change state.
 """
 
-MERGE_PROMPT = """\
-Two agents looked at the same project. Merge their notes into one short brief:
-where they agree, where they disagree, and the single most useful next step.
-
---- {first} ---
-{{{{look_{first_key}.output}}}}
-
---- {second} ---
-{{{{look_{second_key}.output}}}}
-"""
-
 DRAFT_PROMPT = """\
 Goal: {{inputs.goal}}
 
@@ -101,46 +90,22 @@ def installed_harnesses() -> list[str]:
 
 
 def explain_conduit_yaml(harnesses: list[str]) -> str:
-    """Render the starter that has agents describe the current project.
-
-    One agent answers alone. Two agents look in parallel and the first
-    merges both answers.
+    """Render the starter that asks the preferred agent to describe the project.
 
     :param harnesses: one or more harness names, most preferred first.
     :returns: YAML text for ``conduit.yaml``.
     """
-    first = harnesses[0]
-    if len(harnesses) == 1:
-        tasks = [{"look": {
-            "description": f"{first} describes this project",
-            "task": LOOK_PROMPT,
-            "tool": f"harness:{first}",
-            "depends_on": [],
-        }}]
-    else:
-        second = harnesses[1]
-        keys = {h: h.replace("-", "_") for h in (first, second)}
-        tasks = [
-            {f"look_{keys[h]}": {
-                "description": f"{h} describes this project",
-                "task": LOOK_PROMPT,
-                "tool": f"harness:{h}",
-                "depends_on": [],
-            }}
-            for h in (first, second)
-        ] + [{"merge": {
-            "description": f"{first} merges both answers",
-            "task": MERGE_PROMPT.format(
-                first=first, first_key=keys[first],
-                second=second, second_key=keys[second],
-            ),
-            "tool": f"harness:{first}",
-            "depends_on": [f"look_{keys[first]}", f"look_{keys[second]}"],
-        }}]
+    reader = harnesses[0]
     doc = {
         "name": "explain",
-        "description": "Ask your AI agents what this project is",
-        "tasks": tasks,
+        "description": "Ask an agent what this project is",
+        "tasks": [{"look": {
+            "description": f"{reader} describes this project",
+            "task": LOOK_PROMPT,
+            "tool": f"harness:{reader}",
+            "permissions": "read-only",
+            "depends_on": [],
+        }}],
     }
     return yaml.dump(doc, Dumper=_PromptDumper, sort_keys=False, width=100)
 
@@ -173,6 +138,7 @@ def pair_conduit_yaml(harnesses: list[str]) -> str:
                 "description": f"{harnesses[0]} proposes a change",
                 "task": DRAFT_PROMPT,
                 "tool": worker,
+                "permissions": "read-only",
                 "session": "worker",
                 "depends_on": [],
             }},
@@ -180,12 +146,14 @@ def pair_conduit_yaml(harnesses: list[str]) -> str:
                 "description": f"{harnesses[-1]} reviews the proposal",
                 "task": REVIEW_PROMPT,
                 "tool": partner,
+                "permissions": "read-only",
                 "depends_on": ["draft"],
             }},
             {"revise": {
                 "description": f"{harnesses[0]} revises, remembering its draft",
                 "task": REVISE_PROMPT,
                 "tool": worker,
+                "permissions": "read-only",
                 "session": "worker",
                 "depends_on": ["review"],
             }},
@@ -216,7 +184,7 @@ def init_cmd() -> None:
         written.append(hello)
     if harnesses and not explain.exists():
         explain.parent.mkdir(parents=True, exist_ok=True)
-        explain.write_text(explain_conduit_yaml(harnesses[:2]))
+        explain.write_text(explain_conduit_yaml(harnesses))
         written.append(explain)
     if harnesses and not pair.exists():
         pair.parent.mkdir(parents=True, exist_ok=True)
@@ -227,11 +195,9 @@ def init_cmd() -> None:
         console.print("[yellow]atelier is already set up in this project[/yellow]")
         return
     console.print(f"[green]initialized[/green] {conduits.parent}")
-    if explain.exists():
-        agents = " and ".join(harnesses[:2])
+    if harnesses:
         console.print(
-            f"found {agents}. Have {'them' if len(harnesses) > 1 else 'it'} "
-            "explain this project:\n"
+            f"Have {harnesses[0]} explain this project:\n"
             "  [bold]atelier serve[/bold]        # in a second terminal, to watch live\n"
             "  [bold]atelier run explain[/bold]\n"
             "then watch agents answer and review each other:\n"

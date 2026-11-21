@@ -248,10 +248,17 @@ atelier list flows --conduit hello          # lists previous runs
 shell command, so this works end-to-end before you install any AI
 tool. When it finds an agent CLI on your `PATH` (`claude`, `codex`,
 `gemini`, `cursor-agent`, `opencode` or `copilot`), it also writes
-`explain`, where your agents read the current project and brief you,
-and `pair`, where one agent drafts a change while another answers its
-questions as [supervisor](interaction.md) and reviews the draft.
-Run `atelier init` again after installing an agent to add it.
+`explain` and `pair`. In `explain`, the first available agent in the order
+listed above reads the project and writes a brief for a newcomer. In `pair`,
+that agent proposes a change and revises it after review. The next available
+agent answers questions as supervisor and reviews the proposal. With one
+installed agent, the same harness fills both roles. [Interaction policies](interaction.md)
+
+Every task in both starters declares `permissions: read-only`. By default,
+if a harness cannot enforce that level, the task stops before sending the
+prompt and reports `permissions read-only cannot be enforced` with the reason.
+Run `atelier init` again after installing an agent to add any missing starters.
+Existing recipes keep their contents.
 
 Ready for a real one? [Your first workflow: run it, break it, recover
 it](first-workflow.md) is a 5-minute Bash-only exercise that builds a

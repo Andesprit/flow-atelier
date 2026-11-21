@@ -78,8 +78,13 @@ def test_cached_id_detects_new_duplicate_and_disappearance(tmp_path, monkeypatch
     monkeypatch.chdir(tmp_path)
     store = Atelier().store
     run = store.create_flow("demo", {}, project=tmp_path / "a")
+    second_bucket = store.global_dir / "projects" / project_folder(tmp_path / "b")
+    second_bucket.mkdir()
+    stamp = second_bucket.stat()
     first = store.journal(run)
     store.create_flow("demo", {}, flow_id=run, project=tmp_path / "b")
+    # A second journal can appear within the directory clock's resolution.
+    os.utime(second_bucket, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
     with pytest.raises(AmbiguousFlowId):
         store.journal(run)
     first.path.unlink()

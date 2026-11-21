@@ -1,6 +1,7 @@
 """Replay parity between project-local records and the versioned journal."""
 
 import json
+import os
 
 import pytest
 
@@ -120,6 +121,9 @@ def test_refuses_ambiguous_id_and_escaping_output(tmp_path):
         )
     with pytest.raises(ValueError, match="ambiguous"):
         reader.read_outputs(run)
-    (home / "projects" / project_folder(paths[1]) / f"{run}.jsonl").unlink()
+    bucket = home / "projects" / project_folder(paths[1])
+    stamp = bucket.stat()
+    (bucket / f"{run}.jsonl").unlink()
+    os.utime(bucket, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
     with pytest.raises(ValueError, match="output"):
         reader.read_outputs(run)

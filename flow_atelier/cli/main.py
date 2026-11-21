@@ -261,6 +261,7 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     migrate,
     outputs,
     plan,
+    recipe,
     rm,
     run,
     schedule,

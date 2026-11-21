@@ -74,6 +74,7 @@ def schedule_add_cmd(
         ..., exists=True, dir_okay=False, readable=True,
         help="Path to a schedule JSON or YAML file."
     ),
+    no_migrate: bool = typer.Option(False, "--no-migrate", help="Install only this schedule."),
 ) -> None:
     """Validate and persist a schedule via the JSON store.
 
@@ -88,7 +89,8 @@ def schedule_add_cmd(
     # (a typo'd conduit otherwise installs cleanly and only fails at fire time).
     try:
         atelier = Atelier()
-        _migrate_schedules(atelier.schedule_store, atelier.settings.atelier_dir)
+        if not no_migrate:
+            _migrate_schedules(atelier.schedule_store, atelier.settings.atelier_dir)
         job = atelier.create_schedule(payload)
     except (ValueError, FileExistsError) as e:
         console.print(f"[red]invalid schedule:[/red] {e}")

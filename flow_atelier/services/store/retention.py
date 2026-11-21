@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from flow_atelier.schemas.progress import FlowStatus, Progress
+from flow_atelier.services.store.claims import expire_claim
 from flow_atelier.services.store.events import RunJournal, RunRecordError, file_lock
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ def _remove_expired(path: Path) -> None:
     journal.header()
     if journal.side.is_symlink() or path.with_suffix(".jsonl").exists():
         raise RunRecordError(f"conflicting expired record: {path}")
+    expire_claim(path.parents[2], path.stem)
     if journal.side.exists():
         shutil.rmtree(journal.side)
     path.unlink()

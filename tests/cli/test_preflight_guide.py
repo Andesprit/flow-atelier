@@ -144,7 +144,7 @@ class Guide:
         :returns: the filesystem store rooted at the workspace.
         """
         assert self.workspace is not None
-        return FilesystemStore(self.workspace / ".atelier")
+        return FilesystemStore(self.workspace / ".atelier", self.env["ATELIER_GLOBAL_ATELIER_DIR"])
 
     def prompts(self, who: str) -> list[str]:
         """Return every prompt one agent received.
@@ -251,14 +251,14 @@ def test_the_gate_creates_no_flow_when_the_probe_fails_and_works_once_fixed(guid
     assert blocked.returncode == 1, blocked.stdout + blocked.stderr
     assert "not usable" in _flat(blocked.stdout)
     # The run half of the `&&` never happened: no preparation, no flow.
-    assert FilesystemStore(workspace / ".atelier").list_flows("triage") == []
+    assert FilesystemStore(workspace / ".atelier", guide.env["ATELIER_GLOBAL_ATELIER_DIR"]).list_flows("triage") == []
     assert guide.prompts("claude") == []
 
     guide.log_out(None)
     passed = guide.run(gate, "gate.sh", workspace)
     assert passed.returncode == 0, passed.stdout + passed.stderr
 
-    store = FilesystemStore(workspace / ".atelier")
+    store = FilesystemStore(workspace / ".atelier", guide.env["ATELIER_GLOBAL_ATELIER_DIR"])
     flows = store.list_flows("triage")
     assert len(flows) == 1
     assert store.read_progress(flows[0]).status.value == "completed"

@@ -9,7 +9,7 @@
 #   GITHUB_TOKEN             token that can clone, and push if the conduit pushes
 #   CLAUDE_CODE_OAUTH_TOKEN  from `claude setup-token`
 #   CODEX_AUTH_FILE          mounted copy of a logged-in ~/.codex/auth.json
-#   STATE_DIR                mounted bucket that keeps .atelier/flows (optional)
+#   STATE_DIR                mounted bucket that keeps global run records (optional)
 set -euo pipefail
 
 : "${REPO:?set REPO to owner/name}"
@@ -38,8 +38,9 @@ status=0
 # shellcheck disable=SC2086 # ATELIER_ARGS is a list of words on purpose
 atelier run "$CONDUIT" ${ATELIER_ARGS:-} || status=$?
 
-if [ -n "${STATE_DIR:-}" ] && [ -d .atelier/flows ]; then
-    mkdir -p "$STATE_DIR/flows"
-    cp -r .atelier/flows/. "$STATE_DIR/flows/"
+projects="${ATELIER_GLOBAL_ATELIER_DIR:-$HOME/.atelier}/projects"
+if [ -n "${STATE_DIR:-}" ] && [ -d "$projects" ]; then
+    mkdir -p "$STATE_DIR/projects"
+    cp -R "$projects/." "$STATE_DIR/projects/"
 fi
 exit "$status"

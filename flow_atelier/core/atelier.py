@@ -27,7 +27,7 @@ from flow_atelier.modules.engine import (
     validate_conduit,
 )
 from flow_atelier.modules.flow_view import build_flow_view, build_task_log
-from flow_atelier.modules.liveness import is_runner_alive
+from flow_atelier.modules.liveness import display_status, is_runner_alive
 from flow_atelier.modules.workspace import (
     check_record,
     check_selectors,
@@ -80,6 +80,7 @@ from flow_atelier.services.package import (
     write_lockfile,
 )
 from flow_atelier.services.scheduler.store import ScheduleStore
+from flow_atelier.services.store.events import RunRecordError
 from flow_atelier.services.store.filesystem import FilesystemStore
 
 logger = logging.getLogger(__name__)
@@ -112,16 +113,19 @@ class Atelier:
         :param prompt_sink: optional :class:`PromptSink` shared by harness
             executors; defaults to :class:`TerminalPromptSink`.
         """
-        if settings is None:
-            settings = (
-                AtelierSettings(atelier_dir=Path(base_dir))
-                if base_dir is not None
-                else AtelierSettings()
+        if settings is None and base_dir is not None:
+            project_dir = Path(base_dir)
+            settings = AtelierSettings(
+                atelier_dir=project_dir, _env_file=project_dir.parent / ".env"
             )
-        self.settings = settings
+        self.settings = settings or AtelierSettings()
         self.store = FilesystemStore(
             self.settings.atelier_dir,
             global_dir=self.settings.global_atelier_dir,
+            conduit_defaults={
+                "timeout": self.settings.default_timeout,
+                "max_concurrency": self.settings.default_max_concurrency,
+            },
         )
         sink: PromptSink = prompt_sink if prompt_sink is not None else TerminalPromptSink()
         self.executors = {
@@ -139,6 +143,24 @@ class Atelier:
             agent_permissions=self.settings.agent_permissions,
         )
         self.schedule_store = ScheduleStore(self.settings.global_atelier_dir)
+
+    def for_flow(self, flow_id: str) -> Atelier:
+        """Use the run's original recipe store while keeping this caller's executors."""
+        journal = self.store.journal(flow_id)
+        if not journal:
+            return self
+        base = Path(journal.header()["store"])
+        if base == self.store.base_dir.resolve():
+            return self
+        settings = AtelierSettings(
+            atelier_dir=base,
+            global_atelier_dir=self.settings.global_atelier_dir,
+            _env_file=base.parent / ".env",
+        )
+        scoped = Atelier(settings=settings)
+        scoped.executors = self.executors
+        scoped.engine.executors = self.engine.executors
+        return scoped
 
     def _register_harnesses(self, sink: PromptSink) -> None:
         """Register a ``harness:<name>`` executor for every known ACP agent.
@@ -370,7 +392,7 @@ class Atelier:
             raise ValueError(f"missing required inputs: {missing}")
         check_selectors(conduit, tasks, origin=origin)
         source = resolve_source_repo(source_dir, origin=origin)
-        return create_worktrees(source, self.store.workspace_dir(flow_id), tasks)
+        return create_worktrees(source, self.store.workspace_dir(flow_id, source_dir), tasks)
 
     def tool_readiness(
         self, conduit: Conduit, only: Container[str] | None = None
@@ -568,6 +590,7 @@ class Atelier:
         :raises BindingError: a saved or requested selection is unusable, or a
             task whose assignment is already fixed was named
         """
+        self = self.for_flow(flow_id)
         prior = self.store.read_progress(flow_id)
         if prior.pending_ask:
             raise ValueError(f"flow is waiting for a reply: atelier ask {flow_id} --json")
@@ -767,6 +790,7 @@ class Atelier:
         :raises WorkspaceError: an inherited or requested worktree selection,
             the source checkout or a destination directory is unusable
         """
+        self = self.for_flow(flow_id)
         conduit_name, _, _ = parse_flow_id(flow_id)
         conduit = self.store.read_conduit(conduit_name)
         inputs = {**self.store.read_input(flow_id), **(overrides or {})}
@@ -879,7 +903,7 @@ class Atelier:
             raise FileExistsError(f"conduit already exists: {payload.name}")
         except FileNotFoundError:
             pass
-        conduit = Conduit.model_validate(payload.model_dump(exclude={"run_path"}))
+        conduit = self.store.parse_conduit(self.store.conduit_definition(payload))
         self.store.write_conduit(conduit)
         return conduit
 
@@ -907,13 +931,13 @@ class Atelier:
                     "this conduit has an inline loop body; preserve its nested "
                     "tasks when updating it, or edit conduit.yaml directly"
                 )
-        merged = existing.model_dump()
+        merged = self.store.conduit_definition(existing)
         if "interaction" in payload.model_fields_set:
             merged["interaction"] = payload.interaction
         for key, value in payload.model_dump(exclude_none=True).items():
             merged[key] = value
         merged["name"] = merged.get("name") or name
-        updated = Conduit.model_validate(merged)
+        updated = self.store.parse_conduit(merged)
         if updated.name != name:
             # Rename: refuse to clobber an existing conduit at the target name.
             try:
@@ -1063,6 +1087,7 @@ class Atelier:
             conduit = Conduit.model_validate(
                 {
                     "name": f"task__{payload.name}",
+                    "timeout": self.settings.default_timeout,
                     "description": payload.description or payload.name,
                     "tasks": [
                         {
@@ -1161,19 +1186,22 @@ class Atelier:
 
     # ------------------------------------------------------------------ history
 
-    def list_prior_flows(self) -> list[PriorFlow]:
+    def list_prior_flows(self, project: Path | None = None) -> list[PriorFlow]:
         """Return :class:`PriorFlow` summaries for every flow on disk."""
         out: list[PriorFlow] = []
-        for flow_id in self.store.list_flows():
+        for flow_id, directory in self.store.flow_projects(project).items():
             try:
                 conduit_name, _, _ = parse_flow_id(flow_id)
             except ValueError:
                 continue
             try:
                 progress = self.store.read_progress(flow_id)
-                status = progress.status.value
+                status = display_status(progress)
                 started_at = progress.started_at
                 finished_at = progress.finished_at
+            except RunRecordError as exc:
+                self.store.warn_record(flow_id, exc)
+                continue
             except (FileNotFoundError, ValueError):
                 status = "unknown"
                 started_at = None
@@ -1182,6 +1210,7 @@ class Atelier:
                 PriorFlow(
                     flow_id=flow_id,
                     conduit_name=conduit_name,
+                    project=str(directory),
                     started_at=started_at,
                     finished_at=finished_at,
                     status=status,
@@ -1201,8 +1230,6 @@ class Atelier:
         :returns: list of :class:`LogEntry` (empty if the file is empty)
         :raises FileNotFoundError: if no flow with that id exists
         """
-        # ``_flow_dir`` raises FileNotFoundError when the id is unknown.
-        self.store._flow_dir(flow_id)
         logs = self.store.read_logs(flow_id)
         for child_id in self.store.list_child_flows(flow_id):
             logs.extend(self._descendant_logs(child_id))
@@ -1234,9 +1261,8 @@ class Atelier:
         :returns: the run page's map
         :raises FileNotFoundError: if no flow with that id exists
         """
-        # A sub-run lives at <parent>/flows/<id>; a top-level run at <base>/flows/<id>.
-        holder = self.store._flow_dir(flow_id).parent.parent
-        parent_flow_id = None if holder == self.store.base_dir else holder.name
+        self = self.for_flow(flow_id)
+        parent_flow_id = self.store.parent_flow_id(flow_id)
         try:
             conduit_name, _, _ = parse_flow_id(flow_id)
         except ValueError:
@@ -1261,16 +1287,7 @@ class Atelier:
             that order; ``None`` for one not written yet
         :raises FileNotFoundError: if no flow with that id exists
         """
-        flow_dir = self.store._flow_dir(flow_id)
-        found: list[tuple[int, int] | None] = []
-        for name in ("progress.json", "logs.jsonl", "steps.jsonl", "flows"):
-            try:
-                st = (flow_dir / name).stat()
-            except FileNotFoundError:
-                found.append(None)
-            else:
-                found.append((st.st_mtime_ns, st.st_size))
-        return tuple(found)
+        return self.store.flow_files_signature(flow_id)
 
     def task_sub_runs(self, flow_id: str, task: str) -> list[tuple[str, str]]:
         """Return the sub-runs ``task`` started in ``flow_id``, as ``(started_at, flow_id)``.

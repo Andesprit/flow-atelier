@@ -209,7 +209,8 @@ an unlisted one is a line of `ATELIER_HARNESSES`.
 `services/store/` abstracts all persistence behind `StoreBase`. The
 only implementation is `FilesystemStore`, which resolves conduits
 from the project directory first and the global directory second, and
-writes every run under `.atelier/flows/<flow_id>/`.
+writes new run journals under `~/.atelier/projects/<encoded-project>/<flow_id>.jsonl`.
+The reader also supports legacy project records under `.atelier/flows/<flow_id>/`.
 
 ### Scheduler and API
 

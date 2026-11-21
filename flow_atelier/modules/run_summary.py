@@ -66,6 +66,7 @@ def build_summary(atelier: Any, flow_id: str) -> RunSummary:
     """
     from flow_atelier.cli.rendering.render import _redact
 
+    atelier = atelier.for_flow(flow_id)
     store = atelier.store
     try:
         before = store.read_progress(flow_id)
@@ -95,8 +96,7 @@ def build_summary(atelier: Any, flow_id: str) -> RunSummary:
     )
     progress = after or before
 
-    holder = store._flow_dir(flow_id).parent.parent
-    parent_flow_id = None if holder == store.base_dir else holder.name
+    parent_flow_id = store.parent_flow_id(flow_id)
 
     base = store.base_dir.resolve()
     if base.name == ".atelier":

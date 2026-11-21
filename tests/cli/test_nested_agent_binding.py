@@ -86,9 +86,9 @@ def test_plan_run_and_resume_nested_loop_choice(tmp_path):
     assert len(project.prompts("gemini")) == 1
     assert not project.prompts("codex")
     assert project.status(flow_id)["task_agents"] == {"loop.fix": "harness:gemini"}
-    child_flows = list((project.work / ".atelier" / "flows" / flow_id / "flows").glob("*_child"))
+    child_flows = project.store.list_child_flows(flow_id)
     assert len(child_flows) >= 2
-    assert all(json.loads((f / "progress.json").read_text())["task_agents"]["fix"]
+    assert all(project.store.read_progress(f).task_agents["fix"]
                == "harness:gemini" for f in child_flows)
     assert {name: project.recipe(name) for name in before} == before
 

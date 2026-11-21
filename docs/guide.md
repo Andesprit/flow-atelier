@@ -27,7 +27,7 @@ You write a conduit YAML file and put it in
   | `harness:copilot`     | GitHub Copilot CLI                                                   |
   | `harness:cursor`      | Cursor CLI                                                           |
 
-5. Saves everything to disk under `.atelier/flows/<flow_id>/` — what
+5. Saves each run to `~/.atelier/projects/<project>/<flow_id>.jsonl` — what
   ran, what each task printed, whether it succeeded, when it
    finished.
 
@@ -429,10 +429,12 @@ or called `unknown`, never guessed from the current recipe — and whether its
 result is still saved. Every suggested command carries the run's full id and is
 printed for you to run: diagnose starts no agent and writes nothing.
 
-What it refuses to claim matters as much. A saved `running` status is only
-called *crashed* when the runner is provably gone on this machine; on another
-host, with no pid, or with a pid it cannot probe, the state stays uncertain and
-no resume is recommended. A stopped run is pointed at `atelier run --again`
+A runner saves a heartbeat every 15 seconds while it owns the run, including
+while a tool is silent or waiting for a person. A dead local PID or a heartbeat
+at least two minutes old shows as *crashed*. After a machine wakes, its next beat
+restores *running*. A saved agent question shows as *needs input* between turns.
+Resume requires the writer lock. Older records without heartbeats still use the
+local PID check. A stopped run is pointed at `atelier run --again`
 instead, and a completed one is told there is nothing to recover. Resume re-reads the conduit file as it stands
 now, so the report names any task that file has gained or lost since the run
 rather than promising the old shape will run again.
@@ -1504,8 +1506,7 @@ atelier ask "Help me write a specification" --path /absolute/path/to/project
 
 `--path` is required and becomes Claude's working directory. Claude's
 questions are read from stdin just like any other interactive harness task.
-The resulting flow is still recorded under the `.atelier/flows/` directory
-from which you invoked `atelier`. The agent runs with full permissions unless
+Atelier records the conversation in the global history for that working directory. The agent runs with full permissions unless
 `--permissions edits` or `--permissions read-only` sets another level, or
 `ATELIER_AGENT_PERMISSIONS` (in the environment or in `.env`) does; see
 [Security](#security).
@@ -1586,8 +1587,16 @@ When you run a conduit, flow-atelier checks the project folder first,
 then the global folder. A project-level conduit silently overrides a
 global one with the same name.
 
-Flows are **always project-local** — every `atelier run` writes its
-flow folder under `.atelier/flows/` in the current working directory.
+Each new run gets an event file under `~/.atelier/projects/<project>/`.
+Open the dashboard from any project to see global history. Choose a target
+directory in the project filter, or use `atelier list flows --project .`.
+The API accepts the same filter at `GET /flows?project=<directory>`.
+Older records remain readable from the original project’s `.atelier/flows/` directory.
+From that project, run `atelier migrate runs --dry-run` to verify its run trees,
+then `atelier migrate runs` to publish the verified journals. Migration archives
+each verified source under `.atelier/migrated-runs/` and preserves its worktrees.
+Migrated runs retain their last heartbeat and finish time. The next cleanup can
+expire an already-old finished tree. Its source archive stays in the project.
 
 ## Commands
 
@@ -1913,14 +1922,32 @@ wildcard bind (`--host 0.0.0.0`) cannot know which names reach it, so it accepts
 any `Host` and relies on the token — which is why the token is mandatory there
 rather than merely advised.
 
-**A project's `.env` cannot choose what Atelier runs.** Atelier reads `.env`
-from the folder you run it in, and that folder may be a repository you just
-cloned. So the settings that decide what it executes, where it finds shared
-conduits, or which server and token it uses come only from your shell
-environment: the `ATELIER_*_LAUNCH_CMD` variables, `ATELIER_HARNESSES`,
-`ATELIER_GLOBAL_ATELIER_DIR`, `ATELIER_API_TOKEN` and `ATELIER_SERVE_URL`. A
-`.env` may lower `ATELIER_AGENT_PERMISSIONS` but not set it to `full`. Atelier
-names each setting it ignored on stderr.
+**Settings precedence.** An explicit CLI option wins, followed by the process
+environment, project `.atelier/settings.json`, the working directory's `.env`,
+user `~/.atelier/settings.json`, and built-in defaults. Both JSON files are
+optional. For example, `{"defaultTimeout": 120, "defaultMaxConcurrency": 2}`
+sets defaults for recipes that omit those fields. A shared recipe inherits the
+current project's defaults. The shell variables `ATELIER_ATELIER_DIR` and
+`ATELIER_GLOBAL_ATELIER_DIR` select alternative project and user directories.
+
+Project settings can set `defaultTimeout`, `defaultMaxConcurrency`,
+`loopHistoryLimit`, `loopHistoryEntryChars`, `usageLimitMaxWait`, `doneMarker`
+and `agentPermissions` (which they can lower to `edits` or `read-only`).
+Both JSON files also accept the equivalent snake_case names.
+
+User settings can set `cleanupPeriodDays` (default 30). Both project files
+reject changes to it. Launch commands, `ATELIER_HARNESSES`, `ATELIER_ATELIER_DIR`,
+`ATELIER_GLOBAL_ATELIER_DIR`,
+`ATELIER_API_TOKEN` and `ATELIER_SERVE_URL` require the shell environment.
+Atelier names each rejected file setting on stderr and omits its value.
+
+The server and scheduler clean global run history on startup and every 24 hours.
+A run tree becomes eligible when every member has finished or crashed and all
+are at least `cleanupPeriodDays` old. Finished runs use their finish time.
+Crashed runs use their last heartbeat, falling back to the start time. A value
+of `0` makes a finished or crashed tree eligible at the next sweep. Negative values are rejected.
+Cleanup removes journal records, tool steps and saved outputs. Active writers,
+pending questions, unmigrated project records and project worktrees are kept.
 
 **Agent and shell steps.** Each agent and each shell step runs in its own
 process group on Linux and macOS. When a step is stopped or times out, Atelier
@@ -1935,7 +1962,7 @@ pattern — so the run is readable. Credential-shaped values (`Bearer <token>`,
 `sk-`/`ghp_`/`xox`-prefixed keys, `--password`/`TOKEN=` flags) are masked as
 `***` on the way to the screen. This is a heuristic that reduces casual
 leakage, not a guarantee: it will miss a secret that does not look like one.
-The recorded logs under `.atelier/flows/<id>/` keep the **unredacted** text, so
+The recorded logs in the global run history and legacy project stores keep the **unredacted** text, so
 treat that directory as sensitive and check what you are pasting before sharing
 a terminal transcript.
 
@@ -2033,7 +2060,7 @@ The `.atelier` directory lives in the working directory where
 .atelier/
 ├── conduits/
 │   └── <conduit_name>/conduit.yaml
-└── flows/
+└── flows/                                  # legacy project-local runs
     └── <flow_id>/                          # <YYYYMMDD>_<uuid8>_<conduit>
         ├── input.yaml                      # the inputs this run was given
         ├── logs.jsonl                      # append-only log, one JSON object per line
@@ -2043,9 +2070,19 @@ The `.atelier` directory lives in the working directory where
             └── <child_flow_id>/...         # nested tool:conduit runs
 
 ~/.atelier/
+├── projects/<encoded-project>/
+│   ├── <flow_id>.jsonl                     # one versioned event per line
+│   └── <flow_id>/
+│       ├── steps.jsonl                     # live tool steps
+│       └── outputs/<task>/<sequence>       # output text over 100,000 UTF-8 bytes
 ├── schedules/
 │   └── <slug>-<hash>.yaml                  # one YAML file per shared schedule
 └── scheduler_state.json                    # fired-once markers and run history
 ```
 
-
+Set `ATELIER_GLOBAL_ATELIER_DIR` in the process environment to relocate the
+entire global store. A run header records the full resolved project path.
+The folder name replaces each non-alphanumeric character with a hyphen, so
+two projects can share a folder while retaining their separate identities.
+Encoded names longer than 160 UTF-8 bytes use a SHA-256 digest of the full
+project path. Existing unshortened folders remain readable.

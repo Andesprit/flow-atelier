@@ -11,6 +11,8 @@ const STATUS_STYLE: Record<string, string> = {
   running: "border-primary text-primary",
   completed: "border-ok text-ok",
   failed: "border-destructive text-destructive",
+  crashed: "border-destructive text-destructive",
+  needs_input: "border-warning text-warning",
 };
 
 /** The task to show when the link names none: what is running, else what failed. */
@@ -62,7 +64,8 @@ export default function RunPage() {
     );
   }
 
-  const running = view.status === "running";
+  const status = view.displayStatus ?? view.status;
+  const running = status === "running";
   const selected = view.tasks.find((t) => t.name === task);
   const started = view.startedAt ? Date.parse(view.startedAt) : NaN;
   const ended = view.finishedAt ? Date.parse(view.finishedAt) : Date.now();
@@ -87,11 +90,11 @@ export default function RunPage() {
         <h1 className="font-display text-head">{view.conduitName || view.flowId}</h1>
         <span
           className={`rounded-full border px-3 py-1 font-mono text-label tracking-[0.1em] uppercase ${
-            STATUS_STYLE[view.status] ?? "border-border text-muted-foreground"
+            STATUS_STYLE[status] ?? "border-border text-muted-foreground"
           }`}
           data-testid="run-status"
         >
-          {view.status}
+          {status === "needs_input" ? "waiting for input" : status}
           {elapsed}
         </span>
         <span className="font-mono text-label text-muted-foreground select-all">{view.flowId}</span>

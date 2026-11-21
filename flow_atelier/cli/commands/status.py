@@ -59,7 +59,8 @@ def status_cmd(
                 task.pop("loop_outcome", None)
         payload["flow_id"] = flow_id
         payload["duration_seconds"] = _flow_duration_seconds(progress)
-        payload["crashed"] = is_crashed(progress)
+        payload["display_status"] = display_status(progress)
+        payload["crashed"] = payload["display_status"] == "crashed"
         payload["usage"] = (
             usage_totals.model_dump(mode="json") if usage_totals else None
         )

@@ -49,6 +49,7 @@ def _run_turn(
     harness = tool.removeprefix("harness:")
     conduit = Conduit(
         name="ask", description=f"Interactive {harness} conversation.", max_concurrency=1,
+        timeout=atelier.settings.default_timeout,
         tasks=[
             TaskDefinition(
                 name="chat", description=f"Ask {harness}", tool=tool, depends_on=[],

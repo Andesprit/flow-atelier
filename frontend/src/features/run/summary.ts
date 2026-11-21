@@ -12,6 +12,7 @@ export function summaryRevision(view: RunView): string {
   return JSON.stringify([
     view.startedAt,
     view.status,
+    view.displayStatus,
     view.finishedAt,
     view.tasks.map((t) => [t.name, t.status, t.iteration]),
   ]);

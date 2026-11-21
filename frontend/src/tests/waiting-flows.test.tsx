@@ -8,6 +8,8 @@ vi.mock("@/services/conduits", () => ({
   fetchFlowLogs: () => Promise.resolve({ logs: [], tasks: [], runPath: undefined, children: [] }),
 }));
 
+HTMLElement.prototype.scrollIntoView ??= () => {};
+
 // Radix's ScrollArea observes its viewport; jsdom ships no ResizeObserver.
 if (!globalThis.ResizeObserver) {
   globalThis.ResizeObserver = class {
@@ -75,6 +77,21 @@ describe("recent flows list", () => {
     expect(row.textContent).not.toContain("live");
     fireEvent.click(row);
     expect(screen.getByTestId("flow-drawer-badge").textContent).toBe("waiting");
+  });
+
+  it("filters runs by the exact project and restores global history", async () => {
+    render(<FlowHistory liveRuns={[
+      run({ flowId: "a", conduitName: "first", runPath: "/repos/a-b" }),
+      run({ flowId: "b", conduitName: "second", runPath: "/repos/a_b" }),
+    ]} />);
+    const filter = await screen.findByRole("combobox", { name: "Filter by project" });
+    fireEvent.keyDown(filter, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("option", { name: "/repos/a_b" }));
+    expect(screen.queryByText("first")).toBeNull();
+    expect(screen.getByText("second")).toBeTruthy();
+    fireEvent.keyDown(filter, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("option", { name: "All projects" }));
+    expect(screen.getByText("first")).toBeTruthy();
   });
 
   it("still says live for a run that is simply busy", async () => {

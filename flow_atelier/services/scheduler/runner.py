@@ -8,6 +8,7 @@ import logging
 import signal
 import sys
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,9 +19,11 @@ from apscheduler.events import EVENT_SCHEDULER_SHUTDOWN
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.schemas.api import ScheduledJob, ScheduleRunRecord
 from flow_atelier.services.scheduler.store import ScheduleStore
 from flow_atelier.services.scheduler.triggers import default_local_zone, to_trigger
+from flow_atelier.services.store.retention import daily_cleanup
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +129,7 @@ class SchedulerDaemon:
         self.reload_interval_seconds = reload_interval_seconds
         self._scheduler: AsyncIOScheduler | None = None
         self._lease: BinaryIO | None = None
+        self._maintenance = AsyncExitStack()
         self._active_fires: set[asyncio.Task] = set()
         # Hash of the registered schedule config keyed by job id, so sync()
         # ticks can skip re-adding APScheduler jobs whose config is unchanged.
@@ -143,6 +147,10 @@ class SchedulerDaemon:
         logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
         self._lease = self.store.acquire_daemon_lease()
         try:
+            settings = AtelierSettings(global_atelier_dir=self.store.atelier_dir)
+            await self._maintenance.enter_async_context(
+                daily_cleanup(settings.global_atelier_dir, settings.cleanup_period_days)
+            )
             self._scheduler = AsyncIOScheduler(timezone=self.default_zone)
             self._scheduler.add_job(
                 self.sync,
@@ -155,6 +163,7 @@ class SchedulerDaemon:
             await self.sync()
             self._scheduler.start()
         except BaseException:
+            await self._maintenance.aclose()
             self._scheduler = None
             self._known.clear()
             self._lease.close()
@@ -178,6 +187,7 @@ class SchedulerDaemon:
         self._scheduler.shutdown(wait=False)
         await stopped.wait()
         await asyncio.gather(*self._active_fires, return_exceptions=True)
+        await self._maintenance.aclose()
         self._scheduler = None
         self._known.clear()
         assert self._lease is not None

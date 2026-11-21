@@ -143,7 +143,7 @@ def test_the_guide_runs_end_to_end_and_claims_only_what_happens(guide_env, tmp_p
     workspace = Path(marker.read_text().strip())
     assert " " in workspace.name, "the workspace path should contain a space"
 
-    store = FilesystemStore(workspace / ".atelier")
+    store = FilesystemStore(workspace / ".atelier", env["ATELIER_GLOBAL_ATELIER_DIR"])
     flows = store.list_flows("triage")
     # Three flows: the chosen run, the one with the bad model, and the --again.
     assert len(flows) == 3, flows

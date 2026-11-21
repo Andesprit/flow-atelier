@@ -7,12 +7,13 @@ facade; routes do at most: validate → call facade → serialize.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from starlette.responses import PlainTextResponse
@@ -21,6 +22,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from flow_atelier import __version__
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.services.api.base import ApiServerBase, origin_permitted
+from flow_atelier.services.store.events import AmbiguousFlowId, RunRecordError
+from flow_atelier.services.store.retention import daily_cleanup
 
 # Bundled SPA assets. Lives inside the package (flow_atelier/dist/) so it ships
 # in the wheel and is found both from a source checkout and an installed wheel.
@@ -159,7 +162,20 @@ class FastApiServer(ApiServerBase):
         :param allowed_hosts: accepted ``Host`` header values; ``None`` means
             loopback only. See :data:`LOOPBACK_HOSTS` for why this matters.
         """
-        app = FastAPI(title="flow-atelier", version=__version__)
+        @asynccontextmanager
+        async def lifespan(app):
+            async with daily_cleanup(
+                atelier.settings.global_atelier_dir, atelier.settings.cleanup_period_days
+            ):
+                yield
+
+        app = FastAPI(title="flow-atelier", version=__version__, lifespan=lifespan)
+
+        @app.exception_handler(RunRecordError)
+        async def record_error(request: Request, exc: RunRecordError) -> JSONResponse:
+            status = 409 if isinstance(exc, AmbiguousFlowId) else 422
+            return JSONResponse({"detail": str(exc)}, status_code=status)
+
         app.state.atelier = atelier
         app.state.api_token = api_token or ""
         app.state.cors_origins = list(cors_origins or [])

@@ -118,7 +118,7 @@ class Guide:
         :returns: the store.
         """
         assert self.workspace is not None
-        return FilesystemStore(self.workspace / ".atelier")
+        return FilesystemStore(self.workspace / ".atelier", self.env["ATELIER_GLOBAL_ATELIER_DIR"])
 
 
 @pytest.fixture

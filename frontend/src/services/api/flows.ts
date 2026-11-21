@@ -4,6 +4,7 @@ import type { PriorFlow } from "@/types/flow";
 import type { LogEntry } from "@/types/task";
 
 interface BackendPriorFlow {
+  project?: string;
   flowId: string;
   conduitName: string;
   startedAt: string | null;
@@ -55,6 +56,7 @@ function toPriorFlow(raw: BackendPriorFlow): PriorFlow {
   const finishedAt = parseTs(raw.finishedAt) ?? undefined;
   return {
     flowId: raw.flowId,
+    project: raw.project,
     conduitName: raw.conduitName,
     startedAt,
     finishedAt,
@@ -65,6 +67,8 @@ function toPriorFlow(raw: BackendPriorFlow): PriorFlow {
 
 // A run still going must not read as done, and a stopped run is not a success.
 export function toPriorStatus(raw: string): PriorFlow["status"] {
+  if (raw === "crashed") return "crashed";
+  if (raw === "needs_input") return "waiting";
   if (raw === "running") return "running";
   if (raw === "failed") return "failed";
   if (raw === "cancelled" || raw === "stopped") return "cancelled";

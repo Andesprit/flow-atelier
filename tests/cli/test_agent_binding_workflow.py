@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._runs import legacy_record, project_store, saved_bytes
 from tests._shell import CLI
 
 FAKE_AGENT = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
@@ -204,13 +205,17 @@ class Project:
         harnesses.pop(name, None)
         self.env["ATELIER_HARNESSES"] = json.dumps(harnesses)
 
+    @property
+    def store(self):
+        return project_store(self.work, self.env)
+
     def progress_bytes(self, flow_id: str) -> bytes:
         """Return a flow's saved progress file, byte for byte.
 
         :param flow_id: the exact flow id.
         :returns: the ``progress.json`` contents.
         """
-        return (self.work / ".atelier" / "flows" / flow_id / "progress.json").read_bytes()
+        return self.store.journal(flow_id).path.read_bytes()
 
     def saved_bytes(self, flow_id: str) -> dict[str, bytes]:
         """Return every file a flow saved, byte for byte.
@@ -218,8 +223,7 @@ class Project:
         :param flow_id: the exact flow id.
         :returns: mapping of file name to contents.
         """
-        flow_dir = self.work / ".atelier" / "flows" / flow_id
-        return {f.name: f.read_bytes() for f in sorted(flow_dir.glob("*")) if f.is_file()}
+        return saved_bytes(self.store.journal(flow_id))
 
     def install(self, name: str, text: str) -> None:
         """Write a recipe into the project store.
@@ -303,9 +307,7 @@ class Project:
 
         :returns: sorted flow directory names.
         """
-        return sorted(
-            p.name for p in (self.work / ".atelier" / "flows").glob("*") if p.is_dir()
-        )
+        return self.store.list_flows()
 
 
 def _flat(text: str) -> str:
@@ -543,11 +545,7 @@ def test_a_resume_can_hand_the_failed_task_to_another_agent(project):
 def test_a_resume_refuses_to_re_point_a_completed_task(project):
     """A finished step keeps its agent, and the refusal changes nothing."""
     flow_id = _failed_chain(project)
-    flow_dir = project.work / ".atelier" / "flows" / flow_id
-    before = {
-        name: (flow_dir / name).read_bytes()
-        for name in ("progress.json", "outputs.yaml", "logs.jsonl")
-    }
+    before = project.saved_bytes(flow_id)
 
     project.fix_agent("gemini")
     refused = project.cli("run", "--resume", flow_id, "--agent", "step_1=housebot")
@@ -556,8 +554,7 @@ def test_a_resume_refuses_to_re_point_a_completed_task(project):
     assert "--again" in refused.stdout
 
     assert project.prompts("housebot") == []
-    for name, data in before.items():
-        assert (flow_dir / name).read_bytes() == data
+    assert project.saved_bytes(flow_id) == before
 
 
 def test_a_flow_recorded_before_selection_existed_resumes_on_the_recipe(project):
@@ -565,7 +562,7 @@ def test_a_flow_recorded_before_selection_existed_resumes_on_the_recipe(project)
     project.break_agent("codex")
     run = project.cli("run", "chain", "--input", f"brief={BRIEF}")
     flow_id = project.flow_id(run)
-    progress = project.work / ".atelier" / "flows" / flow_id / "progress.json"
+    progress = legacy_record(project.store, flow_id) / "progress.json"
     legacy = json.loads(progress.read_text())
     del legacy["task_agents"]
     progress.write_text(json.dumps(legacy))
@@ -748,10 +745,10 @@ def test_a_saved_choice_that_is_not_an_agent_never_becomes_a_shell(project):
     project.break_agent("codex")
     failed = project.cli("run", "chain", "--input", f"brief={BRIEF}")
     flow_id = project.flow_id(failed)
-    path = project.work / ".atelier" / "flows" / flow_id / "progress.json"
-    record = json.loads(path.read_text())
+    journal = project.store.journal(flow_id)
+    record = journal.latest("progress")
     record["task_agents"] = {"step_2": "tool:bash"}
-    path.write_text(json.dumps(record))
+    journal.append("progress", record)
     before = project.saved_bytes(flow_id)
 
     resumed = project.cli("run", "--resume", flow_id)
@@ -759,7 +756,7 @@ def test_a_saved_choice_that_is_not_an_agent_never_becomes_a_shell(project):
     assert resumed.returncode == 1, resumed.stdout
     assert "'tool:bash' is not an agent" in _flat(resumed.stdout)
     assert "PROBE" not in resumed.stdout
-    logs = (project.work / ".atelier" / "flows" / flow_id / "logs.jsonl").read_text()
+    logs = str(project.store.read_logs(flow_id))
     assert "tool:bash" not in logs
     assert project.saved_bytes(flow_id) == before
 

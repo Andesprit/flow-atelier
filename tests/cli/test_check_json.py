@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 from flow_atelier.cli import app
 from flow_atelier.services.store.filesystem import FilesystemStore
+from tests._runs import project_store
 
 OK_BASH = (
     "name: {name}\ndescription: d\n"
@@ -116,8 +117,7 @@ def _flow_ids(workdir) -> list[str]:
     :param workdir: working directory path.
     :returns: sorted flow directory names, empty when nothing ever ran.
     """
-    flows = workdir / ".atelier" / "flows"
-    return sorted(p.name for p in flows.iterdir()) if flows.exists() else []
+    return project_store(workdir).list_flows()
 
 
 def _assert_shape(row):

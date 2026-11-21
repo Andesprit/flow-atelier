@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 from flow_atelier.schemas.conduit import AgentPermissions
 from flow_atelier.schemas.harness import HARNESS_TOOL_PATTERN
@@ -91,6 +91,7 @@ class Progress(BaseModel):
     tasks: dict[str, TaskProgress] = Field(default_factory=dict)
     started_at: str | None = None
     finished_at: str | None = None
+    heartbeat_at: AwareDatetime | None = None
     runner_pid: int | None = None
     runner_host: str | None = None
     run_path: str | None = None

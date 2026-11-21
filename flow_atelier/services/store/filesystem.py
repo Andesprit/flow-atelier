@@ -20,16 +20,18 @@ import json
 import logging
 import os
 import shutil
+import socket
 import time
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from flow_atelier.modules.liveness import is_runner_alive
 from flow_atelier.schemas.conduit import (
     CONDUIT_NAME_RE,
     Conduit,
@@ -40,6 +42,14 @@ from flow_atelier.schemas.flow import new_flow_id, parse_flow_id
 from flow_atelier.schemas.log import LogEntry, StepRecord
 from flow_atelier.schemas.progress import Progress
 from flow_atelier.services.store.base import ConduitSource, StoreBase
+from flow_atelier.services.store.events import (
+    AmbiguousFlowId,
+    RunJournal,
+    RunRecordError,
+    file_lock,
+    project_folder,
+    project_folders,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,18 +99,25 @@ class FilesystemStore(StoreBase):
         self,
         base_dir: Path | str,
         global_dir: Path | str | None = None,
+        *,
+        conduit_defaults: dict[str, int] | None = None,
     ):
         """Initialise the filesystem store with project and optional global dirs.
 
         :param base_dir: project-level ``.atelier/`` directory
         :param global_dir: optional user-level directory for shared conduits
+        :param conduit_defaults: timeout and concurrency to inherit when a recipe omits them
         """
         self.base_dir = Path(base_dir)
         self.global_dir: Path | None = Path(global_dir) if global_dir else None
+        self._conduit_defaults = conduit_defaults or {}
         # Both caches grow with distinct flow ids and are never pruned;
         # entries are tiny and bounded by process lifetime, so that's fine.
         self._log_locks: dict[str, asyncio.Lock] = {}
         self._flow_paths: dict[str, Path] = {}
+        self._journal_paths: dict[str, tuple[Path, ...]] = {}
+        self._bucket_versions: dict[Path, int] = {}
+        self._warned_records: set[str] = set()
 
     # ------------------------------------------------------------------ paths
 
@@ -174,14 +191,146 @@ class FilesystemStore(StoreBase):
         conduit_dir = self._global_conduit_dir(name)
         return conduit_dir / "conduit.yaml" if conduit_dir is not None else None
 
+    def _journals(
+        self, projects: tuple[Path, ...] = (), pattern: str = "*.jsonl"
+    ) -> Iterator[tuple[RunJournal, dict[str, Any]]]:
+        if self.global_dir is None:
+            return
+        root = self.global_dir / "projects"
+        recorded = {str(path) for path in projects}
+        names = {name for path in recorded for name in project_folders(path)}
+        for folder in root.glob("*/"):
+            if names and folder.name not in names:
+                continue
+            for path in folder.glob(pattern):
+                journal = RunJournal(path)
+                try:
+                    header = journal.header()
+                except FileNotFoundError:
+                    continue
+                except (RunRecordError, OSError) as exc:
+                    self.warn_record(str(path), exc)
+                    continue
+                if not recorded or header["project"] in recorded:
+                    yield journal, header
+
+    def warn_record(self, record: str, error: Exception) -> None:
+        if record not in self._warned_records:
+            self._warned_records.add(record)
+            logger.warning("Skipping unreadable run %s: %s", record, error)
+
+    def journal(self, flow_id: str) -> RunJournal | None:
+        if not self._safe_flow_id(flow_id):
+            raise FileNotFoundError(f"flow not found: {flow_id}")
+        if self.global_dir is None:
+            return None
+        # New, moved or retired journals can change which IDs are unique.
+        versions = {}
+        for folder in (self.global_dir / "projects").glob("*/"):
+            try:
+                versions[folder] = folder.stat().st_mtime_ns
+            except FileNotFoundError:
+                continue
+        if versions != self._bucket_versions:
+            self._journal_paths.clear()
+            self._bucket_versions = versions
+        matches = self._journal_paths.get(flow_id)
+        if matches is None:
+            matches = tuple(
+                path for folder in versions if (path := folder / f"{flow_id}.jsonl").is_file()
+            )
+            if matches:
+                self._journal_paths[flow_id] = matches
+        if matches and (self.base_dir / "flows").is_dir():
+            try:
+                self._flow_dir(flow_id)
+            except FileNotFoundError:
+                pass
+            else:
+                raise AmbiguousFlowId(f"ambiguous flow id: {flow_id} has local and global records")
+        if len(matches) > 1:
+            raise AmbiguousFlowId(f"ambiguous flow id: {flow_id}")
+        if not matches:
+            return None
+        journal = RunJournal(matches[0])
+        try:
+            journal.header()
+        except FileNotFoundError:
+            self._journal_paths.pop(flow_id, None)
+            return None
+        return journal
+
+    def flow_files_signature(self, flow_id: str) -> tuple[tuple[int, int] | None, ...]:
+        """Return change tokens for progress, logs, steps and child runs."""
+        if journal := self.journal(flow_id):
+            paths = (journal.path, journal.path, journal.side / "steps.jsonl", journal.path.parent)
+        else:
+            directory = self._flow_dir(flow_id)
+            names = ("progress.json", "logs.jsonl", "steps.jsonl", "flows")
+            paths = tuple(directory / n for n in names)
+        found: list[tuple[int, int] | None] = []
+        for path in paths:
+            try:
+                st = path.stat()
+            except FileNotFoundError:
+                found.append(None)
+            else:
+                found.append((st.st_mtime_ns, st.st_size))
+        return tuple(found)
+
+    def parent_flow_id(self, flow_id: str) -> str | None:
+        if journal := self.journal(flow_id):
+            return journal.header()["parent_flow_id"]
+        holder = self._flow_dir(flow_id).parent.parent
+        return None if holder == self.base_dir else holder.name
+
+    def flow_projects(
+        self, project: Path | None = None, conduit_name: str | None = None,
+    ) -> dict[str, Path]:
+        """Scan global headers and this store's pre-migration top-level records."""
+        found: dict[str, Path] = {}
+        ambiguous = set()
+        targets = (Path(os.path.abspath(project)), project.resolve()) if project is not None else ()
+        for journal, header in self._journals(targets):
+            if header["parent_flow_id"] or (conduit_name and header["conduit"] != conduit_name):
+                continue
+            run = journal.path.stem
+            if run in found:
+                ambiguous.add(run)
+            found[run] = Path(header["project"])
+        legacy = FilesystemStore(self.base_dir)
+        origin = self.base_dir.resolve().parent
+        for run in legacy.list_flows(conduit_name):
+            directory = origin
+            try:
+                progress = legacy.read_progress(run)
+            except (OSError, ValueError):
+                pass  # Older or damaged records still belong in the listing.
+            else:
+                if progress.run_path:
+                    directory = (origin / progress.run_path).resolve()
+            if not targets or directory in targets:
+                if run in found:
+                    ambiguous.add(run)
+                found[run] = directory
+        for run in ambiguous:
+            found.pop(run, None)
+            self.warn_record(run, AmbiguousFlowId(f"ambiguous flow id: {run}"))
+        return dict(sorted(found.items()))
+
+    def list_project_flows(self, project: Path | None = None) -> list[str]:
+        return list(self.flow_projects(project))
+
     def _flow_dir(self, flow_id: str) -> Path:
         """Resolve and cache the directory for ``flow_id``.
 
         :param flow_id: flow identifier
         :raises FileNotFoundError: if the id is malformed or no such flow exists
         """
-        if flow_id in self._flow_paths:
-            return self._flow_paths[flow_id]
+        if cached := self._flow_paths.get(flow_id):
+            if cached.is_dir():
+                return cached
+            self._flow_paths.pop(flow_id)
         # Rejected as "not found" rather than as a distinct error: to every
         # caller a malformed id names no flow, and the routes already map
         # FileNotFoundError to a 404. This also keeps the rglob below from
@@ -209,7 +358,7 @@ class FilesystemStore(StoreBase):
                 return candidate
         raise FileNotFoundError(f"flow not found: {flow_id}")
 
-    def workspace_dir(self, flow_id: str) -> Path:
+    def workspace_dir(self, flow_id: str, project: Path | None = None) -> Path:
         """Return where ``flow_id``'s per-task checkouts belong.
 
         Deliberately a sibling of ``flows/`` rather than a child of the flow
@@ -222,9 +371,26 @@ class FilesystemStore(StoreBase):
         """
         if not self._safe_flow_id(flow_id):
             raise ValueError(f"unsafe flow id: {flow_id!r}")
-        return self.base_dir / "workspaces" / flow_id
+        if project is None and (journal := self.journal(flow_id)):
+            header = journal.header()
+            if "legacy_workspace_root" in header:
+                root = Path(header["store"]) / "workspaces" / flow_id
+                if root != root.resolve() or header["legacy_workspace_root"] != str(root):
+                    raise ValueError(f"{flow_id}: invalid legacy workspace root")
+                return root
+            project = Path(header["project"])
+        base = project / ".atelier" if project is not None else self.base_dir
+        return base / "workspaces" / flow_id
 
     # ------------------------------------------------------------------ conduits
+
+    def parse_conduit(self, data: Any) -> Conduit:
+        """Validate a recipe with this project's defaults, retaining which fields it supplied."""
+        if not isinstance(data, dict):
+            return Conduit.model_validate(data)
+        conduit = Conduit.model_validate(self._conduit_defaults | data)
+        conduit.model_fields_set.difference_update(self._conduit_defaults.keys() - data.keys())
+        return conduit
 
     def read_conduit(self, name: str) -> Conduit:
         """Load conduit ``name`` from the project store, falling back to global.
@@ -256,7 +422,7 @@ class FilesystemStore(StoreBase):
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
         except yaml.YAMLError as e:
             raise ValueError(f"{name}: invalid YAML — {e}") from e
-        conduit = Conduit.model_validate(data)
+        conduit = self.parse_conduit(data)
         if conduit.name != name:
             raise ValueError(
                 f"conduit.yaml name {conduit.name!r} != folder name {name!r}"
@@ -301,13 +467,7 @@ class FilesystemStore(StoreBase):
 
         :param conduit: validated conduit to persist (overwrites if present)
         """
-        conduit_dir = self._conduit_dir(conduit.name)
-        conduit_dir.mkdir(parents=True, exist_ok=True)
-        payload = conduit.model_dump(mode="json", by_alias=True, exclude_none=True)
-        path = self._conduit_yaml(conduit.name)
-        tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
-        tmp.write_text(yaml.safe_dump(payload, sort_keys=False))
-        _atomic_replace(tmp, path)
+        self._write_recipe(self._conduit_yaml(conduit.name), conduit)
 
     def write_conduit_global(self, conduit: Conduit) -> None:
         """Persist ``conduit`` under the global ``~/.atelier/conduits/<name>/``.
@@ -321,9 +481,20 @@ class FilesystemStore(StoreBase):
                 "global conduit directory is not available "
                 "(home directory may be read-only)"
             )
-        conduit_dir.mkdir(parents=True, exist_ok=True)
-        path = conduit_dir / "conduit.yaml"
-        payload = conduit.model_dump(mode="json", by_alias=True, exclude_none=True)
+        self._write_recipe(conduit_dir / "conduit.yaml", conduit)
+
+    @staticmethod
+    def conduit_definition(conduit: Conduit) -> dict[str, Any]:
+        """Keep editable recipe fields, omitting the response path and inherited limits."""
+        inherited = {"timeout", "max_concurrency"} - conduit.model_fields_set
+        return conduit.model_dump(
+            mode="json", by_alias=True, exclude_none=True,
+            exclude=inherited | {"run_path"},
+        )
+
+    def _write_recipe(self, path: Path, conduit: Conduit) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = self.conduit_definition(conduit)
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
         tmp.write_text(yaml.safe_dump(payload, sort_keys=False))
         _atomic_replace(tmp, path)
@@ -393,6 +564,7 @@ class FilesystemStore(StoreBase):
         parent_flow_id: str | None = None,
         *,
         flow_id: str | None = None,
+        project: Path | None = None,
     ) -> str:
         """Create a new flow directory and seed its tracking files.
 
@@ -410,6 +582,22 @@ class FilesystemStore(StoreBase):
         # mkdir(parents=True) below would create the escaped path.
         if not self._safe_flow_id(flow_id):
             raise ValueError(f"unsafe flow id: {flow_id!r}")
+        if project is not None and self.global_dir is not None:
+            if parent_flow_id is not None and not self.journal(parent_flow_id):
+                self._flow_dir(parent_flow_id)
+            folder = self.global_dir / "projects" / project_folder(project)
+            journal = RunJournal(folder / f"{flow_id}.jsonl")
+            progress = Progress(
+                started_at=datetime.now(UTC).isoformat(), runner_pid=os.getpid(),
+                runner_host=socket.gethostname(), run_path=str(project.resolve()),
+            )
+            journal.create({
+                "flow_id": flow_id, "conduit": conduit_name, "parent_flow_id": parent_flow_id,
+                "project": progress.run_path, "store": str(self.base_dir.resolve()),
+                "host": progress.runner_host, "pid": progress.runner_pid, "steps": "steps.jsonl",
+                "inputs": inputs, "progress": progress.model_dump(mode="json"),
+            })
+            return flow_id
         if parent_flow_id is None:
             flow_dir = self.base_dir / "flows" / flow_id
         else:
@@ -444,12 +632,14 @@ class FilesystemStore(StoreBase):
         :param conduit_name: when set, only flows whose parsed conduit equals
             ``conduit_name`` are returned.
         """
+        ids = [j.path.stem for j, h in self._journals()
+               if h["parent_flow_id"] is None and h["store"] == str(self.base_dir.resolve())
+               and (conduit_name is None or h["conduit"] == conduit_name)]
         root = self.base_dir / "flows"
         try:
             entries = list(root.iterdir())
         except FileNotFoundError:
-            return []
-        ids: list[str] = []
+            entries = []
         for p in entries:
             if not p.is_dir():
                 continue
@@ -475,22 +665,20 @@ class FilesystemStore(StoreBase):
         :returns: child flow ids in the order they last started (a resumed
             child counts from its resume), so the last one is the most recent
         """
-        children_dir = self._flow_dir(parent_flow_id) / "flows"
-        if not children_dir.exists():
-            return []
+        children = [j.path.stem for j, h in self._journals()
+                    if h["parent_flow_id"] == parent_flow_id]
+        if not self.journal(parent_flow_id):
+            children_dir = self._flow_dir(parent_flow_id) / "flows"
+            children.extend(p.name for p in children_dir.glob("*") if p.is_dir())
 
-        def _started(child: Path) -> tuple[str, str]:
-            # Unreadable progress sorts first, so it never passes for the latest.
+        def started(child: str) -> tuple[str, str]:
             try:
-                started = json.loads((child / "progress.json").read_text())["started_at"]
+                stamp = self.read_progress(child).started_at
             except (OSError, ValueError, KeyError, TypeError):
-                started = None
-            return started or "", child.name
+                stamp = None
+            return stamp or "", child
 
-        return [
-            p.name
-            for p in sorted((p for p in children_dir.iterdir() if p.is_dir()), key=_started)
-        ]
+        return sorted(children, key=started)
 
     def delete_flow(self, flow_id: str) -> bool:
         """Remove a flow directory and its nested child subtree.
@@ -498,19 +686,42 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :returns: True if deleted, False if it didn't exist
         """
-        try:
-            flow_dir = self._flow_dir(flow_id)
-        except FileNotFoundError:
-            return False
-        shutil.rmtree(flow_dir)
-        # Evict the flow itself and any cached children that lived under it,
-        # so no stale handles survive in the path/lock caches.
-        self._flow_paths.pop(flow_id, None)
-        self._log_locks.pop(flow_id, None)
-        for cached_id, cached_path in list(self._flow_paths.items()):
-            if cached_path.is_relative_to(flow_dir):
-                self._flow_paths.pop(cached_id, None)
-                self._log_locks.pop(cached_id, None)
+        tree = [flow_id]
+        directories = []
+        records = []
+        with ExitStack() as locks:
+            for run in tree:
+                try:
+                    directory = self._lock_dir(run)
+                except FileNotFoundError:
+                    if run == flow_id:
+                        return False
+                    raise
+                for lease in (".writer.lock", ".ask.lock"):
+                    if not locks.enter_context(file_lock(directory / lease, wait=False)):
+                        raise RunRecordError(f"active writer: {run}")
+                journal = self.journal(run)
+                if journal is None:
+                    # Legacy versions ran without a writer lease.
+                    try:
+                        progress = self.read_progress(run)
+                    except (FileNotFoundError, ValueError):
+                        pass
+                    else:
+                        if is_runner_alive(progress):
+                            raise RunRecordError(f"active writer: {run}")
+                records.append(journal.path if journal else directory / "progress.json")
+                directories.append(directory)
+                tree.extend(self.list_child_flows(run))
+            # Make every record unavailable before releasing the leases. Windows
+            # requires closing the lease handles before removing their directories.
+            for record in records:
+                record.unlink(missing_ok=True)
+        for run, directory in reversed(list(zip(tree, directories, strict=True))):
+            shutil.rmtree(directory)
+            self._flow_paths.pop(run, None)
+            self._log_locks.pop(run, None)
+            self._journal_paths.pop(run, None)
         return True
 
     # ------------------------------------------------------------------ logs
@@ -535,6 +746,9 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :param entry: log entry to append
         """
+        if journal := self.journal(flow_id):
+            await asyncio.to_thread(journal.append, "log", entry.model_dump(mode="json"))
+            return
         path = self._flow_dir(flow_id) / "logs.jsonl"
         line = json.dumps(entry.model_dump()) + "\n"
 
@@ -559,6 +773,8 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :returns: parsed list of :class:`LogEntry` — empty if missing/unreadable
         """
+        if journal := self.journal(flow_id):
+            return [LogEntry.model_validate(e) for e in journal.logs()]
         flow_dir = self._flow_dir(flow_id)
         jsonl_path = flow_dir / "logs.jsonl"
         if jsonl_path.exists():
@@ -601,6 +817,9 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :param record: step record to append
         """
+        if journal := self.journal(flow_id):
+            await asyncio.to_thread(journal.append_step, (record.model_dump_json() + "\n").encode())
+            return
         path = self._flow_dir(flow_id) / "steps.jsonl"
         line = json.dumps(record.model_dump()) + "\n"
 
@@ -634,7 +853,9 @@ class FilesystemStore(StoreBase):
         :returns: tuple of the parsed records and the byte offset just past
             the last complete line consumed
         """
-        path = self._flow_dir(flow_id) / "steps.jsonl"
+        journal = self.journal(flow_id)
+        directory = journal.side if journal else self._flow_dir(flow_id)
+        path = directory / "steps.jsonl"
         if not path.exists():
             return [], offset
         with path.open("rb") as f:
@@ -675,24 +896,17 @@ class FilesystemStore(StoreBase):
     # synchronous: the files are tiny, writes are atomic-replace, and
     # crash-resume depends on state transitions hitting disk in order.
 
-    @contextmanager
-    def lock_ask(self, flow_id: str) -> Iterator[bool]:
-        """Exclude concurrent answers/cancellation; a crashed process releases its lock."""
-        with (self._flow_dir(flow_id) / ".ask.lock").open("a+b") as lock:
-            try:
-                if os.name == "nt":
-                    import msvcrt
+    def _lock_dir(self, flow_id: str) -> Path:
+        if journal := self.journal(flow_id):
+            journal.side.mkdir(exist_ok=True)
+            return journal.side
+        return self._flow_dir(flow_id)
 
-                    lock.seek(0)
-                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
+    def lock_writer(self, flow_id: str):
+        return file_lock(self._lock_dir(flow_id) / ".writer.lock", wait=False)
 
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except (BlockingIOError, PermissionError):
-                yield False
-                return
-            yield True
+    def lock_ask(self, flow_id: str):
+        return file_lock(self._lock_dir(flow_id) / ".ask.lock", wait=False)
 
     def write_progress(self, flow_id: str, progress: Progress) -> None:
         """Atomically write ``progress.json`` for ``flow_id``.
@@ -700,17 +914,29 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :param progress: progress snapshot to persist
         """
+        if journal := self.journal(flow_id):
+            journal.append("progress", progress.model_dump(mode="json"))
+            return
         path = self._flow_dir(flow_id) / "progress.json"
         tmp = path.with_suffix(f".json.tmp.{uuid.uuid4().hex}")
         # Pending questions may contain characters outside the local Windows code page.
         tmp.write_text(json.dumps(progress.model_dump(mode="json"), indent=2), encoding="ascii")
         _atomic_replace(tmp, path)
 
+    def write_heartbeat(self, flow_id: str, progress: Progress) -> None:
+        if journal := self.journal(flow_id):
+            assert progress.heartbeat_at is not None
+            journal.append("heartbeat", {"at": progress.heartbeat_at.isoformat()})
+        else:
+            self.write_progress(flow_id, progress)
+
     def read_progress(self, flow_id: str) -> Progress:
         """Load and return the ``Progress`` snapshot for ``flow_id``.
 
         :param flow_id: flow identifier
         """
+        if journal := self.journal(flow_id):
+            return Progress.model_validate(journal.latest("progress"))
         path = self._flow_dir(flow_id) / "progress.json"
         return Progress.model_validate_json(path.read_text())
 
@@ -722,6 +948,8 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :returns: mapping of task name to output string
         """
+        if journal := self.journal(flow_id):
+            return journal.outputs()
         path = self._flow_dir(flow_id) / "outputs.yaml"
         if not path.exists():
             return {}
@@ -735,6 +963,9 @@ class FilesystemStore(StoreBase):
         :param outputs: mapping of task name to final output (``None`` for tasks
             that did not complete)
         """
+        if journal := self.journal(flow_id):
+            journal.append("outputs", outputs)
+            return
         path = self._flow_dir(flow_id) / "outputs.yaml"
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
         tmp.write_text(_dump_flow_yaml(outputs), encoding="utf-8")
@@ -748,6 +979,8 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :returns: mapping of session name to ``{"id", "harness"}``
         """
+        if journal := self.journal(flow_id):
+            return journal.latest("sessions")
         path = self._flow_dir(flow_id) / "sessions.yaml"
         if not path.exists():
             return {}
@@ -760,6 +993,9 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :param sessions: mapping of session name to ``{"id", "harness"}``
         """
+        if journal := self.journal(flow_id):
+            journal.append("sessions", sessions)
+            return
         path = self._flow_dir(flow_id) / "sessions.yaml"
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
         tmp.write_text(_dump_flow_yaml(sessions))
@@ -772,6 +1008,8 @@ class FilesystemStore(StoreBase):
 
         :param flow_id: flow identifier
         """
+        if journal := self.journal(flow_id):
+            return journal.inputs()
         path = self._flow_dir(flow_id) / "input.yaml"
         if not path.exists():
             return {}
@@ -785,6 +1023,9 @@ class FilesystemStore(StoreBase):
         :param key: input key to add or overwrite
         :param value: value to store under ``key``
         """
+        if journal := self.journal(flow_id):
+            journal.append("input", {key: value})
+            return
         path = self._flow_dir(flow_id) / "input.yaml"
         existing: dict[str, Any] = {}
         if path.exists():

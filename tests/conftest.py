@@ -26,7 +26,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_global_atelier_dir(tmp_path_factory, monkeypatch):
+def _isolate_global_atelier_dir(tmp_path_factory, monkeypatch, request):
     """Point the global atelier dir at a throwaway tmp path for every test.
 
     Prevents tests from reading or writing the real ``~/.atelier``.
@@ -34,7 +34,12 @@ def _isolate_global_atelier_dir(tmp_path_factory, monkeypatch):
     :param tmp_path_factory: pytest tmp_path_factory fixture.
     :param monkeypatch: pytest monkeypatch fixture.
     """
-    global_dir = tmp_path_factory.mktemp("global_atelier")
+    home = tmp_path_factory.mktemp("atelier_home")
+    global_dir = home / ".atelier"
+    global_dir.mkdir()
+    if request.node.get_closest_marker("live") is None:
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("ATELIER_GLOBAL_ATELIER_DIR", str(global_dir))
     monkeypatch.setenv("ATELIER_NO_UPDATE_CHECK", "1")
     yield Path(global_dir)

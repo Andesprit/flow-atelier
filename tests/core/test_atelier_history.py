@@ -9,13 +9,11 @@ from flow_atelier.schemas.log import LogEntry
 
 
 @pytest.fixture
-def atelier(tmp_path, monkeypatch):
+def atelier(tmp_path):
     """Construct an Atelier instance rooted under tmp_path.
 
     :param tmp_path: pytest temp directory fixture.
-    :param monkeypatch: pytest monkeypatch fixture.
     """
-    monkeypatch.delenv("ATELIER_GLOBAL_ATELIER_DIR", raising=False)
     return Atelier(base_dir=tmp_path / ".atelier")
 
 

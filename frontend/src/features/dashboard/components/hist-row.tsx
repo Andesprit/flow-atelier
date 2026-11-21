@@ -1,4 +1,5 @@
 import React from "react";
+import type { PriorFlow } from "@/types/flow";
 import { fmtDuration, fmtRelative } from "@/utils/format";
 import { cn } from "@lib/cn";
 
@@ -7,7 +8,7 @@ export interface Row {
   conduit: string;
   startedAt: number;
   duration: number | undefined;
-  state: "running" | "done" | "failed" | "cancelled";
+  state: PriorFlow["status"];
   tag: string;
   isConduit?: boolean;
 }
@@ -35,7 +36,8 @@ export const HistRow = React.forwardRef<
           row.state === "running" &&
             "bg-primary shadow-[0_0_0_3px_oklch(0.78_0.155_70/0.18)] motion-safe:animate-pulse",
           row.state === "done" && "bg-[color:var(--color-ok)]",
-          row.state === "failed" && "bg-destructive",
+          (row.state === "failed" || row.state === "crashed") && "bg-destructive",
+          row.state === "waiting" && "bg-warning",
           row.state === "cancelled" && "bg-muted-foreground",
         )}
       />
@@ -62,7 +64,7 @@ export const HistRow = React.forwardRef<
         className={cn(
           "text-right text-mini uppercase tracking-[0.14em]",
           running ? "text-primary" : "text-muted-foreground",
-          row.state === "failed" && "text-destructive",
+          (row.state === "failed" || row.state === "crashed") && "text-destructive",
           row.tag === "waiting" && "text-warning",
         )}
       >

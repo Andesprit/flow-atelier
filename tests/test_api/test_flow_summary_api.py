@@ -1,8 +1,6 @@
 """GET /flows/<id>/summary: the run page's saved results and next step."""
 from __future__ import annotations
 
-import hashlib
-import json
 import shlex
 
 import httpx
@@ -10,6 +8,7 @@ import pytest
 
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.services.api.app import FastApiServer
+from tests._runs import legacy_record, saved_bytes
 
 TWO = """\
 name: two
@@ -126,12 +125,8 @@ async def test_reading_the_summary_changes_no_saved_byte(client, project):
     c, atelier = client
     flow_id = await _run(atelier, project)
 
-    def digest() -> dict[str, str]:
-        return {
-            str(p): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in sorted((project / ".atelier").rglob("*"))
-            if p.is_file()
-        }
+    def digest():
+        return saved_bytes(atelier.store.journal(flow_id))
 
     before = digest()
     assert (await c.get(f"/flows/{flow_id}/summary")).status_code == 200
@@ -141,15 +136,12 @@ async def test_reading_the_summary_changes_no_saved_byte(client, project):
 async def test_results_are_masked_before_they_are_cut(client, project):
     c, atelier = client
     flow_id = await _run(atelier, project)
-    outputs = atelier.store._flow_dir(flow_id) / "outputs.yaml"
     secret = "API_KEY=" + "s" * 40
     # The secret straddles the preview cut: masking after the cut would leave
     # its first characters, and the shortened remainder, unmasked.
     from flow_atelier.modules.run_summary import RESULT_MAX_CHARS
 
-    outputs.write_text(
-        json.dumps({"prepare": "x" * (RESULT_MAX_CHARS - 10) + secret, "finish": None})
-    )
+    atelier.store.write_outputs(flow_id, {"prepare": "x" * (RESULT_MAX_CHARS - 10) + secret, "finish": None})
 
     body = (await c.get(f"/flows/{flow_id}/summary")).json()
     prepare = body["results"][0]
@@ -161,8 +153,7 @@ async def test_results_are_masked_before_they_are_cut(client, project):
 async def test_long_results_are_bounded_and_say_so(client, project):
     c, atelier = client
     flow_id = await _run(atelier, project)
-    outputs = atelier.store._flow_dir(flow_id) / "outputs.yaml"
-    outputs.write_text(json.dumps({"prepare": "y" * 50_000, "finish": ""}))
+    atelier.store.write_outputs(flow_id, {"prepare": "y" * 50_000, "finish": ""})
 
     body = (await c.get(f"/flows/{flow_id}/summary")).json()
     prepare, finish = body["results"]
@@ -175,8 +166,7 @@ async def test_a_task_without_an_entry_is_reported_missing(client, project):
     c, atelier = client
     (project / "ready").touch()
     flow_id = await _run(atelier, project)
-    outputs = atelier.store._flow_dir(flow_id) / "outputs.yaml"
-    outputs.write_text(json.dumps({"finish": "FINISHED\n"}))
+    atelier.store.write_outputs(flow_id, {"finish": "FINISHED\n"})
 
     body = (await c.get(f"/flows/{flow_id}/summary")).json()
     assert [(r["task"], r["state"]) for r in body["results"]] == [
@@ -188,7 +178,7 @@ async def test_a_task_without_an_entry_is_reported_missing(client, project):
 async def test_unreadable_outputs_keep_the_rest_of_the_summary(client, project):
     c, atelier = client
     flow_id = await _run(atelier, project)
-    (atelier.store._flow_dir(flow_id) / "outputs.yaml").write_text("{: not yaml")
+    (legacy_record(atelier.store, flow_id) / "outputs.yaml").write_text("{: not yaml")
 
     resp = await c.get(f"/flows/{flow_id}/summary")
     assert resp.status_code == 200
@@ -203,16 +193,16 @@ async def test_a_run_that_moves_while_read_is_not_final_and_offers_no_command(
 ):
     c, atelier = client
     flow_id = await _run(atelier, project)
-    progress_file = atelier.store._flow_dir(flow_id) / "progress.json"
+    journal = atelier.store.journal(flow_id)
     real = atelier.store.read_logs
 
     # The run is resumed between diagnose's own snapshot and the summary's
     # last reads: its progress moves on after diagnose has already checked.
     def read_logs_then_move(fid):
-        data = json.loads(progress_file.read_text())
+        data = journal.latest("progress")
         data["status"] = "running"
         data["tasks"]["finish"]["status"] = "running"
-        progress_file.write_text(json.dumps(data))
+        journal.append("progress", data)
         return real(fid)
 
     calls = {"n": 0}

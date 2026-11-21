@@ -23,7 +23,7 @@ import typer
 from flow_atelier.cli._shared import _resolve_flow_id, console
 from flow_atelier.cli.main import app
 from flow_atelier.core.atelier import Atelier
-from flow_atelier.modules.liveness import StopDecision, stop_decision
+from flow_atelier.modules.liveness import StopDecision, heartbeat_stale, stop_decision
 
 _POLL_TIMEOUT_SECONDS = 15.0
 _POLL_INTERVAL_SECONDS = 0.25
@@ -37,7 +37,7 @@ def _other_running_progresses(atelier: Atelier, flow_id: str) -> list:
     :returns: progress snapshots of all other flows (unreadable ones skipped).
     """
     others = []
-    for fid in atelier.list_flows():
+    for fid in atelier.store.list_project_flows():
         if fid == flow_id:
             continue
         try:
@@ -69,7 +69,10 @@ def stop_cmd(
     if decision is not StopDecision.stoppable:
         messages = {
             StopDecision.not_running: f"flow already {progress.status.value}",
-            StopDecision.crashed: "runner process is gone; nothing to stop",
+            StopDecision.crashed: (
+                "runner heartbeat has expired; refusing to signal it"
+                if heartbeat_stale(progress) else "runner process is gone; nothing to stop"
+            ),
             StopDecision.foreign_host: (
                 f"running on host {progress.runner_host}; cannot stop from here"
             ),

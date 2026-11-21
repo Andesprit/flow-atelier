@@ -1,8 +1,10 @@
 """Settings unit tests."""
+import json
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from pydantic.alias_generators import to_snake
 
 from flow_atelier.core.settings import AtelierSettings
 
@@ -124,3 +126,78 @@ def test_a_project_env_file_cannot_choose_what_atelier_runs(tmp_path, monkeypatc
 
     monkeypatch.setenv("ATELIER_HARNESSES", '{"mine":["/opt/agent"]}')
     assert AtelierSettings().harnesses == {"mine": ["/opt/agent"]}
+
+
+def test_timeout_source_precedence(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for key in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(key, str(tmp_path / "home"))
+    for key in ("ATELIER_GLOBAL_ATELIER_DIR", "ATELIER_DEFAULT_TIMEOUT", "ATELIER_ATELIER_DIR"):
+        monkeypatch.delenv(key, raising=False)
+    user = Path.home() / ".atelier/settings.json"
+    project = tmp_path / ".atelier/settings.json"
+    user.parent.mkdir(parents=True)
+    project.parent.mkdir()
+    assert AtelierSettings().default_timeout == 3600
+    user.write_text('{"defaultTimeout": 10}')
+    assert AtelierSettings().default_timeout == 10
+    Path(".env").write_text("ATELIER_DEFAULT_TIMEOUT")
+    assert AtelierSettings().default_timeout == 10
+    Path(".env").write_text("ATELIER_DEFAULT_TIMEOUT=20")
+    assert AtelierSettings().default_timeout == 20
+    project.write_text('{"defaultTimeout": 30}')
+    assert AtelierSettings().default_timeout == 30
+    monkeypatch.setenv("ATELIER_DEFAULT_TIMEOUT", "40")
+    assert AtelierSettings().default_timeout == 40
+    assert AtelierSettings(default_timeout=50).default_timeout == 50
+
+
+def test_rejected_settings_keep_trusted_values_and_report_sources(
+    tmp_path, monkeypatch, capsys, _isolate_global_atelier_dir,
+):
+    monkeypatch.chdir(tmp_path)
+    user = _isolate_global_atelier_dir / "settings.json"
+    project = tmp_path / ".atelier/settings.json"
+    project.parent.mkdir()
+    trusted = {"cleanupPeriodDays": 45, "agentPermissions": "read-only"}
+    shell_only = {"apiToken": "private-value", "claudeLaunchCmd": ["ignored-command"],
+                  "atelierDir": "private-value"}
+    user.write_text(json.dumps(trusted | shell_only))
+    refused = {**dict.fromkeys(trusted | shell_only, "private-value"),
+               "cleanupPeriodDays": 0, "agentPermissions": "edits"}
+    project.write_text(json.dumps(refused))
+    Path(".env").write_text("\n".join(
+        f"ATELIER_{to_snake(key).upper()}={value}" for key, value in refused.items()
+    ))
+    monkeypatch.setenv("ATELIER_API_TOKEN", "shell-token")
+    monkeypatch.setenv("ATELIER_CLAUDE_LAUNCH_CMD", '["trusted-command"]')
+    s = AtelierSettings()
+    assert s.cleanup_period_days == 45
+    assert s.atelier_dir == tmp_path / ".atelier"
+    assert s.agent_permissions == "read-only"
+    assert s.api_token == "shell-token" and s.claude_launch_cmd == ["trusted-command"]
+    err = capsys.readouterr().err
+    assert "private-value" not in err
+    for key in refused:
+        assert f"ignored {key} from {project}" in err
+        assert f"ignored ATELIER_{to_snake(key).upper()} from ./.env" in err
+    for key in shell_only:
+        assert f"ignored {key} from {user}" in err
+
+
+@pytest.mark.parametrize("value", ["full", None])
+def test_project_cannot_restore_full_permissions(tmp_path, value, capsys, _isolate_global_atelier_dir):
+    (_isolate_global_atelier_dir / "settings.json").write_text('{"agentPermissions":"edits"}')
+    (tmp_path / "settings.json").write_text(json.dumps({"agentPermissions": value}))
+    settings = AtelierSettings(atelier_dir=tmp_path, _env_file=None)
+    assert settings.agent_permissions == "edits"
+    assert "ignored agentPermissions" in capsys.readouterr().err
+    (tmp_path / "settings.json").write_text('{"agentPermissions":"read-only"}')
+    assert AtelierSettings(atelier_dir=tmp_path, _env_file=None).agent_permissions == "read-only"
+
+
+@pytest.mark.parametrize("document", ["[]", "{"])
+def test_malformed_json_names_the_file(tmp_path, document):
+    (tmp_path / "settings.json").write_text(document)
+    with pytest.raises(ValueError, match=r"settings\.json"):
+        AtelierSettings(atelier_dir=tmp_path, _env_file=None)

@@ -58,8 +58,9 @@ async def test_run_single_task_persists_flow_dir(atelier, tmp_path):
         run_path=str(tmp_path),
     )
     out = await atelier.run_single_task(payload)
-    flow_dir = atelier.store._flow_dir(out.flow_id)
-    assert (flow_dir / "logs.jsonl").exists()
+    journal = atelier.store.journal(out.flow_id)
+    assert journal.path.is_file()
+    assert list(journal.logs())
 
 
 async def test_run_single_task_drives_a_settings_declared_harness(

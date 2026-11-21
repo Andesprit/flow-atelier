@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 
 from flow_atelier.cli import app
 from flow_atelier.schemas.conduit import split_harness_tool
-from flow_atelier.services.store.filesystem import FilesystemStore
+from tests._runs import legacy_record, project_store
 
 FAKE_AGENT = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
 
@@ -72,11 +72,10 @@ def test_ask_runs_an_interactive_agent_session_in_path(tmp_path, monkeypatch, ha
     assert "Blue it is." in result.output
     assert "[ATELIER_DONE]" not in result.output
 
-    flow_dirs = list((tmp_path / ".atelier" / "flows").iterdir())
-    assert len(flow_dirs) == 1
-    progress = json.loads((flow_dirs[0] / "progress.json").read_text())
-    assert progress["run_path"] == str(project.resolve())
-    logs = [json.loads(line) for line in (flow_dirs[0] / "logs.jsonl").read_text().splitlines()]
+    store = project_store(tmp_path)
+    [flow_id] = store.list_project_flows(project)
+    assert store.read_progress(flow_id).run_path == str(project.resolve())
+    logs = [log.model_dump() for log in store.read_logs(flow_id)]
     assert logs[-1]["command"] == query
     assert logs[-1]["task"] == "chat"
     assert logs[-1]["tool"] == f"harness:{harness or 'claude-code'}"
@@ -141,8 +140,9 @@ def test_ask_permissions_flag_sets_the_level(tmp_path, monkeypatch) -> None:
         "--permissions", "read-only",
     ])
     assert result.exit_code == 0, result.output
-    flow_dir = next((tmp_path / ".atelier" / "flows").iterdir())
-    logs = [json.loads(line) for line in (flow_dir / "logs.jsonl").read_text().splitlines()]
+    store = project_store(tmp_path)
+    [flow_id] = store.list_project_flows(project)
+    logs = [log.model_dump() for log in store.read_logs(flow_id)]
     assert "[mode_set:read-only]" in logs[-1]["output"]
 
     result = CliRunner().invoke(app, [
@@ -191,7 +191,7 @@ def test_read_and_answer_pending_session(machine_ask, tmp_path, reload):
     flow_id = first["flow_id"]
     assert first["status"] == "needs_input" and first["question"] == "Which colour (色)?"
     assert machine_ask(flow_id) == first
-    store = FilesystemStore(tmp_path / ".atelier")
+    store = project_store(tmp_path)
     pending = store.read_progress(flow_id)
     assert pending.pending_ask and pending.runner_pid is None and pending.finished_at is None
     assert machine_ask(flow_id, "--request-id", "stale", "--answer", "wrong", success=False)["code"] == "no_pending_question"
@@ -217,13 +217,23 @@ def test_read_and_answer_pending_session(machine_ask, tmp_path, reload):
     assert len(prompts) == 2 and any(p.startswith("blue {{inputs.literal}}") for p in prompts)
 
 
+@pytest.mark.parametrize(("args", "expected"), [([], 20), (["--timeout", "30"], 30)])
+def test_ask_uses_project_timeout_unless_explicit(machine_ask, tmp_path, args, expected):
+    store = project_store(tmp_path)
+    store.base_dir.mkdir()
+    (store.base_dir / "settings.json").write_text('{"defaultTimeout": 20}')
+    result = machine_ask("Help", "--path", ".", "--harness", "fake", *args,
+                         script={"reload": "resume", "turns": [{"chunks": ["Where?"]}]})
+    assert store.read_progress(result["flow_id"]).pending_ask.timeout == expected
+
+
 def test_direct_answer_and_legacy_progress(machine_ask, tmp_path):
     result = machine_ask(
         "Say hello", "--path", ".", "--harness", "fake",
         script={"turns": [{"chunks": ["Hello! [ATELIER_DONE]"]}]},
     )
     assert result["status"] == "completed" and result["answer"] == "Hello!"
-    path = tmp_path / ".atelier" / "flows" / result["flow_id"] / "progress.json"
+    path = legacy_record(project_store(tmp_path), result["flow_id"]) / "progress.json"
     progress = json.loads(path.read_text())
     progress.pop("pending_ask", None)
     path.write_text(json.dumps(progress))
@@ -235,7 +245,7 @@ def test_machine_ask_reports_engine_value_error_as_json(machine_ask, tmp_path):
     first = machine_ask("Choose", "--path", ".", "--harness", "fake", script=script)
     flow_id = first["flow_id"]
     # Reading an invalid UTF-8 outputs file raises ValueError during engine resume.
-    (tmp_path / ".atelier" / "flows" / flow_id / "outputs.yaml").write_bytes(b"\xff")
+    (legacy_record(project_store(tmp_path), flow_id) / "outputs.yaml").write_bytes(b"\xff")
     error = machine_ask(flow_id[:-4], "--answer", "blue", script=script, success=False)
     assert error["code"] == "ask_failed"
     assert error["flow_id"] == flow_id
@@ -287,7 +297,7 @@ def test_ask_can_cancel_a_pending_turn(machine_ask, tmp_path):
     first = machine_ask("Help", "--path", ".", "--harness", "fake", "--timeout", "2", script=script)
     flow_id = first["flow_id"]
     reply = [flow_id, "--answer", "here", "--request-id", first["request_id"]]
-    with FilesystemStore(tmp_path / ".atelier").lock_ask(flow_id) as acquired:
+    with project_store(tmp_path).lock_ask(flow_id) as acquired:
         assert acquired
         assert machine_ask(*reply, success=False)["code"] == "ask_busy"
     time.sleep(2.1)

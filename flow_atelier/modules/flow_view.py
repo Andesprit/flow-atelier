@@ -11,6 +11,7 @@ from collections import Counter
 from datetime import UTC, datetime
 
 from flow_atelier.modules.conditions import DependencyParseError, parse_dependency
+from flow_atelier.modules.liveness import display_status
 from flow_atelier.schemas.api import (
     FlowTaskView,
     FlowView,
@@ -95,6 +96,7 @@ def build_flow_view(
         flow_id=flow_id,
         conduit_name=conduit_name,
         status=progress.status.value,
+        display_status=display_status(progress),
         started_at=progress.started_at,
         finished_at=progress.finished_at,
         run_path=progress.run_path,

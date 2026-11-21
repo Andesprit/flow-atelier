@@ -122,6 +122,7 @@ class FlowView(BaseModel):
     flow_id: str
     conduit_name: str
     status: str
+    display_status: str
     started_at: str | None = None
     finished_at: str | None = None
     run_path: str | None = None
@@ -490,6 +491,7 @@ class PriorFlow(BaseModel):
 
     flow_id: str
     conduit_name: str
+    project: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
     status: str

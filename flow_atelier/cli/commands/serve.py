@@ -254,6 +254,8 @@ def serve_cmd(
             reload_interval_seconds=reload_interval,
         )
 
+        server_lifespan = api_app.router.lifespan_context
+
         @asynccontextmanager
         async def _lifespan(app):
             """FastAPI lifespan context that starts and stops the scheduler daemon.
@@ -266,7 +268,8 @@ def serve_cmd(
             except SchedulerAlreadyRunning as exc:
                 scheduler_status = f"Scheduler disabled (running in pid {exc.pid})"
                 typer.echo(f"{exc}; serving without scheduler", err=True)
-                yield
+                async with server_lifespan(app):
+                    yield
                 return
             scheduler_status = f"Schedule store: {atelier.schedule_store.schedules_dir.resolve()}"
             # The schedules API can resync jobs immediately on the owning daemon.

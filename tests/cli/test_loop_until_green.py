@@ -68,7 +68,7 @@ def test_readme_loop_runs_until_the_tests_pass(tmp_path: Path):
     loop = status["tasks"]["build_until_green"]
     assert (loop["status"], loop["iteration"], loop["of"]) == ("completed", 3, 5)
     assert loop["loop_outcome"]["met"] is True
-    children = list((project.work / ".atelier" / "flows" / flow_id / "flows").iterdir())
+    children = project.store.list_child_flows(flow_id)
     assert len(children) == 3
 
     prompts = project.prompts("claude-code")

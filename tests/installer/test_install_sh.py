@@ -153,6 +153,12 @@ def test_path_is_written_to_the_login_shells_rc(
 
     rc = home / rc_relpath
     assert rc.exists(), f"{rc_relpath} was not written"
+    assert f"Added {home / '.atelier/bin'} to PATH in {rc}" in result.stdout
+    assert "Open a new shell" in result.stdout
+    if login_shell.endswith("/fish"):
+        assert 'set -gx PATH $PATH "$HOME/.atelier/bin"' in result.stdout.splitlines()
+    else:
+        assert 'export PATH="$PATH:$HOME/.atelier/bin"' in result.stdout.splitlines()
     body = rc.read_text()
     assert expected_line in body
     assert str(home / ".atelier" / "bin") in body
@@ -161,6 +167,15 @@ def test_path_is_written_to_the_login_shells_rc(
     for other in (".zshrc", ".bashrc", ".profile", ".config/fish/config.fish"):
         if other != rc_relpath:
             assert not (home / other).exists(), f"unexpectedly wrote {other}"
+
+
+def test_skips_new_shell_hint_when_install_dir_is_on_path(sandbox) -> None:
+    home, env = sandbox
+    result = _run(env, SHELL="/bin/bash", PATH=f"{env['PATH']}:{home / '.atelier/bin'}")
+    assert result.returncode == 0, result.stderr
+    assert "Open a new shell" not in result.stdout
+    assert 'export PATH="$PATH:$HOME/.atelier/bin"' not in result.stdout
+    assert (home / ".bashrc").exists()
 
 
 def test_zdotdir_is_honoured_for_zsh(sandbox, tmp_path) -> None:

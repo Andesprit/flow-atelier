@@ -206,6 +206,8 @@ def test_diagnose_then_resume_keeps_the_completed_agent_work(fixture):
     )
     assert first.returncode != 0, first.stdout
     flow_id = _flow_id(first.stdout)
+    hints = [line.strip() for line in first.stdout.splitlines() if line.strip().startswith("→")]
+    assert hints[0] == f"→ atelier diagnose {flow_id}"
 
     report = fixture.diagnose(flow_id)
     # The failure is the task that failed, and the cancellation is not a second one.

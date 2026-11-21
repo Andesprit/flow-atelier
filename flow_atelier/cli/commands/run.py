@@ -23,6 +23,7 @@ from flow_atelier.cli._shared import (
     _parse_input_files,
     _parse_inputs,
     _resolve_flow_id,
+    cli_error,
     console,
     mark_activity,
     parse_agents_option,
@@ -309,12 +310,14 @@ def drive_flow(
         console.print("[yellow]flow stopped[/yellow]")
         if captured["id"]:
             console.print(f"[yellow]flow_id:[/yellow] {captured['id']}")
+            console.print(f"[dim]→ atelier diagnose {captured['id']}[/dim]", soft_wrap=True)
         raise typer.Exit(code=STOPPED_EXIT_CODE)
     except Exception as exc:  # noqa: BLE001
         render_run_footer(collected, console)
         console.print(f"[red]flow failed:[/red] {escape(str(exc))}")
         if captured["id"]:
             console.print(f"[red]flow_id:[/red] {captured['id']}")
+            console.print(f"[dim]→ atelier diagnose {captured['id']}[/dim]", soft_wrap=True)
             if resume_hint:
                 console.print(f"[dim]→ atelier run --resume {captured['id']}[/dim]")
         raise typer.Exit(code=1)
@@ -509,34 +512,31 @@ def run_cmd(
     worktrees = parse_worktrees_option(worktrees_raw)
 
     if resume_from is not None and again_from is not None:
-        console.print("[red]error:[/red] --resume and --again are mutually exclusive")
-        raise typer.Exit(code=2)
+        raise cli_error(
+            "invalid_arguments", "error: --resume and --again are mutually exclusive",
+            exit_code=2, out=console, allowed=["--resume", "--again"],
+        )
 
     # Resume continues the flow's saved inputs; there is nothing for a new
     # value to change. Refuse rather than read the file and ignore it.
     if resume_from is not None and input_files_raw:
-        console.print(
-            "[red]error:[/red] --resume and --input-file are mutually exclusive"
+        raise cli_error(
+            "invalid_arguments", "error: --resume and --input-file are mutually exclusive",
+            out=console, allowed=["--resume", "--input-file"],
+            hint="→ --resume reuses the flow's saved inputs; use --again <flow_id> to change one",
         )
-        console.print(
-            "[dim]→ --resume reuses the flow's saved inputs;"
-            " use --again <flow_id> to change one[/dim]"
-        )
-        raise typer.Exit(code=1)
 
     # A resume continues in the directories the first attempt recorded — that
     # is what makes a failed worker's partial edits recoverable. Silently
     # ignoring a new selection, or honouring it and abandoning those edits,
     # would both be worse than saying no.
     if resume_from is not None and worktrees:
-        console.print(
-            "[red]error:[/red] --resume and --worktree are mutually exclusive"
+        raise cli_error(
+            "invalid_arguments", "error: --resume and --worktree are mutually exclusive",
+            exit_code=2, out=console, allowed=["--resume", "--worktree"],
+            hint="→ --resume continues in the checkouts the run already has;"
+                 " use --again <flow_id> to start fresh ones",
         )
-        console.print(
-            "[dim]→ --resume continues in the checkouts the run already has;"
-            " use --again <flow_id> to start fresh ones[/dim]"
-        )
-        raise typer.Exit(code=2)
 
     # --resume path: resolve the old flow, skip input prompts
     if resume_from is not None:

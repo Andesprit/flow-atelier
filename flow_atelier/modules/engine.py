@@ -401,6 +401,7 @@ class Engine:
         loop_history_entry_chars: int = 40000,
         usage_limit_max_wait: float = 21600,
         agent_permissions: AgentPermissions | None = None,
+        step_instructions: Callable[[Path], str] | None = None,
     ) -> None:
         """Wire the engine with its executor registry and persistence store.
 
@@ -424,6 +425,7 @@ class Engine:
         self.loop_history_entry_chars = loop_history_entry_chars
         self.usage_limit_max_wait = usage_limit_max_wait
         self.agent_permissions = agent_permissions
+        self.step_instructions = step_instructions
         # One turn at a time per named agent session, keyed by (scope, name).
         self._session_locks: dict[tuple[str, str], asyncio.Lock] = {}
         # Top-level runs that already printed PERMISSIONS_NOTICE.
@@ -679,6 +681,10 @@ class Engine:
             raise ValueError(f"missing required inputs: {missing}")
 
         parsed_deps = validate_conduit(conduit)
+
+        instructions = ""
+        if self.step_instructions and any(t.tool.startswith("harness:") for t in conduit.tasks):
+            instructions = self.step_instructions(working_dir or Path.cwd())
 
         if resume_from is not None:
             flow_id = resume_from
@@ -1150,6 +1156,8 @@ class Engine:
                     :param name: the resolved session name, or ``None``.
                     :returns: the executor's :class:`ExecutionResult`.
                     """
+                    if t.tool.startswith("harness:"):
+                        prompt = instructions + prompt
                     if resume_from and prior.pending_ask:
                         ctx.resume_session = prior.pending_ask.session_id
                     if name is None:

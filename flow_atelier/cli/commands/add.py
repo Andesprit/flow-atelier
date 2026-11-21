@@ -54,7 +54,7 @@ def _prompt_scope() -> bool:
 @app.command("add", hidden=True)
 def install_cmd(
     source: str = typer.Argument(
-        ..., help="git URL, owner/repo, or a local path."
+        ..., help="builtin:platform, git URL, owner/repo, or a local path."
     ),
     force: bool = typer.Option(
         False, "--force", help="Overwrite existing conduits on collision."

@@ -2086,6 +2086,35 @@ entire global store. A run header records the full resolved project path.
 The folder name replaces each non-alphanumeric character with a hyphen, so
 two projects can share a folder while retaining their separate identities.
 
+## Install the platform recipe bundle
+
+`atelier install builtin:platform --no-project` installs the bundled version
+in the global conduit store. The manifest lists `error-to-pr`,
+`idea-to-product`, `continuous-improvement` and `meetings-to-tasks`. Version
+1 reserves those names. Each starter exits with the roadmap slice that will
+provide its implementation. The package creates no schedules.
+
+A project's own conduit takes precedence. Reinstalling skips existing files.
+Use `atelier update platform --force` only when you intend to replace them.
+
+To share instructions between harnesses, add a `stepInstructions` entry to
+your user settings. Use the target project's resolved absolute path as the
+key and list the rule files relative to that directory.
+
+```json
+{
+  "stepInstructions": {
+    "project_rules": {"/absolute/path/to/repo": ["CLAUDE.md", "docs/review.md"]},
+    "skills": ["code-review"]
+  }
+}
+```
+
+Harness tasks receive the selected rule text for that project and the text
+of each selected `~/.claude/skills/<name>/SKILL.md`. A skill directory can
+be a symlink. Only user-level settings can select these files. An unreadable
+selection stops the conduit before its harness starts and names the file.
+
 ## Send a WhatsApp run summary
 
 Set `notificationProvider` to `"twilio"` and `notificationRecipient` to the

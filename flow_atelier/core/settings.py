@@ -16,6 +16,7 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from flow_atelier.core.step_instructions import StepInstructions
 from flow_atelier.schemas.conduit import HARNESS_NAME_RE, AgentPermissions
 
 # Settings that decide what Atelier executes, where it looks for shared
@@ -208,6 +209,7 @@ class AtelierSettings(BaseSettings):
             '"gemini-acp"]}\'. A name matching a bundled harness overrides it.'
         ),
     )
+    step_instructions: StepInstructions = Field(default_factory=StepInstructions)
     done_marker: str = "[ATELIER_DONE]"
     api_token: str = Field(
         # Empty, never a literal: a shipped default token is a published

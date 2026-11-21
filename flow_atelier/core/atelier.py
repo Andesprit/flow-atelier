@@ -141,6 +141,7 @@ class Atelier:
             loop_history_entry_chars=self.settings.loop_history_entry_chars,
             usage_limit_max_wait=self.settings.usage_limit_max_wait,
             agent_permissions=self.settings.agent_permissions,
+            step_instructions=self.settings.step_instructions.render,
         )
         self.schedule_store = ScheduleStore(self.settings.global_atelier_dir)
 
@@ -989,9 +990,15 @@ class Atelier:
         :param force: overwrite colliding conduits.
         :returns: an :class:`InstallReport` of what was installed/skipped.
         """
-        src = resolve_source(source)
-        cache_root = self.settings.global_atelier_dir / "cache"
-        repo_dir = fetch_source(src, cache_root, ref)
+        if source == "builtin:platform":
+            if ref:
+                raise PackageError("--ref applies only to git packages")
+            repo_dir = Path(__file__).resolve().parents[1] / "packages" / "platform"
+        else:
+            src = resolve_source(source)
+            cache_root = self.settings.global_atelier_dir / "cache"
+            repo_dir = fetch_source(src, cache_root, ref)
+            source = src.location
         manifest = read_package(repo_dir)
         conduit_base = (
             self.settings.atelier_dir if project else self.settings.global_atelier_dir
@@ -1002,13 +1009,20 @@ class Atelier:
             conduit_root=conduit_root,
             scope="project" if project else "global", force=force,
         )
+        previous = read_lockfile(self._lockfile_path()).get(manifest.name, {})
+        owned = set(report.conduits_installed)
+        if (previous.get("source") == source and previous.get("scope") == report.scope
+                and (not project or previous.get("root") == str(conduit_root.resolve()))):
+            owned.update(set(report.conduits_skipped).intersection(previous.get("conduits", [])))
         write_lockfile(
             self._lockfile_path(),
             manifest.name,
             {
-                "source": src.location,
+                "source": source,
+                "version": manifest.version,
+                "root": str(conduit_root.resolve()),
                 "ref": ref or "",
-                "conduits": report.conduits_installed,
+                "conduits": sorted(owned),
                 "scope": report.scope,
             },
         )
@@ -1037,8 +1051,8 @@ class Atelier:
             project=entry.get("scope") == "project",
             force=force,
         )
-        # install_package wrote the lockfile with only what it (re)installed;
-        # union with prior ownership so skipped-but-owned items aren't dropped.
+        # Updates retain ownership of previously installed conduits even when
+        # the newer manifest omits them, so uninstall can still clean them up.
         merged_conduits = sorted(
             set(entry.get("conduits", [])) | set(report.conduits_installed)
         )

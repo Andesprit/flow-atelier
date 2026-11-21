@@ -1,0 +1,10 @@
+name: idea-to-product
+description: Reserved for the idea-to-product workflow in roadmap slice 2.6.
+tasks:
+  - setup:
+      description: Report workflow availability
+      tool: tool:bash
+      task: |
+        echo 'idea-to-product is pending roadmap slice 2.6.' >&2
+        exit 1
+

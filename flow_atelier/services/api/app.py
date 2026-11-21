@@ -198,16 +198,20 @@ class FastApiServer(ApiServerBase):
             cleanup = nullcontext() if hasattr(atelier, "scheduler_daemon") else daily_cleanup(
                 atelier.settings.global_atelier_dir, atelier.settings.cleanup_period_days
             )
-            async with cleanup, create_task_group() as runs:
-                app.state.mobile_runs = runs
-                app.state.launch_lock = Lock()
-                app.state.launches = {}
-                if find_spec("pywebpush") is not None:
-                    runs.start_soon(WebPush(atelier.settings.global_atelier_dir).watch, atelier)
-                try:
-                    yield
-                finally:
-                    runs.cancel_scope.cancel()
+            try:
+                async with cleanup, create_task_group() as runs:
+                    app.state.mobile_runs = runs
+                    app.state.launch_lock = Lock()
+                    app.state.launches = {}
+                    if find_spec("pywebpush") is not None:
+                        runs.start_soon(WebPush(atelier.settings.global_atelier_dir).watch, atelier)
+                    try:
+                        yield
+                    finally:
+                        runs.cancel_scope.cancel()
+            finally:
+                for chat in list(app.state.chats.values()):
+                    await chat.close()
 
         app = FastAPI(title="flow-atelier", version=__version__, lifespan=lifespan)
 
@@ -222,6 +226,9 @@ class FastApiServer(ApiServerBase):
             status = 409 if isinstance(exc, AmbiguousFlowId) else 422
             return JSONResponse({"detail": str(exc)}, status_code=status)
 
+        allowed_hosts = list(allowed_hosts or LOOPBACK_HOSTS)
+        app.state.local_history = set(allowed_hosts).issubset(LOOPBACK_HOSTS)
+        app.state.chats = {}
         app.state.atelier = atelier
         app.state.api_token = api_token or ""
         app.state.session_key = secrets.token_hex(32).encode()

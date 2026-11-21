@@ -2,19 +2,17 @@
 
 import asyncio
 import errno
-import json
 import os
 import shutil
 import stat
 import sys
 from collections.abc import Iterator
-from contextlib import ExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 
 from flow_atelier.schemas.conduit import split_harness_tool
 from flow_atelier.services.executor.base import PUBLISHER_ENV, child_environ, drop_credential_env
-from flow_atelier.services.store.events import file_lock
+from flow_atelier.services.executor.login_files import write_back_login
 
 _PATH_ENV = (
     "CLOUDSDK_CONFIG",
@@ -162,20 +160,7 @@ def product_login(
     try:
         yield
     finally:
-        refreshed = _read_scratch_login(copy)
-        if refreshed is not None and refreshed != original:
-            if not isinstance(json.loads(refreshed), dict):
-                raise ValueError("Invalid refreshed agent credentials")
-            # The user can log out and remove the login directory during the step.
-            with (
-                suppress(FileNotFoundError),
-                file_lock(real.with_suffix(".atelier.lock"), wait=True),
-            ):
-                if source.resolve() == real and real.is_file() and real.read_bytes() == original:
-                    with NamedTemporaryFile(dir=real.parent, delete_on_close=False) as temp:
-                        temp.write(refreshed)
-                        temp.close()
-                        os.replace(temp.name, real)
+        write_back_login(source, real, original, _read_scratch_login(copy))
 
 
 def cloud_sandbox(

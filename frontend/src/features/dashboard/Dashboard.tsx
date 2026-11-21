@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { toast } from "sonner";
+import { ChatPanel } from "@/features/dashboard/components/chat-panel";
 import { ConduitPicker } from "@/features/dashboard/components/conduit-picker";
 import { InputForm } from "@/features/dashboard/components/input-form";
 import { FlowHistory } from "@/features/dashboard/components/flow-history";
@@ -231,6 +232,7 @@ export default function Dashboard() {
           </section>
         </div>
         )}
+        <ChatPanel />
       </section>
 
       <ScheduleDialog

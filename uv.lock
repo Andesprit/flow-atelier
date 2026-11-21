@@ -553,7 +553,6 @@ dependencies = [
     { name = "prompt-toolkit" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
-    { name = "pywebpush" },
     { name = "pyyaml" },
     { name = "rich" },
     { name = "typer" },
@@ -562,7 +561,15 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+[package.optional-dependencies]
+push = [
+    { name = "pywebpush" },
+]
+
 [package.dev-dependencies]
+build = [
+    { name = "pyinstaller" },
+]
 dev = [
     { name = "httpx" },
     { name = "jsonschema" },
@@ -571,6 +578,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
+    { name = "pywebpush" },
     { name = "ruff" },
     { name = "websockets" },
 ]
@@ -583,7 +591,7 @@ requires-dist = [
     { name = "prompt-toolkit", specifier = ">=3.0" },
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pydantic-settings", specifier = ">=2.4" },
-    { name = "pywebpush", specifier = ">=2.5.0" },
+    { name = "pywebpush", marker = "extra == 'push'", specifier = ">=2.5.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.7" },
     { name = "typer", specifier = ">=0.19.0" },
@@ -591,8 +599,10 @@ requires-dist = [
     { name = "tzlocal", specifier = ">=5.2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.46.0" },
 ]
+provides-extras = ["push"]
 
 [package.metadata.requires-dev]
+build = [{ name = "pyinstaller", specifier = ">=6.10" }]
 dev = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "jsonschema", specifier = ">=4.23" },
@@ -601,6 +611,7 @@ dev = [
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-timeout", specifier = ">=2.3" },
+    { name = "pywebpush", specifier = ">=2.5.0" },
     { name = "ruff", specifier = ">=0.6" },
     { name = "websockets", specifier = ">=16.0" },
 ]

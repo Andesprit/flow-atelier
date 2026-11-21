@@ -11,6 +11,7 @@ import { fetchJson, resetTokenPrompt } from "@/services/client";
 describe("runtime API token", () => {
   beforeEach(() => {
     sessionStorage.clear();
+    setApiToken("");
     resetTokenPrompt();
     vi.restoreAllMocks();
   });
@@ -19,10 +20,11 @@ describe("runtime API token", () => {
     vi.unstubAllGlobals();
   });
 
-  it("round-trips through sessionStorage", () => {
+  it("keeps fallback bearer credentials in memory", () => {
     expect(getApiToken()).toBe("");
     setApiToken("s3cret");
     expect(getApiToken()).toBe("s3cret");
+    expect(sessionStorage.length).toBe(0);
   });
 
   it("sends no Authorization header when no token is set", async () => {

@@ -17,3 +17,15 @@ it("asks for permission only after Enable and leaves a denied device unsubscribe
   expect(register).not.toHaveBeenCalled();
 });
 
+
+it("shows the last delivery failure for this device", async () => {
+  vi.stubGlobal("Notification", {});
+  vi.stubGlobal("PushManager", {});
+  vi.stubGlobal("navigator", { serviceWorker: { getRegistration: async () => ({
+    pushManager: { getSubscription: async () => ({ endpoint: "https://push.example/device" }) },
+  }) } });
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response('{"last_error":"Push rejected (HTTP 403)"}')));
+  render(<PushToggle />);
+  await screen.findByText(/HTTP 403/);
+  expect(screen.getByText(/every project/i)).toBeTruthy();
+});

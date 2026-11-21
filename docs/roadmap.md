@@ -130,9 +130,13 @@ For Linux, verify the package signature or published checksum for the chosen for
 
 ## Phase 6. Mobile PWA
 
-The local launcher uses the project and global conduits on the serving machine.
-Mobile runner selection and exposed folder IDs follow Phase 5 pairing. Mobile
-chat and conversation reconnect follow the Phase 3 chat panel and Phase 5 relay.
+**Scope of PR #113.** The installed launcher runs project and global conduits on
+the serving machine. For 6.1 it caches only a built-in offline page, deviating
+from “cache the static shell” so a signed-out device retains no network responses
+or private project data. For 6.2, runner selection, exposed folders, offline-runner
+status and mobile chat/reconnect are deferred to a follow-up integrating the
+Phase 3 chat panel and Phase 5 runner/relay. The two-runner checks below apply
+to that follow-up.
 
 **Result.** Install the hosted dashboard on a phone, start a conduit on a chosen machine, chat with its local agent and get a completion notice when the app is closed.
 

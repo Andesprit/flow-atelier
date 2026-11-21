@@ -1186,10 +1186,13 @@ class Atelier:
 
     # ------------------------------------------------------------------ history
 
-    def list_prior_flows(self, project: Path | None = None) -> list[PriorFlow]:
+    def list_prior_flows(
+        self, project: Path | None = None, *, modified_since: float | None = None,
+    ) -> list[PriorFlow]:
         """Return :class:`PriorFlow` summaries for every flow on disk."""
         out: list[PriorFlow] = []
-        for flow_id, directory in self.store.flow_projects(project).items():
+        projects = self.store.flow_projects(project, modified_since=modified_since)
+        for flow_id, directory in projects.items():
             try:
                 conduit_name, _, _ = parse_flow_id(flow_id)
             except ValueError:

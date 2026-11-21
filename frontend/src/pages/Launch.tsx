@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { PushToggle } from "@/features/dashboard/components/push-toggle";
 import { Input } from "@/components/ui/input";
-import { BASE_URL, fetchJson } from "@/services/client";
+import { BASE_URL, fetchJson, forgetToken } from "@/services/client";
 import { inputDefault, inputHint, submittedInputs, type Conduit } from "@/types/conduit";
 
 const selectStyle = "block h-11 w-full rounded-sm border border-border bg-background px-3 text-base";
@@ -20,6 +20,7 @@ export default function Launch() {
   const [online, setOnline] = useState(navigator.onLine);
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
+  const lastLaunch = useRef({ form: "", id: "" });
   const navigate = useNavigate();
   const conduit = conduits.find((item) => item.name === selected);
 
@@ -28,8 +29,8 @@ export default function Launch() {
     fetchJson<string[]>(`${BASE_URL}/mobile/projects`, undefined, get).then((paths) => {
       if (!active) return;
       setProjects(paths);
-      setProject(paths[0]);
-      setFolder(paths[0]);
+      setProject(paths[0] ?? "");
+      if (!paths.length) setLoading(false);
     }).catch((e) => { if (active) { setError(e.message); setLoading(false); } });
     const update = () => setOnline(navigator.onLine);
     window.addEventListener("online", update);
@@ -59,6 +60,8 @@ export default function Launch() {
   function chooseProject(path: string) {
     setConduits([]);
     setSelected("");
+    lastLaunch.current.form = "";
+    setLoading(Boolean(path));
     setFolder(path);
     setProject(path);
     setError("");
@@ -73,8 +76,15 @@ export default function Launch() {
     const fields = new FormData(event.currentTarget);
     const values = Object.fromEntries(Object.keys(conduit.inputs).map((name) => [name, String(fields.get(name) ?? "")]));
     try {
+      const inputs = submittedInputs(conduit, values);
+      const form = JSON.stringify([project, conduit.name, inputs]);
+      if (lastLaunch.current.form !== form) {
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        lastLaunch.current = { form, id: Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("") };
+      }
       const result = await fetchJson<{ flowId: string }>(`${BASE_URL}/mobile/runs`, {
-        conduitName: conduit.name, runPath: project, inputs: submittedInputs(conduit, values),
+        conduitName: conduit.name, runPath: project, inputs, launchId: lastLaunch.current.id,
+        confirmedFolder: projects.includes(project) ? undefined : project,
       });
       navigate(`/runs/${encodeURIComponent(result.flowId)}`);
     } catch (e) {
@@ -88,17 +98,20 @@ export default function Launch() {
     <div className="mx-auto grid max-w-xl gap-5 px-4 py-6">
       <h1 className="font-display text-panel">Launch a conduit</h1>
       <label>Project folder
-        <select className={selectStyle} disabled={busy || !projects.length}
+        <select className={selectStyle} disabled={busy || (!project && !projects.length)}
           value={project} onChange={(e) => chooseProject(e.target.value)}>
           {projects.map((path) => <option key={path}>{path}</option>)}
+          {project && !projects.includes(project) && <option>{project}</option>}
           <option value="">Another folder…</option>
         </select>
       </label>
-      {!project && projects.length > 0 && (
+      {!project && !loading && (
         <form className="flex items-end gap-2" onSubmit={(e) => {
           e.preventDefault();
-          chooseProject(folder.trim());
-          setProjects((paths) => [...new Set([...paths, folder.trim()])]);
+          const path = folder.trim();
+          if (path && window.confirm(`Use ${path}? Launching will run this repository’s own recipes on the server.`)) {
+            chooseProject(path);
+          }
         }}>
           <label className="min-w-0 flex-1">Folder on this server
             <Input required value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="/path/to/project" />
@@ -129,6 +142,7 @@ export default function Launch() {
         </form>
       )}
       <PushToggle />
+      <Button variant="outline" onClick={() => forgetToken().catch((e) => setError(e.message))}>Forget token</Button>
     </div>
   );
 }

@@ -7,13 +7,14 @@ function worker() {
   const put = vi.fn();
   const showNotification = vi.fn();
   const openWindow = vi.fn();
+  const matchAll = vi.fn().mockResolvedValue([]);
   const caches = { open: async () => ({ put, match: async () => "offline shell" }) };
   runInNewContext(readFileSync("public/sw.js", "utf8"), {
     self: { location: { origin: "https://atelier.test" }, addEventListener: handlers.set.bind(handlers),
-      registration: { showNotification }, clients: { openWindow } },
+      registration: { showNotification }, clients: { openWindow, matchAll } },
     caches, URL, Response, fetch: vi.fn().mockRejectedValue(new Error("offline")),
   });
-  return { handlers, put, showNotification, openWindow };
+  return { handlers, put, showNotification, openWindow, matchAll };
 }
 
 it("stores only a built-in offline page and leaves private requests to the network", async () => {
@@ -35,7 +36,7 @@ it("stores only a built-in offline page and leaves private requests to the netwo
   expect(put).toHaveBeenCalledTimes(1);
 });
 
-it("displays the terminal status and opens only the matching local notice", () => {
+it("displays the terminal status and opens only the matching local notice", async () => {
   const { handlers, showNotification, openWindow } = worker();
   const run_id = "1234abcd".repeat(4);
   handlers.get("push")({ data: { json: () => ({ run_id, status: "failed" }) }, waitUntil: vi.fn() });
@@ -47,7 +48,23 @@ it("displays the terminal status and opens only the matching local notice", () =
   });
   click("/untrusted");
   click(run_id);
+  await vi.waitFor(() => expect(openWindow).toHaveBeenCalled());
   expect(openWindow).toHaveBeenCalledTimes(1);
   expect(openWindow).toHaveBeenCalledWith("/notice/" + run_id);
 });
 
+
+it("navigates and focuses an existing app window on a notice tap", async () => {
+  const { handlers, openWindow, matchAll } = worker();
+  const focus = vi.fn();
+  const navigate = vi.fn().mockResolvedValue({ focus });
+  matchAll.mockResolvedValue([{ url: "https://atelier.test/launch", navigate, focus }]);
+  const token = "01234567".repeat(4);
+  let done;
+  handlers.get("notificationclick")({ notification: { close: vi.fn(), data: { run_id: token } },
+    waitUntil: (p: Promise<void>) => { done = p; } });
+  await done;
+  expect(navigate).toHaveBeenCalledWith("/notice/" + token);
+  expect(focus).toHaveBeenCalled();
+  expect(openWindow).not.toHaveBeenCalled();
+});

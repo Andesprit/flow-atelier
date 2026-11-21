@@ -1,28 +1,40 @@
 import { BASE_URL, USE_MOCK, getApiToken, setApiToken } from "@/config/env";
 import { toCamelCase, toSnakeCase } from "./transforms";
 
-/**
- * Ask for the server's API token and remember it for this tab.
- *
- * `window.prompt` rather than a modal: this only fires when the server was
- * started with ATELIER_API_TOKEN, it needs no app state, and every REST call
- * already routes through `fetchJson` — a dialog would mean threading a
- * component through every call site for a path most users never hit.
- *
- * Returns "" when the user dismisses it, which lets the original 401 stand.
- */
-function promptForToken(): string {
-  if (declined || typeof window.prompt !== "function") return "";
-  const entered = window.prompt(
-    "This flow-atelier server requires an API token (ATELIER_API_TOKEN):",
-    "",
-  );
+let login: Promise<boolean> | undefined;
+let generation = 0;
+
+export function authenticate(): Promise<boolean> {
+  if (login) return login;
+  if (declined || typeof window.prompt !== "function") return Promise.resolve(false);
+  const entered = window.prompt("Enter this server’s API token (ATELIER_API_TOKEN).", "");
   if (!entered) {
     declined = true;
-    return "";
+    return Promise.resolve(false);
   }
-  setApiToken(entered);
-  return entered;
+  login = (async () => {
+    if (window.location.protocol === "https:" && window.location.origin === BASE_URL) {
+      const response = await fetch(BASE_URL + "/session", {
+        method: "POST", headers: { Authorization: `Bearer ${entered}` }, cache: "no-store",
+      });
+      if (!response.ok) throw new Error(`API error ${response.status}: Could not sign in.`);
+      setApiToken("");
+    } else {
+      setApiToken(entered);
+    }
+    generation++;
+    return true;
+  })().finally(() => { login = undefined; });
+  return login;
+}
+
+export async function forgetToken(): Promise<void> {
+  await fetchJson(BASE_URL + "/session", undefined, { method: "DELETE" });
+  setApiToken("");
+  try {
+    window.sessionStorage.removeItem("atelier:api-token");
+  } catch { /* Storage may be disabled. */ }
+  window.location.reload();
 }
 
 // Set once the user dismisses the dialog. Without it a dismissal is re-asked
@@ -83,6 +95,7 @@ export async function fetchJson<TResponse>(
     });
 
   let res: Response;
+  const before = generation;
   const sent = getApiToken();
   try {
     res = await send(sent);
@@ -97,11 +110,9 @@ export async function fetchJson<TResponse>(
     // A sibling request may have prompted while this one was in flight — the
     // dashboard fires several fetches on mount and they all 401 together. Reuse
     // whatever it stored instead of asking the same question once per request.
-    const stored = getApiToken();
-    const token = stored && stored !== sent ? stored : promptForToken();
-    if (token) {
+    if (generation !== before || await authenticate()) {
       try {
-        res = await send(token);
+        res = await send(getApiToken());
       } catch {
         throw new Error(`Can't reach the flow-atelier API at ${BASE_URL}`);
       }

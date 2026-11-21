@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from time import monotonic
+from uuid import UUID
 
+from anyio import CancelScope
 from anyio.abc import TaskStatus
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -37,9 +40,7 @@ def _project(base: Atelier, path: str) -> Atelier:
 
 @router.get("/projects")
 def projects(atelier: Atelier = Depends(get_atelier)) -> list[str]:
-    current = str(atelier.settings.atelier_dir.parent.resolve())
-    known = {str(path) for path in atelier.store.flow_projects().values()}
-    return [current, *sorted(known - {current})]
+    return sorted({str(path) for path in atelier.store.flow_projects(global_only=True).values()})
 
 
 @router.get("/conduits")
@@ -49,11 +50,35 @@ async def project_conduits(
     return await list_conduits(_project(atelier, project))
 
 
+class MobileLaunch(RunMessage):
+    launch_id: UUID | None = None
+    confirmed_folder: str | None = None
+
+
 @router.post("/runs", status_code=202)
 async def launch(
-    payload: RunMessage, request: Request, atelier: Atelier = Depends(get_atelier),
+    payload: MobileLaunch, request: Request, atelier: Atelier = Depends(get_atelier),
 ) -> dict[str, str]:
-    runner = _project(atelier, payload.run_path)
+    state = request.app.state
+    async with state.launch_lock:
+        now = monotonic()
+        state.launches = {key: entry for key, entry in state.launches.items() if entry[0] > now}
+        if previous := state.launches.get(payload.launch_id):
+            if previous[1] != payload:
+                raise HTTPException(409, "This launch ID was already used for another request.")
+            return {"flow_id": previous[2]}
+        runner = _project(atelier, payload.run_path)
+        folder = str(runner.settings.atelier_dir.parent)
+        if payload.confirmed_folder != payload.run_path and folder not in projects(atelier):
+            raise HTTPException(422, "Confirm this folder to run its own recipes.")
+        with CancelScope(shield=True):
+            flow_id = await _start(payload, runner, request)
+            if payload.launch_id:
+                state.launches[payload.launch_id] = (monotonic() + 300, payload, flow_id)
+        return {"flow_id": flow_id}
+
+
+async def _start(payload: MobileLaunch, runner: Atelier, request: Request) -> str:
 
     async def execute(*, task_status: TaskStatus[str]) -> None:
         started = False
@@ -79,10 +104,8 @@ async def launch(
             logger.exception("Mobile run failed after launch")
 
     try:
-        flow_id = await request.app.state.mobile_runs.start(execute)
+        return await request.app.state.mobile_runs.start(execute)
     except FileNotFoundError as exc:
         raise HTTPException(404, "Conduit not found in the selected project") from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    return {"flow_id": flow_id}
-

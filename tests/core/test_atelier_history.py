@@ -35,6 +35,12 @@ async def test_list_prior_flows_after_run_returns_one(atelier, tmp_path):
     assert isinstance(flows[0], PriorFlow)
     assert flows[0].flow_id == out.flow_id
     assert flows[0].status == "completed"
+    from time import time
+    from unittest.mock import patch
+
+    with patch("flow_atelier.services.store.filesystem.RunJournal.header",
+               side_effect=AssertionError("opened an old journal")):
+        assert atelier.list_prior_flows(modified_since=time() + 10) == []
 
 
 async def test_get_flow_logs_round_trips(atelier, tmp_path):

@@ -72,11 +72,11 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install 3.13
-      - run: uv sync --dev
+      - run: uv sync --no-dev --group build
       - name: Build binary
         shell: bash
         run: |
-          uv run pyinstaller scripts/atelier_entry.py \
+          uv run --no-sync pyinstaller scripts/atelier_entry.py \
             --onefile --name atelier --clean --noconfirm \
             --copy-metadata flow-atelier \
             --collect-data flow_atelier \

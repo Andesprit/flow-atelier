@@ -18,10 +18,10 @@ def test_push_is_opt_in_private_and_deduplicated(tmp_path, monkeypatch):
     push = WebPush(atelier.settings.global_atelier_dir)
     assert not push.path.exists()
     client = TestClient(
-        FastApiServer().create_app(atelier, api_token="secret"), base_url="http://localhost"
+        FastApiServer().create_app(atelier, api_token="secret"), base_url="https://localhost"
     )
     assert client.get("/push/key").status_code == 401
-    client.headers.update({"Authorization": "Bearer secret"})
+    client.headers.update({"Authorization": "Bearer secret", "Origin": "https://phone.example"})
     public = client.get("/push/key").json()["key"]
     assert client.get("/push/key").json()["key"] == public
     if os.name == "posix":
@@ -43,6 +43,8 @@ def test_push_is_opt_in_private_and_deduplicated(tmp_path, monkeypatch):
         ).status_code
         == 422
     )
+    for origin in ("https://[bad", "https://user@host", "https://phone.example/path"):
+        assert client.post("/push/subscriptions", json=sub, headers={"Origin": origin}).status_code == 422
     assert client.post("/push/subscriptions", json=sub).status_code == 204
     sent = []
     status = 201
@@ -67,13 +69,14 @@ def test_push_is_opt_in_private_and_deduplicated(tmp_path, monkeypatch):
         status="completed",
         finished_at=datetime.now(UTC).isoformat(),
     )
-    monkeypatch.setattr(atelier, "list_prior_flows", lambda: [run])
+    monkeypatch.setattr(atelier, "list_prior_flows", lambda **kwargs: [run])
     payloads = []
-    import flow_atelier.services.web_push as module
+    import pywebpush as module
 
     real_send = module.webpush
 
     def capture(**kwargs):
+        assert kwargs["vapid_claims"]["sub"] == (atelier.settings.vapid_subject or "https://phone.example")
         payloads.append(json.loads(kwargs["data"]))
         return real_send(**kwargs)
 
@@ -97,8 +100,38 @@ def test_push_is_opt_in_private_and_deduplicated(tmp_path, monkeypatch):
     assert len(sent) == 1
     assert client.post("/push/subscriptions", json=sub).status_code == 204
     run.finished_at = datetime.now(UTC).isoformat()
+    status = 403
+    atelier.settings.vapid_subject = "mailto:admin@example.org"
+    push.deliver(atelier)
+    check = client.post("/push/status", json={"endpoint": sub["endpoint"]})
+    assert "403" in check.json()["last_error"]
+    run.flow_id = "20261121_abcdef14_retry"
+    run.finished_at = datetime.now(UTC).isoformat()
+    finished = datetime.fromisoformat(run.finished_at).timestamp()
+    monkeypatch.setattr(atelier, "list_prior_flows", lambda modified_since:
+                        [run] if finished >= modified_since else [])
+    status = 503
+    push.deliver(atelier)
+    # The other server already observed this run while the first sender held the claim.
+    other = WebPush(atelier.settings.global_atelier_dir)
+    other.finished_watermark = finished + 2
+    status = 201
+    other.deliver(atelier)
+    assert client.post("/push/status", json={"endpoint": sub["endpoint"]}).json()["last_error"] is None
+    run.flow_id = "20261121_abcdef14_expiring"
+    run.finished_at = datetime.now(UTC).isoformat()
     status = 410
     push.deliver(atelier)
     run.flow_id = "20261121_abcdef14_third"
     push.deliver(atelier)
-    assert len(sent) == 2
+    assert len(sent) == 5
+
+
+def test_missing_extra_keeps_api_available_and_explains_setup(tmp_path, monkeypatch):
+    monkeypatch.setattr("flow_atelier.routes.push.find_spec", lambda _: None)
+    client = TestClient(FastApiServer().create_app(Atelier(base_dir=tmp_path / ".atelier")),
+                        base_url="http://localhost")
+    assert client.get("/mobile/projects").status_code == 200
+    response = client.get("/push/key")
+    assert response.status_code == 503
+    assert "flow-atelier[push]" in response.json()["detail"]

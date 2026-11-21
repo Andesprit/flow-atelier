@@ -34,6 +34,19 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const token = event.notification.data?.run_id;
-  if (/^[a-f0-9]{32}$/.test(token)) event.waitUntil(self.clients.openWindow("/notice/" + token));
+  if (!/^[a-f0-9]{32}$/.test(token)) return;
+  const path = "/notice/" + token;
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of windows) {
+      const url = new URL(client.url);
+      if (url.origin !== self.location.origin) continue;
+      try {
+        const target = url.pathname === path ? client : await client.navigate(path);
+        if (target) return await target.focus();
+      } catch { /* The client may have closed since matchAll. */ }
+    }
+    return self.clients.openWindow(path);
+  })());
 });
 

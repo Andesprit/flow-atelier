@@ -16,6 +16,25 @@ export function PushToggle() {
       .finally(() => setBusy(false));
   }, [supported]);
 
+  useEffect(() => {
+    if (!device) return;
+    let active = true;
+    const refresh = () => {
+      if (document.hidden) return;
+      fetchJson<{ lastError: string | null }>(BASE_URL + "/push/status", { endpoint: device.endpoint })
+        .then(({ lastError }) => { if (active) setMessage(lastError ?? ""); })
+        .catch((e) => { if (active) setMessage(e.message); });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 30000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [device]);
+
   async function toggle() {
     setBusy(true);
     setMessage("");
@@ -58,6 +77,7 @@ export function PushToggle() {
           {device ? "Disable completion notifications" : "Enable completion notifications"}
         </Button>
       ) : <p>Completion notifications require a supported secure browser or Home Screen app.</p>}
+      {supported && <p>Receive completions from every project on this machine, including CLI, scheduled and desktop runs.</p>}
       {message && <p role="status" className="text-muted-foreground">{message}</p>}
     </section>
   );

@@ -85,6 +85,7 @@ async def test_executor_emits_hitl_request_envelope(store):
     assert result.exit_code == 0
     assert sink.sent[0]["type"] == "hitl_request"
     assert sink.sent[0]["flow_id"] == ctx.flow_id
+    assert "Please answer" in sink.sent[0]["inputs"][0]["description"]
     assert any(
         item["name"] == "confirm" for item in sink.sent[0].get("inputs", [])
     )

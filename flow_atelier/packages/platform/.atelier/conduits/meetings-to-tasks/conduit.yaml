@@ -1,0 +1,14 @@
+name: meetings-to-tasks
+description: Read Dictaria meetings and prepare isolated task drafts for their owner.
+tasks:
+  - intake:
+      description: Read meetings and collect drafts from restricted task workers
+      tool: tool:meeting-task
+      task: collect
+      timeout: 2100
+  - notify:
+      description: Send the owner a summary with draft PR links
+      tool: tool:meeting-task
+      task: notify
+      depends_on: [intake]
+

@@ -348,3 +348,12 @@ def serve_cmd(
         asyncio.run(_run())
     except KeyboardInterrupt:
         pass
+
+
+@app.command("serve-hooks", help="Serve signed error webhooks on a separate loopback port.")
+def serve_hooks_cmd(port: int = typer.Option(8001, min=1, max=65535)) -> None:
+    import uvicorn
+
+    from flow_atelier.services.api.error_hooks import create_webhook_app
+
+    uvicorn.run(create_webhook_app(AtelierSettings()), host="127.0.0.1", port=port)

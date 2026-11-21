@@ -159,7 +159,13 @@ def test_rejected_settings_keep_trusted_values_and_report_sources(
     user = _isolate_global_atelier_dir / "settings.json"
     project = tmp_path / ".atelier/settings.json"
     project.parent.mkdir()
-    trusted = {"cleanupPeriodDays": 45, "agentPermissions": "read-only"}
+    trusted = {
+        "cleanupPeriodDays": 45, "agentPermissions": "read-only",
+        "webhookSources": {"app": {"project": "/app"}},
+        "webhookSecrets": {"app": "private-value"}, "notificationRecipient": "+123",
+        "notificationProvider": "twilio", "dictariaAccount": "my-account",
+        "runCaps": {"errors": 2}, "draftCiDisabledRepositories": ["fixture/approved"],
+    }
     shell_only = {"apiToken": "private-value", "claudeLaunchCmd": ["ignored-command"],
                   "atelierDir": "private-value"}
     user.write_text(json.dumps(trusted | shell_only))
@@ -171,9 +177,17 @@ def test_rejected_settings_keep_trusted_values_and_report_sources(
     ))
     monkeypatch.setenv("ATELIER_API_TOKEN", "shell-token")
     monkeypatch.setenv("ATELIER_CLAUDE_LAUNCH_CMD", '["trusted-command"]')
+    monkeypatch.setenv("ATELIER_DRAFT_CI_DISABLED_REPOSITORIES", '["fixture/unapproved"]')
     s = AtelierSettings()
+    assert s.draft_ci_disabled_repositories == ["fixture/approved"]
     assert s.cleanup_period_days == 45
     assert s.atelier_dir == tmp_path / ".atelier"
+    assert s.webhook_sources == trusted["webhookSources"]
+    assert s.webhook_secrets["app"].get_secret_value() == "private-value"
+    assert s.notification_recipient == "+123"
+    assert s.notification_provider == "twilio"
+    assert s.dictaria_account == "my-account"
+    assert s.run_caps == {"errors": 2}
     assert s.agent_permissions == "read-only"
     assert s.api_token == "shell-token" and s.claude_launch_cmd == ["trusted-command"]
     err = capsys.readouterr().err

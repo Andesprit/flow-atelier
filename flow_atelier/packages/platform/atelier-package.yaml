@@ -1,0 +1,8 @@
+name: platform
+version: 3
+conduits:
+  - error-to-pr
+  - idea-to-product
+  - continuous-improvement
+  - meetings-to-tasks
+

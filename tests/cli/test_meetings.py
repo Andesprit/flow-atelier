@@ -16,13 +16,13 @@ from starlette.responses import Response
 from typer.testing import CliRunner
 
 from flow_atelier.cli import app
+from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.schemas.api import CreateScheduleInput
 from flow_atelier.services.store.claims import EventClaims
 
 IDS = [str(UUID(int=n)) for n in (7, 3, 1)]
 TOKEN = "fixture-only-access-token"
-PACKAGE = Path(__file__).resolve().parents[2] / "flow_atelier/packages/platform"
 
 
 @pytest.fixture
@@ -170,7 +170,9 @@ def test_incomplete_transcript_and_malformed_extraction_are_retryable(intake):
 
 
 def test_five_minute_recipe():
-    recipe = PACKAGE / ".atelier/conduits/meetings-to-tasks"
+    atlas = Atelier()
+    atlas.install_package("builtin:platform")
+    recipe = atlas.settings.global_atelier_dir / "conduits/meetings-to-tasks"
     assert yaml.safe_load((recipe / "conduit.yaml").read_text())["tasks"][0]["intake"]["task"] == "collect"
     config = CreateScheduleInput.model_validate(yaml.safe_load((recipe / "schedule.yaml").read_text()))
     assert config.conduit_name == "meetings-to-tasks" and config.schedule.every_minutes == 5

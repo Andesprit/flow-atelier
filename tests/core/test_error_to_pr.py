@@ -48,7 +48,12 @@ async def test_webhook_to_verified_draft(tmp_path, monkeypatch, reproduces, nati
     git(project, "remote", "add", "origin", "https://github.com/fixture/orders.git")
     (project / "orders.py").write_text("def total(): return 2\n")
     (project / "notes").write_text("fixture")
-    git(project, "add", "orders.py", "notes")
+    (project / "test_orders.py").write_text(
+        "import unittest\nfrom orders import total\n"
+        "class Orders(unittest.TestCase):\n"
+        "    def test_returns_count(self): self.assertIsInstance(total(), int)\n"
+    )
+    git(project, "add", "orders.py", "test_orders.py", "notes")
     git(
         project,
         "-c",
@@ -60,6 +65,7 @@ async def test_webhook_to_verified_draft(tmp_path, monkeypatch, reproduces, nati
         "fixture",
     )
     parent = git(project, "rev-parse", "main")
+    python = "/usr/bin/python3" if native else sys.executable
     home = AtelierSettings().global_atelier_dir
     (home / "settings.json").write_text(
         json.dumps(
@@ -73,8 +79,8 @@ async def test_webhook_to_verified_draft(tmp_path, monkeypatch, reproduces, nati
                     str(project.resolve()): {
                         "repository": "fixture/orders",
                         "test_file": "test_{id}.py",
-                        "regression": ["/usr/bin/python3", "{test}"],
-                        "suite": ["/usr/bin/python3", "-m", "unittest", "discover"],
+                        "regression": [python, "{test}"],
+                        "suite": [python, "-m", "unittest", "discover"],
                     }
                 },
             }
@@ -216,7 +222,7 @@ async def test_webhook_to_verified_draft(tmp_path, monkeypatch, reproduces, nati
     run = result["run_id"]
     assert git(project, "rev-parse", "main") == parent
     assert git(project, "status", "--porcelain") == ""
-    assert len(starts) == 1, atlas.store.read_logs(run)
+    assert len(starts) == 1, [entry.stderr for entry in atlas.store.read_logs(run)]
     assert git(remote, "rev-parse", "main") == parent
     if unsafe_change:
         assert result["status"] == "failed" and not prs and not sends

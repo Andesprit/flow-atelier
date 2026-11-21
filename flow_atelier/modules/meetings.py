@@ -13,11 +13,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
 
+from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.services.dictaria.base import MeetingReader
 from flow_atelier.services.store.claims import EventClaims
 from flow_atelier.services.store.events import file_lock
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class PollAlreadyActive(ValueError):
+    """Another intake already owns this account's cursor."""
 
 
 class Assignment(BaseModel):
@@ -69,6 +74,17 @@ def _id(*parts: str) -> str:
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()
 
 
+async def intake(settings: AtelierSettings, project: Path) -> dict:
+    from flow_atelier.services.dictaria.client import connect
+
+    account = (settings.dictaria_account or "").strip()
+    if not account or not settings.dictaria_url:
+        raise ValueError("configure dictariaAccount and dictariaUrl in user settings")
+    async with connect(settings.dictaria_url, account) as reader:
+        return await poll(reader, settings.global_atelier_dir, account, settings.dictaria_aliases,
+                          project)
+
+
 async def poll(
     reader: MeetingReader, home: Path, account: str, aliases: Iterable[str], project: Path,
 ) -> dict:
@@ -108,7 +124,7 @@ async def poll(
 
     with file_lock(folder / ".poll.lock", wait=False) as acquired:
         if not acquired:
-            raise ValueError("another poll is active for this Dictaria account")
+            raise PollAlreadyActive("another poll is active for this Dictaria account")
         cursor = folder / "cursor.json"
         since = datetime.fromisoformat(json.loads(cursor.read_bytes())) if cursor.exists() else None
         newest = since

@@ -160,6 +160,10 @@ class WorkerSandbox:
     async def __aexit__(self, *exc: object) -> None:
         await self._stack.aclose()
 
+    async def stop_agent(self) -> None:
+        """Stop an unfinished turn before collecting files with the restricted command runner."""
+        await _stop(self.proc)
+
     async def _send(self, message: dict) -> None:
         self.proc.stdin.write(json.dumps(message).encode() + b"\n")
         await self.proc.stdin.drain()
@@ -183,9 +187,9 @@ class WorkerSandbox:
                     raise WorkerUnavailable(f"Codex refused {method}")
                 return message["result"]
 
-    async def turn(self, prompt: str) -> None:
+    async def turn(self, prompt: str, *, timeout: float = 900) -> None:
         """Send data only after confirming the active thread's permissions and empty MCP list."""
-        async with asyncio.timeout(900):
+        async with asyncio.timeout(timeout):
             await self._rpc(
                 "turn/start",
                 {

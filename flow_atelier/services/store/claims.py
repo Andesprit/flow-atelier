@@ -103,13 +103,41 @@ class EventClaims:
                 ) RETURNING run_id, project, conduit, inputs""", (self.category,),
             ).fetchone()
 
-    def waiting(self) -> list[sqlite3.Row]:
+    def waiting(self, *, include_running: bool = False) -> list[sqlite3.Row]:
         """Read the backlog for a producer that holds its own exclusive processing lease."""
         with self._transaction() as db:
             return db.execute(
-                "SELECT run_id, project, inputs FROM claims WHERE category=? AND status='queued'"
-                " ORDER BY rowid", (self.category,),
+                "SELECT run_id, project, inputs FROM claims WHERE category=?"
+                " AND (status='queued' OR (? AND status='running')) ORDER BY rowid",
+                (self.category, include_running),
             ).fetchall()
+
+    def dispatch_lease(self):
+        digest = hashlib.sha256(self.category.encode()).hexdigest()
+        return file_lock(self.home / f".dispatch-{digest}.lock", wait=False)
+
+    def start_reserved(self, run_id: str) -> None:
+        """Mark work selected under the dispatch lease; retain inputs across a process exit."""
+        with self._transaction() as db:
+            db.execute(
+                "UPDATE claims SET status='running' WHERE category=? AND run_id=?"
+                " AND status='queued'", (self.category, run_id),
+            )
+
+    def finish_reserved(self, run_id: str, status: str) -> None:
+        with self._transaction() as db:
+            db.execute(
+                "UPDATE claims SET status=?, inputs=CASE WHEN ?='queued' THEN inputs END"
+                " WHERE category=? AND run_id=? AND status='running'",
+                (status, status, self.category, run_id),
+            )
+
+    def lookup(self, key: str) -> Claim | None:
+        with self._transaction() as db:
+            row = db.execute(
+                "SELECT run_id, status FROM claims WHERE category=? AND key=?", (self.category, key)
+            ).fetchone()
+            return Claim(*row) if row else None
 
     def complete_queued(self, run_id: str) -> None:
         """Acknowledge inline processing only after its durable outputs are committed."""
@@ -170,19 +198,14 @@ class EventClaims:
             except Exception as exc:
                 logger.error("Event run %s failed (%s)", row["run_id"], type(exc).__name__)
                 status = "failed"
-            with self._transaction() as db:
-                db.execute(
-                    "UPDATE claims SET status=?, inputs=NULL WHERE run_id=? AND status='running'",
-                    (status, row["run_id"]),
-                )
+            self.finish_reserved(row["run_id"], status)
 
     async def dispatch(self, cap: int, stopped: asyncio.Event) -> None:
         """Drain on startup and accept new jobs until asked to finish active runs."""
         if cap < 1:
             raise ValueError("run cap must be positive")
-        digest = hashlib.sha256(self.category.encode()).hexdigest()
         while not stopped.is_set():
-            with file_lock(self.home / f".dispatch-{digest}.lock", wait=False) as owner:
+            with self.dispatch_lease() as owner:
                 if owner:
                     self._recover()
                     async with asyncio.TaskGroup() as group:

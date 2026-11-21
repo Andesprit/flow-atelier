@@ -6,6 +6,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from flow_atelier.services.executor.worker import SYSTEM_PATH
@@ -38,7 +39,7 @@ def git(directory: Path, *args: str, data: bytes | None = None) -> bytes:
     return result.stdout
 
 
-def _remote(argv: list[str], env: dict[str, str], cwd: Path) -> str:
+def _remote(argv: list[str], env: dict[str, str], cwd: Path, *, timeout: float = 120) -> str:
     result = subprocess.run(
         argv,
         cwd=cwd,
@@ -46,7 +47,7 @@ def _remote(argv: list[str], env: dict[str, str], cwd: Path) -> str:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=timeout,
     )
     if result.returncode:
         raise RuntimeError(
@@ -57,19 +58,39 @@ def _remote(argv: list[str], env: dict[str, str], cwd: Path) -> str:
 
 def publish_draft(snapshot: Path, repository: str, branch: str) -> str:
     """Only push the verified branch and create or recover its draft PR."""
-    if (
-        not re.fullmatch(REPOSITORY, repository)
-        or repository.endswith(("/.", "/.."))
-        or not re.fullmatch(r"atelier/errors/[0-9]{8}_[0-9a-f]{8}_error-to-pr", branch)
-    ):
+    if not re.fullmatch(r"atelier/errors/[0-9]{8}_[0-9a-f]{8}_error-to-pr", branch):
         raise ValueError("Invalid error PR destination")
+    return _publish(snapshot, repository, branch, meeting=False)
+
+
+def publish_meeting_draft(
+    snapshot: Path,
+    repository: str,
+    task_id: str,
+    branch: str,
+    deadline: float | None = None,
+) -> str:
+    """Publish only this task's exact branch to a private repository."""
+    if not re.fullmatch(r"[0-9a-f]{64}", task_id) or branch != f"atelier/meetings/{task_id}":
+        raise ValueError("Invalid meeting PR destination")
+    return _publish(snapshot, repository, branch, meeting=True, deadline=deadline)
+
+
+def _publish(
+    snapshot: Path,
+    repository: str,
+    branch: str,
+    *,
+    meeting: bool,
+    deadline: float | None = None,
+) -> str:
+    if not re.fullmatch(REPOSITORY, repository) or repository.endswith(("/.", "/..")):
+        raise ValueError("Invalid PR destination")
     if git(snapshot, "config", "--get", "atelier.repository").decode().strip() != repository:
         raise ValueError("Verified repository differs from publication target")
     gh = shutil.which("gh", path=SYSTEM_PATH)
     if not gh:
         raise ValueError("GitHub CLI is required for draft publication")
-    sha = git(snapshot, "rev-parse", "--verify", "refs/heads/" + branch).decode().strip()
-    parent = git(snapshot, "rev-parse", sha + "^").decode().strip()
     env = {
         "HOME": str(Path.home()),
         "PATH": SYSTEM_PATH,
@@ -79,8 +100,23 @@ def publish_draft(snapshot: Path, repository: str, branch: str) -> str:
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
     }
+
+    def remote(argv: list[str]) -> str:
+        if deadline is None:
+            return _remote(argv, env, snapshot)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Meeting publication deadline reached")
+        return _remote(argv, env, snapshot, timeout=min(remaining, 120))
+
+    if meeting:
+        visibility = remote([gh, "api", f"repos/{repository}", "--jq", ".visibility"])
+        if visibility != "private":
+            raise ValueError("Meeting drafts require a private GitHub repository")
+    sha = git(snapshot, "rev-parse", "--verify", "refs/heads/" + branch).decode().strip()
+    parent = git(snapshot, "rev-parse", sha + "^").decode().strip()
     existing = json.loads(
-        _remote(
+        remote(
             [
                 gh,
                 "pr",
@@ -94,10 +130,8 @@ def publish_draft(snapshot: Path, repository: str, branch: str) -> str:
                 "--state",
                 "all",
                 "--json",
-                "url,headRefOid,isCrossRepository",
+                "url,headRefOid,isCrossRepository" + (",isDraft" if meeting else ""),
             ],
-            env,
-            snapshot,
         )
     )
     if existing:
@@ -105,19 +139,18 @@ def publish_draft(snapshot: Path, repository: str, branch: str) -> str:
             len(existing) != 1
             or existing[0]["headRefOid"] != sha
             or existing[0]["isCrossRepository"]
+            or (meeting and existing[0].get("isDraft") is not True)
         ):
             raise ValueError("Conflicting existing pull request")
         url = existing[0]["url"]
     else:
-        main = _remote(
+        main = remote(
             [gh, "api", f"repos/{repository}/git/ref/heads/main", "--jq", ".object.sha"],
-            env,
-            snapshot,
         )
         if main != parent:
             raise ValueError("Remote main differs from the verified parent")
         ref = "refs/heads/" + branch
-        _remote(
+        remote(
             [
                 "git",
                 "-c",
@@ -131,10 +164,8 @@ def publish_draft(snapshot: Path, repository: str, branch: str) -> str:
                 f"https://github.com/{repository}.git",
                 f"{sha}:{ref}",
             ],
-            env,
-            snapshot,
         )
-        url = _remote(
+        url = remote(
             [
                 gh,
                 "pr",
@@ -147,13 +178,15 @@ def publish_draft(snapshot: Path, repository: str, branch: str) -> str:
                 "--head",
                 branch,
                 "--title",
-                "Fix reported application error",
+                "Meeting task draft" if meeting else "Fix reported application error",
                 "--body",
-                f"Run {branch.split('/')[-1]} reproduced the error on main. "
-                "The regression test and project suite passed on this branch.",
+                (
+                    f"Draft for meeting task {branch.split('/')[-1]}."
+                    if meeting
+                    else f"Run {branch.split('/')[-1]} reproduced the error on main. "
+                    "The regression test and project suite passed on this branch."
+                ),
             ],
-            env,
-            snapshot,
         )
     if not re.fullmatch(rf"https://github\.com/{re.escape(repository)}/pull/[1-9][0-9]*", url):
         raise ValueError("GitHub returned an unexpected PR URL")

@@ -87,6 +87,7 @@ class ToolType(str, Enum):
     hitl = "tool:hitl"
     conduit = "tool:conduit"
     error_pr = "tool:error-to-pr"
+    meeting_task = "tool:meeting-task"
     claude = "harness:claude-code"
     codex = "harness:codex"
     opencode = "harness:opencode"

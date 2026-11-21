@@ -67,6 +67,7 @@ from flow_atelier.services.executor.conduit import ConduitExecutor
 from flow_atelier.services.executor.error_pr import ErrorPrExecutor
 from flow_atelier.services.executor.harness import AcpHarnessExecutor
 from flow_atelier.services.executor.hitl import HitlExecutor
+from flow_atelier.services.executor.meeting_task import MeetingTaskExecutor
 from flow_atelier.services.executor.prompt_sink import PromptSink, TerminalPromptSink
 from flow_atelier.services.package import (
     InstallReport,
@@ -81,6 +82,7 @@ from flow_atelier.services.package import (
     write_lockfile,
 )
 from flow_atelier.services.scheduler.store import ScheduleStore
+from flow_atelier.services.store.claims import EventClaims
 from flow_atelier.services.store.events import RunRecordError
 from flow_atelier.services.store.filesystem import FilesystemStore
 
@@ -134,6 +136,7 @@ class Atelier:
             "tool:hitl": HitlExecutor(),
             "tool:conduit": ConduitExecutor(),
             "tool:error-to-pr": ErrorPrExecutor(self.settings),
+            "tool:meeting-task": MeetingTaskExecutor(self.settings),
         }
         self._register_harnesses(sink)
         self.engine = Engine(
@@ -547,6 +550,17 @@ class Atelier:
             workspaces=spaces,
         )
 
+    def _replay_conduit(self, flow_id: str, name: str) -> Conduit:
+        if name == "meeting-task":
+            task_id = self.store.read_input(flow_id).get("task_id")
+            if isinstance(task_id, str):
+                queue = EventClaims(self.settings.global_atelier_dir, "meeting-tasks")
+                claim = queue.lookup(task_id)
+                if claim and claim.run_id == flow_id:
+                    # The queue owns the fixed sandbox recipe and this assignment's stable run ID.
+                    raise ValueError("Retry this claimed task by running meetings-to-tasks")
+        return self.store.read_conduit(name)
+
     async def resume_flow(
         self,
         flow_id: str,
@@ -611,7 +625,7 @@ class Atelier:
                 "this host; refusing to resume to avoid a double-run"
             )
         conduit_name, _, _ = parse_flow_id(flow_id)
-        conduit = self.store.read_conduit(conduit_name)
+        conduit = self._replay_conduit(flow_id, conduit_name)
         requested = normalize_bindings(dict(agents or {}))
         # Every gate below asks about the work this resume will hand to an
         # executor. A completed task is not re-run: its agent is a record of who
@@ -799,7 +813,7 @@ class Atelier:
         """
         self = self.for_flow(flow_id)
         conduit_name, _, _ = parse_flow_id(flow_id)
-        conduit = self.store.read_conduit(conduit_name)
+        conduit = self._replay_conduit(flow_id, conduit_name)
         inputs = {**self.store.read_input(flow_id), **(overrides or {})}
         prior = self.store.read_progress(flow_id)
         conduit, effective = self._inherit_agents(

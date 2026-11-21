@@ -1,5 +1,5 @@
 /** Tools backed by flow-atelier's own executors. A closed set. */
-export type BuiltinToolType = "tool:bash" | "tool:hitl" | "tool:conduit" | "tool:error-to-pr";
+export type BuiltinToolType = "tool:bash" | "tool:hitl" | "tool:conduit" | "tool:error-to-pr" | "tool:meeting-task";
 
 /**
  * Any ACP agent, named by its ACP-registry id (`harness:gemini`) or by a

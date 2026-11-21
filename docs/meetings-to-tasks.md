@@ -1,4 +1,4 @@
-# Collect tasks from Dictaria meetings
+# Prepare drafts from Dictaria meetings
 
 Install the platform bundle with `atelier install builtin:platform --no-project`. From the
 target repository, `atelier run meetings-to-tasks` polls the configured Dictaria
@@ -12,7 +12,9 @@ Set the endpoint, account identity, and optional exact owner aliases in
 {
   "dictariaUrl": "https://dictaria.example/mcp",
   "dictariaAccount": "alex@example.com",
-  "dictariaAliases": ["Alex Rivera"]
+  "dictariaAliases": ["Alex Rivera"],
+  "meetingRepositories": {"/absolute/path/to/project": "example/private-repo"},
+  "runCaps": {"meeting-tasks": 2}
 }
 ```
 
@@ -45,14 +47,40 @@ These local artifacts persist across polls. The extractor's validated decisions
 are saved before task submission, so a restart can finish a partially queued
 meeting with its original task IDs.
 
-The handoff for slice 2.11 is the `meeting-tasks` event queue. Each entry targets
-the original repository and the `meeting-task` conduit with `task_id`, `meeting_id`,
-`assignee`, and `task` inputs. Treat all task text as untrusted data. The queue
-retains at most 100 waiting tasks. At capacity intake stops and resumes after
-space becomes available. Worker execution and publication belong to slice 2.11.
+## Task workers and draft publication
+
+Use a Linux or macOS runner with the supported Codex OS sandbox, an authenticated
+GitHub CLI, and the fixed-recipient WhatsApp sender. The repository path in
+`meetingRepositories` must match the checkout's resolved path and its GitHub
+origin. Set up notifications in user settings. [WhatsApp sender setup](guide.md#send-a-whatsapp-run-summary)
+
+Workers start as assignments arrive. The default machine-wide limit is two.
+Each task gets a separate scratch branch containing the files tracked on local
+`main`. Use a checkout whose tracked contents are suitable for the worker.
+The worker receives
+the selected assignment as untrusted text. Its filesystem and network policy
+and empty MCP server list are checked before the turn begins. The source repo
+and the launcher's credential directories stay outside its workspace.
+
+Open the run's `summary.md` to find each task's draft document, message draft,
+proposed patch and draft PR. Draft files live under the child run's `drafts/`
+directory in local run output. At 30 minutes the poll stops starting work,
+preserves available draft files, and reports partial and queued tasks.
+Later polls consume waiting work. The standalone `atelier meetings-intake`
+command reads and queues assignments without starting workers.
+
+The publisher checks GitHub's repository visibility and restricts writes to
+the exact `atelier/meetings/<task-id>` branch of the configured private repo.
+It rejects file deletions, special files, changes to hidden paths, and a remote
+`main` that has moved past the draft's parent. Completed local drafts survive a
+publication failure, so a later poll can reuse the same snapshot. To retry a
+queued worker, run `atelier run meetings-to-tasks` in its original repository.
+The final
+notification reports counts and remote draft PR URLs to the configured owner.
+Message drafts for meeting participants remain files for review.
 
 The five-minute schedule is opt-in. After verifying intake with your test
-account and preparing the downstream consumer, run the following from the
+account, sandbox and private repository, run the following from the
 target repository. The scheduler records its absolute path at registration.
 
 ```sh

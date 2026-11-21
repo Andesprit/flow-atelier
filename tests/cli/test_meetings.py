@@ -171,7 +171,7 @@ def test_incomplete_transcript_and_malformed_extraction_are_retryable(intake):
 
 def test_five_minute_recipe():
     recipe = PACKAGE / ".atelier/conduits/meetings-to-tasks"
-    assert yaml.safe_load((recipe / "conduit.yaml").read_text())["tasks"][0]["intake"]["task"] == "atelier meetings-intake"
+    assert yaml.safe_load((recipe / "conduit.yaml").read_text())["tasks"][0]["intake"]["task"] == "collect"
     config = CreateScheduleInput.model_validate(yaml.safe_load((recipe / "schedule.yaml").read_text()))
     assert config.conduit_name == "meetings-to-tasks" and config.schedule.every_minutes == 5
 

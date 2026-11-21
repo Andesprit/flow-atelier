@@ -66,3 +66,26 @@ jobs:
         run: |
           rm -rf flow_atelier
           "$RUNNER_TEMP/fresh/bin/python" -m pytest
+
+  desktop:
+    name: Desktop (macOS arm64)
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.13 && uv sync --locked
+      - run: cargo install tauri-cli --version '=2.12.1' --locked
+      - run: cargo test --release --locked --manifest-path desktop/Cargo.toml
+      - run: cargo clippy --release --locked --manifest-path desktop/Cargo.toml --all-targets -- -D warnings
+      - name: Test native notices and signing modes
+        run: |
+          clang -Wall -Werror -fobjc-arc desktop/tests/notifications.m -framework Foundation -framework AppKit -framework UserNotifications -o "$RUNNER_TEMP/notices"
+          "$RUNNER_TEMP/notices"
+          bash desktop/tests/signing-mode.sh
+      - name: Build and exercise the unsigned app bundle
+        run: |
+          desktop/build.sh
+          export ATELIER_TEST_DESKTOP_SIDECAR="$PWD/desktop/target/release/bundle/macos/Flow Atelier.app/Contents/Resources/atelier/atelier"
+          uv run --locked pytest -q tests/cli/test_serve_idle_exit.py::test_desktop_parent_death_stops_server_and_active_shell

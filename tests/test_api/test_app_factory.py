@@ -1,6 +1,10 @@
 """FastAPI app factory + DI tests."""
 from __future__ import annotations
 
+import base64
+import hashlib
+import re
+
 import httpx
 import pytest
 
@@ -322,3 +326,19 @@ def test_unhandled_server_error_is_not_cacheable(atelier):
     assert response.status_code == 500
     assert response.headers.get("cache-control") == "no-store"
     assert "private detail" not in response.text
+
+
+async def test_dashboard_content_security_policy(atelier):
+    transport = httpx.ASGITransport(app=FastApiServer().create_app(atelier))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        for route in ("/dashboard", "/runs/example"):
+            page = await client.get(route)
+            assert page.headers["cache-control"] == "no-store"
+            policy = page.headers["content-security-policy"]
+            assert "default-src 'self'" in policy
+            assert "connect-src 'self' ws://127.0.0.1:*" in policy
+            assert "frame-ancestors 'none'" in policy
+            # Keep the bundled pre-paint theme script working.
+            for script in re.findall(r"<script>(.*?)</script>", page.text.replace("\r\n", "\n"), re.S):
+                digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+                assert f"'sha256-{digest}'" in policy

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import sys
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -87,6 +89,7 @@ def serve_cmd(
     no_scheduler: bool = typer.Option(
         False, "--no-scheduler", help="Serve the dashboard and API without firing schedules."
     ),
+    exit_with_stdin: bool = typer.Option(False, "--exit-with-stdin", hidden=True),
     idle_exit: float = typer.Option(
         0.0, "--idle-exit", min=0, metavar="MINUTES",
         help="Stop after this many minutes with no open page, no request, no "
@@ -290,6 +293,7 @@ def serve_cmd(
         port=port,
         log_level=log_level.lower(),
         lifespan="on",
+        timeout_graceful_shutdown=1 if exit_with_stdin else None,
     )
     server = uvicorn.Server(config)
 
@@ -324,8 +328,23 @@ def serve_cmd(
         idle_watch = asyncio.create_task(_stop_when_idle()) if idle_exit else None
         # Wait for uvicorn to bind so we can print the actual port.
         loop = asyncio.get_running_loop()
+        if exit_with_stdin:
+            # Desktop holds the only writer. EOF survives crashes and Force Quit.
+            fd = sys.stdin.fileno()
+
+            def stdin_ready() -> None:
+                if not os.read(fd, 4096):
+                    loop.remove_reader(fd)
+                    server.should_exit = True
+
+            loop.add_reader(fd, stdin_ready)
+            if not any(
+                executor.is_available()[0]
+                for name, executor in atelier.executors.items() if name.startswith("harness:")
+            ):
+                typer.echo("No agent harness found on PATH")
         deadline = loop.time() + 10.0
-        while not server.started and loop.time() < deadline:
+        while not server.started and not serve_task.done() and loop.time() < deadline:
             await asyncio.sleep(0.05)
         actual = port
         try:
@@ -341,6 +360,10 @@ def serve_cmd(
         typer.echo(f"Project store: {settings.atelier_dir.resolve()}")
         typer.echo(scheduler_status)
         await serve_task
+        if exit_with_stdin:
+            loop.remove_reader(fd)
+            # Let cancelled HTTP runs reap their subprocesses before asyncio.run closes.
+            await asyncio.gather(*server.server_state.tasks, return_exceptions=True)
         if idle_watch is not None:
             idle_watch.cancel()
 

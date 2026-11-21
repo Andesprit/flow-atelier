@@ -67,6 +67,8 @@ Agents run with full permissions by default. The read-only examples request a
 restricted mode explicitly. See [security and agent permissions](https://github.com/Andesprit/flow-atelier/blob/main/docs/guide.md#security)
 and the [command reference](https://github.com/Andesprit/flow-atelier/blob/main/docs/guide.md#commands).
 
+See the [platform roadmap](docs/roadmap.md) for planned features and how each will be tested.
+
 ## Contributing and license
 
 To contribute, see [CONTRIBUTING.md](https://github.com/Andesprit/flow-atelier/blob/main/CONTRIBUTING.md) and

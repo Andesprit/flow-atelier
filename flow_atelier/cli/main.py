@@ -258,6 +258,7 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     init,
     logs,
     migrate,
+    notify,
     outputs,
     plan,
     rm,

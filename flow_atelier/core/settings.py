@@ -127,8 +127,6 @@ class AtelierSettings(BaseSettings):
     cleanup_period_days: int = Field(default=30, ge=0)
     webhook_sources: dict[str, dict[str, str]] = Field(default_factory=dict)
     webhook_secrets: dict[str, SecretStr] = Field(default_factory=dict)
-    notification_recipient: str | None = None
-    notification_provider: str | None = None
     dictaria_account: str | None = None
     run_caps: dict[str, PositiveInt] = Field(default_factory=dict)
     loop_history_limit: int = Field(
@@ -230,6 +228,12 @@ class AtelierSettings(BaseSettings):
             "commands print <serve_url>/runs/<flow_id> when this server can load "
             "the run; set this when you serve on another host or port."
         ),
+    )
+    notification_recipient: str | None = Field(
+        default=None, description="Fixed WhatsApp recipient in E.164 format."
+    )
+    notification_provider: str | None = Field(
+        default=None, description="Set to twilio to enable the local WhatsApp sender."
     )
 
     @classmethod

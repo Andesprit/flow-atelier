@@ -10,15 +10,10 @@ from flow_atelier.cli._shared import console
 from flow_atelier.cli.commands.create import starter_conduit_yaml
 from flow_atelier.cli.main import app
 
-# Each agent CLI a user may already be logged in to, and the harness that
-# drives it. The order is the preference when picking the starter's agents.
-AGENT_CLIS = (
+# Both AI starters need a harness that can enforce read-only permissions.
+READ_ONLY_CLIS = (
     ("claude", "claude-code"),
     ("codex", "codex"),
-    ("gemini", "gemini"),
-    ("cursor-agent", "cursor"),
-    ("opencode", "opencode"),
-    ("copilot", "copilot"),
 )
 
 LOOK_PROMPT = """\
@@ -82,11 +77,11 @@ _PromptDumper.add_representer(str, _block_str)
 
 
 def installed_harnesses() -> list[str]:
-    """Return the harnesses whose agent CLI is on PATH, most preferred first.
+    """Return read-only starter harnesses whose CLI is on PATH, most preferred first.
 
     :returns: harness names such as ``claude-code``.
     """
-    return [harness for cli, harness in AGENT_CLIS if shutil.which(cli)]
+    return [harness for cli, harness in READ_ONLY_CLIS if shutil.which(cli)]
 
 
 def explain_conduit_yaml(harnesses: list[str]) -> str:
@@ -166,7 +161,7 @@ def pair_conduit_yaml(harnesses: list[str]) -> str:
     "init",
     help=(
         "Scaffold a local .atelier/ directory with a hello-world conduit, plus "
-        "AI starters when an agent CLI such as claude or codex is installed."
+        "read-only AI starters when Claude Code or Codex is installed."
     ),
 )
 def init_cmd() -> None:
@@ -188,17 +183,19 @@ def init_cmd() -> None:
         written.append(explain)
     if harnesses and not pair.exists():
         pair.parent.mkdir(parents=True, exist_ok=True)
-        pair.write_text(pair_conduit_yaml(harnesses[:2]))
+        pair.write_text(pair_conduit_yaml(harnesses))
         written.append(pair)
 
     if not written:
         console.print("[yellow]atelier is already set up in this project[/yellow]")
-        return
-    console.print(f"[green]initialized[/green] {conduits.parent}")
+        if harnesses:
+            return
+    else:
+        console.print(f"[green]initialized[/green] {conduits.parent}")
     if harnesses:
         console.print(
             f"Have {harnesses[0]} explain this project:\n"
-            "  [bold]atelier serve[/bold]        # in a second terminal, to watch live\n"
+            "  [bold]atelier serve --no-scheduler[/bold]  # in a second terminal, to watch live\n"
             "  [bold]atelier run explain[/bold]\n"
             "then watch agents answer and review each other:\n"
             "  [bold]atelier run pair[/bold]"
@@ -206,6 +203,6 @@ def init_cmd() -> None:
     else:
         console.print(
             "try: [bold]atelier run hello --input name=world[/bold]\n"
-            "[dim]install Claude Code or Codex, then run atelier init again "
-            "for an AI starter[/dim]"
+            "No installed harness can enforce read-only permissions for the AI starters.\n"
+            "[dim]install Claude Code or Codex, then run atelier init again[/dim]"
         )

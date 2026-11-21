@@ -474,12 +474,17 @@ def _format_next_fire(value: datetime | None) -> str:
     return value.astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()
 
 
+def _migrate_schedules(store: ScheduleStore, project_dir: Path) -> tuple[int, int]:
+    """Report each retained legacy job on stderr, including on automatic migration."""
+    return store.migrate_from(project_dir, on_kept=lambda reason: typer.echo(reason, err=True))
+
+
 def _schedule_store(*, migrate: bool = True) -> ScheduleStore:
     """Open the shared schedule store, moving this project's jobs on writable commands."""
     settings = AtelierSettings()
     store = ScheduleStore(settings.global_atelier_dir)
     if migrate:
-        store.migrate_from(settings.atelier_dir)
+        _migrate_schedules(store, settings.atelier_dir)
     elif (
         settings.atelier_dir.resolve() != settings.global_atelier_dir.resolve()
         and ScheduleStore(settings.atelier_dir).list()

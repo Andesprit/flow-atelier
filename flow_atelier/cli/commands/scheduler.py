@@ -10,7 +10,11 @@ import typer
 from flow_atelier.cli._shared import _schedule_store, console
 from flow_atelier.cli.commands.schedule import schedule_list_cmd
 from flow_atelier.cli.main import schedule_app, scheduler_app
-from flow_atelier.services.scheduler import SchedulerDaemon, default_local_zone
+from flow_atelier.services.scheduler import (
+    SchedulerAlreadyRunning,
+    SchedulerDaemon,
+    default_local_zone,
+)
 
 
 @schedule_app.command(
@@ -44,13 +48,20 @@ def schedule_daemon_cmd(
         default_working_dir=Path.cwd(),
         reload_interval_seconds=reload_interval,
     )
-    console.print(
-        f"[green]scheduler running[/green] "
-        f"(tz={daemon.default_zone}, reload={reload_interval}s, "
-        f"schedules={store.schedules_dir})"
-    )
+    async def run() -> None:
+        await daemon.start()
+        console.print(
+            f"[green]scheduler running[/green] "
+            f"(tz={daemon.default_zone}, reload={reload_interval}s, "
+            f"schedules={store.schedules_dir})"
+        )
+        await daemon.run_forever()
+
     try:
-        asyncio.run(daemon.run_forever())
+        asyncio.run(run())
+    except SchedulerAlreadyRunning as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
     except KeyboardInterrupt:
         pass
     console.print("[dim]scheduler stopped[/dim]")

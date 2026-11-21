@@ -277,9 +277,8 @@ def test_migration_retries_after_file_publication(atelier, tmp_path, monkeypatch
         def interrupt(_):
             raise OSError("interrupted")
         patch.setattr(type(path), "unlink", interrupt)
-        with pytest.raises(OSError, match="interrupted"):
-            atelier.schedule_store.migrate_from(source.atelier_dir)
-    atelier.schedule_store.migrate_from(source.atelier_dir)
+        assert atelier.schedule_store.migrate_from(source.atelier_dir) == (0, 1)
+    assert atelier.schedule_store.migrate_from(source.atelier_dir) == (1, 0)
     assert source.list() == []
     assert atelier.list_schedules() == [job]
     assert atelier.schedule_store.fired_at(job.id) == "already-fired"
@@ -291,8 +290,7 @@ def test_corrupt_legacy_state_cannot_publish_a_one_shot(atelier):
         schedule={"name": "one-shot", "mode": "once", "run_at": "2099-01-01T00:00Z"}
     ))
     source.state_path.write_text("incomplete")
-    with pytest.raises(ValueError):
-        atelier.schedule_store.migrate_from(source.atelier_dir)
+    assert atelier.schedule_store.migrate_from(source.atelier_dir) == (0, 1)
     assert source.list() == [job]
     assert source.state_path.read_text() == "incomplete"
     assert atelier.list_schedules() == []

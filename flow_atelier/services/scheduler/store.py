@@ -23,7 +23,7 @@ from collections.abc import Callable
 from datetime import UTC
 from functools import wraps
 from pathlib import Path
-from typing import Any, Concatenate
+from typing import Any, BinaryIO, Concatenate
 
 import yaml
 
@@ -112,6 +112,10 @@ def _serialized[**P, R](
     return write
 
 
+class SchedulerAlreadyRunning(RuntimeError):
+    """Another process holds the daemon lease for this store."""
+
+
 class ScheduleStore:
     """YAML-backed CRUD for :class:`ScheduledJob` records.
 
@@ -126,6 +130,34 @@ class ScheduleStore:
         self.atelier_dir = Path(atelier_dir)
         self.schedules_dir = self.atelier_dir / "schedules"
         self.state_path = self.atelier_dir / "scheduler_state.json"
+
+    @_serialized
+    def acquire_daemon_lease(self) -> BinaryIO:
+        """Acquire the exclusive daemon lease. Closing the handle releases it."""
+        # Serialize PID publication with acquisition so contenders always see the owner.
+        lock = (self.atelier_dir / ".scheduler.daemon.lock").open("a+b", buffering=0)
+        try:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    # Lock beyond the PID so Windows lets contenders read it.
+                    lock.seek(32)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, PermissionError) as exc:
+                lock.seek(0)
+                pid = int(lock.read(32))
+                raise SchedulerAlreadyRunning(f"scheduler already running (pid {pid})") from exc
+            lock.truncate(0)
+            lock.write(f"{os.getpid()}\n".encode("ascii"))
+            return lock
+        except BaseException:
+            lock.close()
+            raise
 
     # --------------------------------------------------------------- internals
 
@@ -152,22 +184,18 @@ class ScheduleStore:
                 return path, job
         return None
 
+    @staticmethod
+    def _read_job(path: Path) -> ScheduledJob:
+        return ScheduledJob.model_validate(yaml.safe_load(path.read_text()))
+
     def _load_file(self, path: Path) -> ScheduledJob | None:
         """Load and validate one schedule YAML; return None on failure.
 
         :param path: path to a ``*.yaml`` schedule file
         """
         try:
-            raw = yaml.safe_load(path.read_text())
-        except (yaml.YAMLError, OSError) as e:
-            logger.warning("skipping unreadable schedule %s: %s", path.name, e)
-            return None
-        if not isinstance(raw, dict):
-            logger.warning("skipping malformed schedule %s: not a mapping", path.name)
-            return None
-        try:
-            return ScheduledJob.model_validate(raw)
-        except Exception as e:  # noqa: BLE001 — skip malformed rows
+            return self._read_job(path)
+        except (OSError, ValueError, yaml.YAMLError) as e:
             logger.warning("skipping invalid schedule %s: %s", path.name, e)
             return None
 
@@ -203,21 +231,28 @@ class ScheduleStore:
         jobs.sort(key=lambda j: j.created_at)
         return jobs
 
-    def migrate_from(self, project_dir: Path) -> None:
-        """Move valid project jobs to this store, resolving old paths against the CLI's cwd."""
+    def migrate_from(
+        self, project_dir: Path, *, on_kept: Callable[[str], None] = logger.warning
+    ) -> tuple[int, int]:
+        """Move valid project jobs, report each retained file and return moved/kept counts."""
         project = ScheduleStore(project_dir)
         if project.schedules_dir.resolve() == self.schedules_dir.resolve():
-            return
+            return 0, 0
+        moved = kept = 0
         for source in project._job_files():
-            self._migrate_file(project, source)
+            try:
+                if self._migrate_file(project, source):
+                    moved += 1
+            except (OSError, ValueError, yaml.YAMLError) as exc:
+                on_kept(f"kept {source}: {exc}")
+                kept += 1
+        return moved, kept
 
     @_serialized
-    def _migrate_file(self, project: ScheduleStore, source: Path) -> None:
+    def _migrate_file(self, project: ScheduleStore, source: Path) -> bool:
         if not source.exists():
-            return  # Another invocation already moved it.
-        job = project._load_file(source)
-        if job is None:
-            return
+            return False  # Another invocation already moved it.
+        job = project._read_job(source)
         job = job.model_copy(update={"run_path": str(Path(job.run_path).absolute())})
         destination = self._path_for_name(job.schedule.name)
         existing = self.get(job.id)
@@ -227,11 +262,12 @@ class ScheduleStore:
                 existing.model_copy(update={"runs_completed": job.runs_completed}) != job
                 or existing.runs_completed < job.runs_completed
             ):
-                logger.warning("Schedule id conflict. Kept %s in place", source)
-                return
+                raise ValueError(f"id conflict for {job.id}: reconcile the two schedules and retry")
         elif destination.exists() or self.get_by_name(job.schedule.name) is not None:
-            logger.warning("Schedule name conflict. Kept %s in place", source)
-            return
+            raise ValueError(
+                f"name conflict for {job.schedule.name!r}: change schedule.name "
+                "in the legacy file and rerun atelier schedule migrate"
+            )
 
         # Install the one-shot marker and history before the daemon can see the YAML.
         old = project._read_state(strict=True)
@@ -241,8 +277,7 @@ class ScheduleStore:
                 job.id in state["schedules"]
                 and state["schedules"][job.id] != old["schedules"][job.id]
             ):
-                logger.warning("Schedule history conflict. Kept %s in place", source)
-                return
+                raise ValueError(f"history conflict for {job.id}: reconcile its history and retry")
             if job.id not in state["schedules"]:
                 state["schedules"][job.id] = old["schedules"][job.id]
                 self._write_state(state)
@@ -252,6 +287,7 @@ class ScheduleStore:
             del old["schedules"][job.id]
             project._write_state(old)
         source.unlink()
+        return True
 
     # --------------------------------------------------------------- list / get
 
@@ -361,24 +397,25 @@ class ScheduleStore:
         # locks the file (ERROR_SHARING_VIOLATION). Returning the empty default
         # on such a blip would make the caller's read-modify-write clobber live
         # markers, so wait for the writer's short-lived handle to clear first.
-        text: str | None = None
         delay = 0.005
         for _ in range(10):
             try:
-                text = self.state_path.read_text()
+                data = json.loads(self.state_path.read_text())
                 break
+            except (ValueError, RecursionError) as exc:
+                if strict:
+                    raise ValueError(
+                        f"invalid scheduler state in {self.state_path}: {exc}"
+                    ) from exc
+                if isinstance(exc, json.JSONDecodeError):
+                    return {"schedules": {}}
+                raise
             except OSError:
                 time.sleep(delay)
                 delay = min(delay * 2, 0.1)
-        if text is None:
+        else:
             if strict:
                 raise OSError(f"cannot read scheduler state: {self.state_path}")
-            return {"schedules": {}}
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            if strict:
-                raise
             return {"schedules": {}}
         if not isinstance(data, dict) or not isinstance(data.get("schedules"), dict):
             if strict:

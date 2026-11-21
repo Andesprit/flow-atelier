@@ -1,0 +1,10 @@
+name: continuous-improvement
+description: Reserved for the continuous-improvement workflow in roadmap slice 2.8.
+tasks:
+  - setup:
+      description: Report workflow availability
+      tool: tool:bash
+      task: |
+        echo 'continuous-improvement is pending roadmap slice 2.8.' >&2
+        exit 1
+

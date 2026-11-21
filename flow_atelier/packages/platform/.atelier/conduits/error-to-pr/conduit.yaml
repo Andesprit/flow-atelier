@@ -1,0 +1,10 @@
+name: error-to-pr
+description: Reserved for the error-to-pr workflow in roadmap slice 2.5.
+tasks:
+  - setup:
+      description: Report workflow availability
+      tool: tool:bash
+      task: |
+        echo 'error-to-pr is pending roadmap slice 2.5.' >&2
+        exit 1
+

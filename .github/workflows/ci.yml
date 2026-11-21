@@ -81,7 +81,7 @@ jobs:
       - run: cargo clippy --release --locked --manifest-path desktop/Cargo.toml --all-targets -- -D warnings
       - name: Test native notices and signing modes
         run: |
-          clang -Wall -Werror -fobjc-arc desktop/tests/notifications.m -framework Foundation -framework UserNotifications -o "$RUNNER_TEMP/notices"
+          clang -Wall -Werror -fobjc-arc desktop/tests/notifications.m -framework Foundation -framework AppKit -framework UserNotifications -o "$RUNNER_TEMP/notices"
           "$RUNNER_TEMP/notices"
           bash desktop/tests/signing-mode.sh
       - name: Build and exercise the unsigned app bundle

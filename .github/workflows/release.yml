@@ -111,7 +111,7 @@ jobs:
       - name: Test desktop lifecycle helpers
         run: |
           cargo test --release --locked --manifest-path desktop/Cargo.toml
-          clang -Wall -Werror -fobjc-arc desktop/tests/notifications.m -framework Foundation -framework UserNotifications -o "$RUNNER_TEMP/notices"
+          clang -Wall -Werror -fobjc-arc desktop/tests/notifications.m -framework Foundation -framework AppKit -framework UserNotifications -o "$RUNNER_TEMP/notices"
           "$RUNNER_TEMP/notices"
           bash desktop/tests/signing-mode.sh
       - name: Build macOS arm64 disk image

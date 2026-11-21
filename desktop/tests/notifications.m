@@ -4,9 +4,22 @@
 void open_run(const char *id) {}
 bool window_visible(void) { return false; }
 void quit_status(int status) {}
+static bool allowQuit;
+bool confirm_quit(void) { return allowQuit; }
+@interface TestAppDelegate : NSObject
+@end
+@implementation TestAppDelegate
+@end
 
 int main(void) {
     @autoreleasepool {
+        TestAppDelegate *delegate = [TestAppDelegate new];
+        assert(installQuitHandler(delegate));
+        // Cocoa calls this selector directly for Command-Q and Dock Quit.
+        id<NSApplicationDelegate> appDelegate = (id)delegate;
+        assert([appDelegate applicationShouldTerminate:NSApp] == NSTerminateCancel);
+        allowQuit = true;
+        assert([appDelegate applicationShouldTerminate:NSApp] == NSTerminateNow);
         NSDictionary *first = @{@"flow_id": @"a", @"finished_at": @"earlier", @"status": @"completed"};
         NSDictionary *second = @{@"flow_id": @"b", @"finished_at": @"now", @"status": @"failed"};
         NSDictionary *active = @{@"flow_id": @"c", @"finished_at": NSNull.null, @"status": @"running"};

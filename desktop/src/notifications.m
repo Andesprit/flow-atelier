@@ -1,9 +1,24 @@
 // Apple's desktop delegate identifies the notification that was clicked.
-#import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
+#import <objc/runtime.h>
 #import <UserNotifications/UserNotifications.h>
 
 extern bool window_visible(void);
 extern void quit_status(int status);
+extern bool confirm_quit(void);
+
+// AppKit's standard Quit menu, Command-Q and Dock Quit bypass Tauri's ExitRequested.
+static NSApplicationTerminateReply shouldTerminate(id delegate, SEL selector, NSApplication *app) {
+    return confirm_quit() ? NSTerminateNow : NSTerminateCancel;
+}
+
+static bool installQuitHandler(id delegate) {
+    SEL selector = @selector(applicationShouldTerminate:);
+    struct objc_method_description method =
+        protocol_getMethodDescription(@protocol(NSApplicationDelegate), selector, NO, YES);
+    return delegate && method.types &&
+        class_addMethod([delegate class], selector, (IMP)shouldTerminate, method.types);
+}
 extern void open_run(const char *flowID);
 
 static NSDictionary *finishedRuns(NSDictionary *previous, NSArray *rows,
@@ -92,7 +107,8 @@ void check_quit(void) {
     }];
 }
 
-void start_notices(unsigned short port, const char *apiToken) {
+bool start_notices(unsigned short port, const char *apiToken) {
+    if (!installQuitHandler(NSApp.delegate)) return false;
     notices = [RunNotices new];
     NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%hu/flows", port]];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
@@ -108,4 +124,5 @@ void start_notices(unsigned short port, const char *apiToken) {
             if (error) NSLog(@"Atelier notification authorization failed: %@", error.localizedDescription);
             if (granted) [notices poll];
         }];
+    return true;
 }

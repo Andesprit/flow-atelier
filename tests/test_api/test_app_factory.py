@@ -276,6 +276,6 @@ async def test_dashboard_content_security_policy(atelier):
             assert "connect-src 'self' ws://127.0.0.1:*" in policy
             assert "frame-ancestors 'none'" in policy
             # Keep the bundled pre-paint theme script working.
-            for script in re.findall(r"<script>(.*?)</script>", page.text, re.S):
+            for script in re.findall(r"<script>(.*?)</script>", page.text.replace("\r\n", "\n"), re.S):
                 digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
                 assert f"'sha256-{digest}'" in policy

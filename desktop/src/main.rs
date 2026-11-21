@@ -11,7 +11,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 static WINDOW: OnceLock<(tauri::WebviewWindow, tauri::Url)> = OnceLock::new();
 
 extern "C" {
-    fn start_notices(port: u16, token: *const c_char);
+    fn start_notices(port: u16, token: *const c_char) -> bool;
     fn check_quit();
 }
 
@@ -23,6 +23,17 @@ extern "C" fn window_visible() -> bool {
     WINDOW
         .get()
         .is_some_and(|(window, _)| window.is_visible().unwrap_or(false))
+}
+
+#[no_mangle]
+extern "C" fn confirm_quit() -> bool {
+    if WINDOW.get().is_none() || QUITTING.load(Ordering::Relaxed) {
+        return true;
+    }
+    if !CHECKING_QUIT.swap(true, Ordering::Relaxed) {
+        unsafe { check_quit() };
+    }
+    false
 }
 
 #[no_mangle]
@@ -47,9 +58,11 @@ extern "C" fn quit_status(status: i32) {
     } else {
         "Runs are active. Quitting will stop any runs owned by this app. Quit Flow Atelier?"
     };
+    show_window();
     window
         .dialog()
         .message(message)
+        .parent(window)
         .title("Quit Flow Atelier")
         .buttons(MessageDialogButtons::OkCancelCustom(
             "Quit".into(),
@@ -138,7 +151,9 @@ fn main() {
                 })
                 .build(app)?;
             let token = CString::new(token)?;
-            unsafe { start_notices(port, token.as_ptr()) };
+            if !unsafe { start_notices(port, token.as_ptr()) } {
+                return Err("could not install the macOS Quit handler".into());
+            }
             if let Some(warning) = warning {
                 app.dialog().message(warning)
                     .title("Agent PATH unavailable").show(|_| {});
@@ -158,11 +173,8 @@ fn main() {
                 show_window();
             }
             if let RunEvent::ExitRequested { ref api, .. } = event {
-                if WINDOW.get().is_some() && !QUITTING.load(Ordering::Relaxed) {
+                if !confirm_quit() {
                     api.prevent_exit();
-                    if !CHECKING_QUIT.swap(true, Ordering::Relaxed) {
-                        unsafe { check_quit() };
-                    }
                 }
             }
             if let RunEvent::Exit = event {

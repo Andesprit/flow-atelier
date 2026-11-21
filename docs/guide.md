@@ -1935,6 +1935,8 @@ Project settings can set `defaultTimeout`, `defaultMaxConcurrency`,
 and `atelierDir`. They can lower `agentPermissions` to `edits` or `read-only`.
 Both JSON files also accept the equivalent snake_case names.
 
+See [Receive signed application errors](error-webhooks.md) to set up the separate error receiver and HTTPS relay.
+
 Use user settings for `cleanupPeriodDays` (default 30), `webhookSources`
 (source ID to configuration), `webhookSecrets` (source ID to secret),
 `notificationRecipient`, `notificationProvider`, `dictariaAccount` and

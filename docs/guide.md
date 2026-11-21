@@ -2141,6 +2141,8 @@ changes go back to the next builder attempt. A passing test and an exact
 sender below before running the recipe. Agent overrides for `attempt.build`
 and `attempt.review` must still name different harnesses.
 
+For fixed-workload experiments, see [Continuous improvement](continuous-improvement.md).
+
 ## Send a WhatsApp run summary
 
 Set `notificationProvider` to `"twilio"` and `notificationRecipient` to the

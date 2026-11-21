@@ -1,11 +1,22 @@
 import asyncio
 import multiprocessing
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from flow_atelier.core.settings import AtelierSettings
+from flow_atelier.schemas.flow import new_flow_id
 from flow_atelier.services.store.claims import ClaimQueueFull, EventClaims
 from flow_atelier.services.store.retention import cleanup_runs
+
+
+def test_running_experiment_reservation_has_one_owner_and_never_queues(tmp_path):
+    store = EventClaims(tmp_path / "home", "improvements")
+    runs = [new_flow_id("continuous-improvement") for _ in range(2)]
+    with ThreadPoolExecutor(2) as pool:
+        owners = list(pool.map(lambda run: store.reserve_run("hypothesis", tmp_path, run), runs))
+    assert owners[0] == owners[1] and owners[0].run_id in runs
+    assert store.take() is None
 
 
 def race(home, project, barrier, results):

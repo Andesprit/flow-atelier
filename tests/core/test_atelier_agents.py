@@ -19,6 +19,7 @@ from flow_atelier.schemas.conduit import Conduit
 from flow_atelier.schemas.log import ExecutionResult
 from flow_atelier.schemas.progress import FlowStatus
 from flow_atelier.services.executor.base import ExecutorBase
+from tests._runs import legacy_record, saved_bytes
 
 
 class StubAgent(ExecutorBase):
@@ -303,10 +304,7 @@ async def test_resume_refuses_to_re_point_a_completed_task(workspace):
     """A completed task's result is already downstream; it keeps its agent."""
     atelier, seen, agents = workspace
     flow_id = await _failed_run(atelier, agents)
-    before_progress = (
-        atelier.store._flow_dir(flow_id) / "progress.json"
-    ).read_bytes()
-    before_outputs = (atelier.store._flow_dir(flow_id) / "outputs.yaml").read_bytes()
+    before = saved_bytes(atelier.store.journal(flow_id))
     seen.clear()
 
     with pytest.raises(BindingError, match="is completed in this flow"):
@@ -314,12 +312,7 @@ async def test_resume_refuses_to_re_point_a_completed_task(workspace):
 
     # Nothing ran and nothing on disk moved.
     assert seen == []
-    assert (atelier.store._flow_dir(flow_id) / "progress.json").read_bytes() == (
-        before_progress
-    )
-    assert (atelier.store._flow_dir(flow_id) / "outputs.yaml").read_bytes() == (
-        before_outputs
-    )
+    assert saved_bytes(atelier.store.journal(flow_id)) == before
 
 
 async def test_resume_fails_clearly_when_the_recipe_lost_a_bound_task(workspace):
@@ -352,7 +345,7 @@ async def test_a_flow_without_the_metadata_resumes_as_a_legacy_run(workspace):
     """Progress written before selection existed means "the recipe decides"."""
     atelier, seen, agents = workspace
     flow_id = await _failed_run(atelier, agents)
-    path = atelier.store._flow_dir(flow_id) / "progress.json"
+    path = legacy_record(atelier.store, flow_id) / "progress.json"
     legacy = json.loads(path.read_text())
     legacy.pop("task_agents")
     path.write_text(json.dumps(legacy))
@@ -370,10 +363,10 @@ async def test_corrupt_assignment_metadata_refuses_to_run_the_defaults(workspace
     """An unreadable record must not quietly launch the recipe's agents."""
     atelier, seen, agents = workspace
     flow_id = await _failed_run(atelier, agents)
-    path = atelier.store._flow_dir(flow_id) / "progress.json"
-    broken = json.loads(path.read_text())
+    journal = atelier.store.journal(flow_id)
+    broken = journal.latest("progress")
     broken["task_agents"] = ["step_2", "harness:gamma"]
-    path.write_text(json.dumps(broken))
+    journal.append("progress", broken)
 
     agents["beta"].fail = False
     seen.clear()
@@ -546,8 +539,7 @@ def _saved_files(atelier, flow_id) -> dict[str, bytes]:
     :param flow_id: the flow to read.
     :returns: mapping of file name to contents.
     """
-    flow_dir = atelier.store._flow_dir(flow_id)
-    return {p.name: p.read_bytes() for p in sorted(flow_dir.glob("*")) if p.is_file()}
+    return saved_bytes(atelier.store.journal(flow_id))
 
 
 @pytest.mark.parametrize(
@@ -564,10 +556,10 @@ async def test_a_saved_value_that_is_not_an_agent_never_executes(workspace, save
     """Metadata a hand or a bug corrupted must not become what runs."""
     atelier, seen, agents = workspace
     flow_id = await _failed_run(atelier, agents)
-    path = atelier.store._flow_dir(flow_id) / "progress.json"
-    broken = json.loads(path.read_text())
+    journal = atelier.store.journal(flow_id)
+    broken = journal.latest("progress")
     broken["task_agents"] = saved
-    path.write_text(json.dumps(broken))
+    journal.append("progress", broken)
     before = _saved_files(atelier, flow_id)
 
     agents["beta"].fail = False
@@ -584,10 +576,10 @@ async def test_again_refuses_a_corrupt_saved_value_before_creating_a_flow(worksp
     """A rejected re-run leaves no half-born flow behind."""
     atelier, seen, agents = workspace
     source = await _failed_run(atelier, agents)
-    path = atelier.store._flow_dir(source) / "progress.json"
-    broken = json.loads(path.read_text())
+    journal = atelier.store.journal(source)
+    broken = journal.latest("progress")
     broken["task_agents"] = {"step_2": "tool:bash"}
-    path.write_text(json.dumps(broken))
+    journal.append("progress", broken)
     seen.clear()
 
     with pytest.raises(BindingError, match="not an agent"):

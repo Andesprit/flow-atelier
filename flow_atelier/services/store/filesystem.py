@@ -20,10 +20,10 @@ import json
 import logging
 import os
 import shutil
+import socket
 import time
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -40,7 +40,7 @@ from flow_atelier.schemas.flow import new_flow_id, parse_flow_id
 from flow_atelier.schemas.log import LogEntry, StepRecord
 from flow_atelier.schemas.progress import Progress
 from flow_atelier.services.store.base import ConduitSource, StoreBase
-from flow_atelier.services.store.events import RunJournal, project_folder
+from flow_atelier.services.store.events import RunJournal, file_lock, project_folder
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +251,7 @@ class FilesystemStore(StoreBase):
                 return candidate
         raise FileNotFoundError(f"flow not found: {flow_id}")
 
-    def workspace_dir(self, flow_id: str) -> Path:
+    def workspace_dir(self, flow_id: str, project: Path | None = None) -> Path:
         """Return where ``flow_id``'s per-task checkouts belong.
 
         Deliberately a sibling of ``flows/`` rather than a child of the flow
@@ -264,7 +264,10 @@ class FilesystemStore(StoreBase):
         """
         if not self._safe_flow_id(flow_id):
             raise ValueError(f"unsafe flow id: {flow_id!r}")
-        return self.base_dir / "workspaces" / flow_id
+        if project is None and (journal := self.journal(flow_id)):
+            project = Path(journal.header()["project"])
+        base = project / ".atelier" if project is not None else self.base_dir
+        return base / "workspaces" / flow_id
 
     # ------------------------------------------------------------------ conduits
 
@@ -435,6 +438,7 @@ class FilesystemStore(StoreBase):
         parent_flow_id: str | None = None,
         *,
         flow_id: str | None = None,
+        project: Path | None = None,
     ) -> str:
         """Create a new flow directory and seed its tracking files.
 
@@ -452,6 +456,22 @@ class FilesystemStore(StoreBase):
         # mkdir(parents=True) below would create the escaped path.
         if not self._safe_flow_id(flow_id):
             raise ValueError(f"unsafe flow id: {flow_id!r}")
+        if project is not None and self.global_dir is not None:
+            if parent_flow_id is not None and not self.journal(parent_flow_id):
+                self._flow_dir(parent_flow_id)
+            folder = self.global_dir / "projects" / project_folder(project)
+            journal = RunJournal(folder / f"{flow_id}.jsonl")
+            progress = Progress(
+                started_at=datetime.now(UTC).isoformat(), runner_pid=os.getpid(),
+                runner_host=socket.gethostname(), run_path=str(project.resolve()),
+            )
+            journal.create({
+                "flow_id": flow_id, "conduit": conduit_name, "parent_flow_id": parent_flow_id,
+                "project": progress.run_path, "store": str(self.base_dir.resolve()),
+                "host": progress.runner_host, "pid": progress.runner_pid, "steps": "steps.jsonl",
+                "inputs": inputs, "progress": progress.model_dump(mode="json"),
+            })
+            return flow_id
         if parent_flow_id is None:
             flow_dir = self.base_dir / "flows" / flow_id
         else:
@@ -486,12 +506,14 @@ class FilesystemStore(StoreBase):
         :param conduit_name: when set, only flows whose parsed conduit equals
             ``conduit_name`` are returned.
         """
+        ids = [j.path.stem for j, h in self._journals()
+               if h["parent_flow_id"] is None and h["store"] == str(self.base_dir.resolve())
+               and (conduit_name is None or h["conduit"] == conduit_name)]
         root = self.base_dir / "flows"
         try:
             entries = list(root.iterdir())
         except FileNotFoundError:
-            return []
-        ids: list[str] = []
+            entries = []
         for p in entries:
             if not p.is_dir():
                 continue
@@ -517,26 +539,20 @@ class FilesystemStore(StoreBase):
         :returns: child flow ids in the order they last started (a resumed
             child counts from its resume), so the last one is the most recent
         """
-        if self.journal(parent_flow_id):
-            children = [j.path.stem for j, h in self._journals()
-                        if h["parent_flow_id"] == parent_flow_id]
-            return sorted(children, key=lambda i: (self.read_progress(i).started_at or "", i))
-        children_dir = self._flow_dir(parent_flow_id) / "flows"
-        if not children_dir.exists():
-            return []
+        children = [j.path.stem for j, h in self._journals()
+                    if h["parent_flow_id"] == parent_flow_id]
+        if not self.journal(parent_flow_id):
+            children_dir = self._flow_dir(parent_flow_id) / "flows"
+            children.extend(p.name for p in children_dir.glob("*") if p.is_dir())
 
-        def _started(child: Path) -> tuple[str, str]:
-            # Unreadable progress sorts first, so it never passes for the latest.
+        def started(child: str) -> tuple[str, str]:
             try:
-                started = json.loads((child / "progress.json").read_text())["started_at"]
+                stamp = self.read_progress(child).started_at
             except (OSError, ValueError, KeyError, TypeError):
-                started = None
-            return started or "", child.name
+                stamp = None
+            return stamp or "", child
 
-        return [
-            p.name
-            for p in sorted((p for p in children_dir.iterdir() if p.is_dir()), key=_started)
-        ]
+        return sorted(children, key=started)
 
     def delete_flow(self, flow_id: str) -> bool:
         """Remove a flow directory and its nested child subtree.
@@ -544,10 +560,19 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :returns: True if deleted, False if it didn't exist
         """
+        if journal := self.journal(flow_id):
+            for child in self.list_child_flows(flow_id):
+                self.delete_flow(child)
+            journal.path.unlink()
+            if journal.side.exists():
+                shutil.rmtree(journal.side)
+            return True
         try:
             flow_dir = self._flow_dir(flow_id)
         except FileNotFoundError:
             return False
+        for child in self.list_child_flows(flow_id):
+            self.delete_flow(child)
         shutil.rmtree(flow_dir)
         # Evict the flow itself and any cached children that lived under it,
         # so no stale handles survive in the path/lock caches.
@@ -581,6 +606,9 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :param entry: log entry to append
         """
+        if journal := self.journal(flow_id):
+            await asyncio.to_thread(journal.append, "log", entry.model_dump(mode="json"))
+            return
         path = self._flow_dir(flow_id) / "logs.jsonl"
         line = json.dumps(entry.model_dump()) + "\n"
 
@@ -649,6 +677,9 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :param record: step record to append
         """
+        if journal := self.journal(flow_id):
+            await asyncio.to_thread(journal.append_step, (record.model_dump_json() + "\n").encode())
+            return
         path = self._flow_dir(flow_id) / "steps.jsonl"
         line = json.dumps(record.model_dump()) + "\n"
 
@@ -725,24 +756,17 @@ class FilesystemStore(StoreBase):
     # synchronous: the files are tiny, writes are atomic-replace, and
     # crash-resume depends on state transitions hitting disk in order.
 
-    @contextmanager
-    def lock_ask(self, flow_id: str) -> Iterator[bool]:
-        """Exclude concurrent answers/cancellation; a crashed process releases its lock."""
-        with (self._flow_dir(flow_id) / ".ask.lock").open("a+b") as lock:
-            try:
-                if os.name == "nt":
-                    import msvcrt
+    def _lock_dir(self, flow_id: str) -> Path:
+        if journal := self.journal(flow_id):
+            journal.side.mkdir(exist_ok=True)
+            return journal.side
+        return self._flow_dir(flow_id)
 
-                    lock.seek(0)
-                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
+    def lock_writer(self, flow_id: str):
+        return file_lock(self._lock_dir(flow_id) / ".writer.lock", wait=False)
 
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except (BlockingIOError, PermissionError):
-                yield False
-                return
-            yield True
+    def lock_ask(self, flow_id: str):
+        return file_lock(self._lock_dir(flow_id) / ".ask.lock", wait=False)
 
     def write_progress(self, flow_id: str, progress: Progress) -> None:
         """Atomically write ``progress.json`` for ``flow_id``.
@@ -750,6 +774,9 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :param progress: progress snapshot to persist
         """
+        if journal := self.journal(flow_id):
+            journal.append("progress", progress.model_dump(mode="json"))
+            return
         path = self._flow_dir(flow_id) / "progress.json"
         tmp = path.with_suffix(f".json.tmp.{uuid.uuid4().hex}")
         # Pending questions may contain characters outside the local Windows code page.
@@ -789,6 +816,9 @@ class FilesystemStore(StoreBase):
         :param outputs: mapping of task name to final output (``None`` for tasks
             that did not complete)
         """
+        if journal := self.journal(flow_id):
+            journal.append("outputs", outputs)
+            return
         path = self._flow_dir(flow_id) / "outputs.yaml"
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
         tmp.write_text(_dump_flow_yaml(outputs), encoding="utf-8")
@@ -816,6 +846,9 @@ class FilesystemStore(StoreBase):
         :param flow_id: flow identifier
         :param sessions: mapping of session name to ``{"id", "harness"}``
         """
+        if journal := self.journal(flow_id):
+            journal.append("sessions", sessions)
+            return
         path = self._flow_dir(flow_id) / "sessions.yaml"
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
         tmp.write_text(_dump_flow_yaml(sessions))
@@ -843,6 +876,9 @@ class FilesystemStore(StoreBase):
         :param key: input key to add or overwrite
         :param value: value to store under ``key``
         """
+        if journal := self.journal(flow_id):
+            journal.append("input", {key: value})
+            return
         path = self._flow_dir(flow_id) / "input.yaml"
         existing: dict[str, Any] = {}
         if path.exists():

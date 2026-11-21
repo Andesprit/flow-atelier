@@ -27,7 +27,7 @@ You write a conduit YAML file and put it in
   | `harness:copilot`     | GitHub Copilot CLI                                                   |
   | `harness:cursor`      | Cursor CLI                                                           |
 
-5. Saves everything to disk under `.atelier/flows/<flow_id>/` — what
+5. Saves each run to `~/.atelier/projects/<project>/<flow_id>.jsonl` — what
   ran, what each task printed, whether it succeeded, when it
    finished.
 
@@ -1504,8 +1504,7 @@ atelier ask "Help me write a specification" --path /absolute/path/to/project
 
 `--path` is required and becomes Claude's working directory. Claude's
 questions are read from stdin just like any other interactive harness task.
-The resulting flow is still recorded under the `.atelier/flows/` directory
-from which you invoked `atelier`. The agent runs with full permissions unless
+Atelier records the conversation in the global history for that working directory. The agent runs with full permissions unless
 `--permissions edits` or `--permissions read-only` sets another level, or
 `ATELIER_AGENT_PERMISSIONS` (in the environment or in `.env`) does; see
 [Security](#security).
@@ -1586,8 +1585,8 @@ When you run a conduit, flow-atelier checks the project folder first,
 then the global folder. A project-level conduit silently overrides a
 global one with the same name.
 
-Flows are **always project-local** — every `atelier run` writes its
-flow folder under `.atelier/flows/` in the current working directory.
+Each new run gets an event file under `~/.atelier/projects/<project>/`.
+Older records remain readable in the project’s `.atelier/flows/` directory.
 
 ## Commands
 
@@ -1935,7 +1934,7 @@ pattern — so the run is readable. Credential-shaped values (`Bearer <token>`,
 `sk-`/`ghp_`/`xox`-prefixed keys, `--password`/`TOKEN=` flags) are masked as
 `***` on the way to the screen. This is a heuristic that reduces casual
 leakage, not a guarantee: it will miss a secret that does not look like one.
-The recorded logs under `.atelier/flows/<id>/` keep the **unredacted** text, so
+The recorded logs in the global run history and legacy project stores keep the **unredacted** text, so
 treat that directory as sensitive and check what you are pasting before sharing
 a terminal transcript.
 

@@ -149,7 +149,7 @@ def test_the_guide_runs_end_to_end_and_claims_only_what_happens(guide_env, tmp_p
     workspace = Path(marker.read_text().strip())
     assert " " in workspace.name, "the workspace path should contain a space"
 
-    store = FilesystemStore(workspace / ".atelier")
+    store = FilesystemStore(workspace / ".atelier", env["ATELIER_GLOBAL_ATELIER_DIR"])
     triage = store.list_flows("triage")
     panel = store.list_flows("panel")
     assert len(triage) == 1 and len(panel) == 1
@@ -280,7 +280,7 @@ def test_the_readme_quickstart_runs_and_claims_only_what_happens(guide_env, tmp_
     assert run.returncode == 0, f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
     assert CODEX_SAID in run.stdout
 
-    store = FilesystemStore(workspace / ".atelier")
+    store = FilesystemStore(workspace / ".atelier", env["ATELIER_GLOBAL_ATELIER_DIR"])
     flows = store.list_flows("triage")
     assert len(flows) == 1
     assert store.read_progress(flows[0]).status.value == "completed"
@@ -298,7 +298,7 @@ def test_the_readme_quickstart_stops_on_a_failed_prerequisite(guide_env, tmp_pat
     for forbidden in ("composed", CLAUDE_SAID, CODEX_SAID):
         assert forbidden not in run.stdout, run.stdout
     assert not (workspace / ".atelier" / "conduits" / "triage").exists()
-    assert list((workspace / ".atelier").glob("flows/*")) == []
+    assert FilesystemStore(workspace / ".atelier", env["ATELIER_GLOBAL_ATELIER_DIR"]).list_flows() == []
 
 
 def test_the_readme_quickstart_stops_when_the_name_is_taken(guide_env, tmp_path):
@@ -311,7 +311,7 @@ def test_the_readme_quickstart_stops_when_the_name_is_taken(guide_env, tmp_path)
     assert "already exists" in run.stdout
     # The unrelated recipe was never checked, run or read back.
     assert not marker.exists() and GLOBAL_RAN not in run.stdout
-    assert list((workspace / ".atelier").glob("flows/*")) == []
+    assert FilesystemStore(workspace / ".atelier", env["ATELIER_GLOBAL_ATELIER_DIR"]).list_flows() == []
     assert _prompts(records["claude"]) == [] and _prompts(records["codex"]) == []
 
 
@@ -331,7 +331,7 @@ def test_documented_fix_loop_uses_independent_test(guide_env, tmp_path):
     )
     assert run.returncode == 0, run.stdout + run.stderr
     result = json.loads(run.stdout.splitlines()[-1])
-    store = FilesystemStore(Path(marker.read_text().strip()) / ".atelier")
+    store = FilesystemStore(Path(marker.read_text().strip()) / ".atelier", env["ATELIER_GLOBAL_ATELIER_DIR"])
     assert result["status"] == "completed"
     assert "TESTS PASSED" in store.read_outputs(result["flow_id"])["fix_until_green"]
     assert len(_prompts(records["claude"])) == 4

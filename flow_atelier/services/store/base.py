@@ -68,6 +68,7 @@ class StoreBase(ABC):
         parent_flow_id: str | None = None,
         *,
         flow_id: str | None = None,
+        project: Path | None = None,
     ) -> str:
         """Returns the new flow_id.
 
@@ -77,6 +78,11 @@ class StoreBase(ABC):
         :param flow_id: optional pre-generated flow id; when ``None`` the
             store generates one via :func:`new_flow_id`
         """
+
+    @abstractmethod
+    def lock_writer(self, flow_id: str):
+        """Hold exclusive ownership from before execution until the run returns."""
+        ...
 
     @abstractmethod
     def list_flows(self, conduit_name: str | None = None) -> list[str]:

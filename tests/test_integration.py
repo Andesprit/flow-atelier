@@ -3,7 +3,6 @@ import builtins
 import sys
 
 import pytest
-import yaml
 
 from flow_atelier.core.atelier import Atelier
 
@@ -149,9 +148,7 @@ tasks:
     greet_log = next(l for l in logs if l["task"] == "greet")
     assert "alice says yes" in greet_log["output"]
 
-    input_yaml = yaml.safe_load(
-        (a.store._flow_dir(flow_id) / "input.yaml").read_text()
-    )
+    input_yaml = a.store.read_input(flow_id)
     assert input_yaml["username"] == "alice"
     assert input_yaml["confirm"] == "yes"
 
@@ -202,11 +199,10 @@ tasks:
     flow_id = await a.run_conduit("parent", {})
     p = a.get_status(flow_id)
     assert p.status.value == "completed"
-    parent_dir = a.store._flow_dir(flow_id)
-    child_flows = list((parent_dir / "flows").iterdir())
+    child_flows = a.store.list_child_flows(flow_id)
     assert len(child_flows) == 1
     child_dir = child_flows[0]
-    child_logs = [e.model_dump() for e in a.store.read_logs(child_dir.name)]
+    child_logs = [e.model_dump() for e in a.store.read_logs(child_dir)]
     assert any("child-setup-done" in e["output"] for e in child_logs)
 
 
@@ -376,8 +372,7 @@ tasks:
     assert p.tasks["nested"].iteration == 3
     assert p.tasks["nested"].of == 5
 
-    parent_dir = a.store._flow_dir(flow_id)
-    child_flows = list((parent_dir / "flows").iterdir())
+    child_flows = a.store.list_child_flows(flow_id)
     assert len(child_flows) == 3, child_flows
 
     # Confirm exactly one child flow's `tests` sub-task emitted PASS
@@ -386,7 +381,7 @@ tasks:
     # not on the aggregate output.
     pass_count = 0
     for child_dir in child_flows:
-        child_logs = [e.model_dump() for e in a.store.read_logs(child_dir.name)]
+        child_logs = [e.model_dump() for e in a.store.read_logs(child_dir)]
         tests_log = next(l for l in child_logs if l["task"] == "tests")
         finalize_log = next(l for l in child_logs if l["task"] == "finalize")
         if "PASS" in tests_log["output"]:

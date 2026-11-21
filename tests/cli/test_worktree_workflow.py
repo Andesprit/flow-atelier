@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from flow_atelier.services.store.events import project_folder
+from tests._runs import legacy_record, project_store, saved_bytes
 from tests._shell import CLI, host_path
 
 FAKE_AGENT = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
@@ -321,13 +323,16 @@ class Project:
         """
         return self.work / ".atelier" / "workspaces"
 
+    @property
+    def store(self):
+        return project_store(self.work, self.env)
+
     def flows(self) -> list[str]:
         """Return the ids of every top-level flow on disk.
 
         :returns: sorted flow directory names.
         """
-        root = self.work / ".atelier" / "flows"
-        return sorted(p.name for p in root.glob("*") if p.is_dir())
+        return self.store.list_flows()
 
     def recipe_unchanged(self) -> bool:
         """Report whether the installed recipe still holds its agent names.
@@ -929,7 +934,7 @@ def test_again_can_add_a_task_to_the_inherited_policy(project):
 @pytest.mark.skipif(sys.platform == "win32", reason="chmod cannot make a folder read-only on Windows")
 def test_a_run_that_cannot_record_itself_keeps_what_it_built(project):
     """The checkouts exist before the flow does, and are not tidied away."""
-    flows = project.work / ".atelier" / "flows"
+    flows = project.store.global_dir / "projects" / project_folder(project.work)
     flows.mkdir(parents=True, exist_ok=True)
     flows.chmod(0o500)
     try:
@@ -1047,8 +1052,8 @@ def _damage(project, flow_id, damage, a):
     :param a: the finished sibling's checkout, for the retargeting cases.
     :returns: the progress file's path.
     """
-    progress = project.work / ".atelier" / "flows" / flow_id / "progress.json"
-    payload = json.loads(progress.read_text(encoding="utf-8"))
+    journal = project.store.journal(flow_id)
+    payload = journal.latest("progress")
     spaces = payload["workspaces"]
     if damage == "source_checkout":
         spaces["paths"]["writer_b"] = str(project.work)
@@ -1061,8 +1066,8 @@ def _damage(project, flow_id, damage, a):
     else:
         del spaces["paths"]["writer_b"]
         spaces["selected"] = ["writer_a"]
-    progress.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return progress
+    journal.append("progress", payload)
+    return journal.path
 
 
 DAMAGE = [
@@ -1108,10 +1113,10 @@ def test_resume_refuses_a_workspace_record_it_does_not_own(project, damage):
 def test_the_facade_refuses_the_same_record_without_the_cli(project):
     """The guard is in the API, so calling it directly cannot get past it."""
     flow_id, _a, b = _fail_writer_b(project)
-    progress = project.work / ".atelier" / "flows" / flow_id / "progress.json"
-    payload = json.loads(progress.read_text(encoding="utf-8"))
+    journal = project.store.journal(flow_id)
+    payload = journal.latest("progress")
     payload["workspaces"]["paths"]["writer_b"] = str(project.work)
-    progress.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    journal.append("progress", payload)
 
     script = (
         "import asyncio, os\n"
@@ -1147,14 +1152,14 @@ def _lose_record(project, flow_id, how):
     :param how: ``removed`` deletes the key, ``null`` empties it.
     :returns: the progress file's path.
     """
-    progress = project.work / ".atelier" / "flows" / flow_id / "progress.json"
-    payload = json.loads(progress.read_text(encoding="utf-8"))
+    journal = project.store.journal(flow_id)
+    payload = journal.latest("progress")
     if how == "removed":
         del payload["workspaces"]
     else:
         payload["workspaces"] = None
-    progress.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return progress
+    journal.append("progress", payload)
+    return journal.path
 
 
 @pytest.mark.parametrize("how", ["removed", "null"])
@@ -1251,9 +1256,8 @@ def test_again_keeps_the_recorded_repository_when_started_elsewhere(
     assert first.returncode == 0, first.stdout + first.stderr
     old_id = project.flow_id(first)
     old = project.status(old_id)["workspaces"]
-    progress = project.work / ".atelier" / "flows" / old_id / "progress.json"
-    outputs = project.work / ".atelier" / "flows" / old_id / "outputs.yaml"
-    before = (progress.read_bytes(), outputs.read_bytes())
+    journal = project.store.journal(old_id)
+    before = saved_bytes(journal)
 
     # A commit in the source after the first run: the fresh checkouts are cut
     # from its HEAD as it is now, and that HEAD is read in the source, not here.
@@ -1287,7 +1291,7 @@ def test_again_keeps_the_recorded_repository_when_started_elsewhere(
 
     # The first run's record and results are byte-identical, and the directory
     # the command was typed in was left completely alone.
-    assert (progress.read_bytes(), outputs.read_bytes()) == before
+    assert saved_bytes(journal) == before
     assert project.status(old_id)["workspaces"]["paths"] == old["paths"]
     if elsewhere is not None:
         elsewhere.source_untouched()
@@ -1338,7 +1342,7 @@ def test_a_flow_recorded_before_checkouts_existed_still_resumes(project):
     )
     assert first.returncode == 1, first.stdout + first.stderr
     flow_id = project.flow_id(first)
-    progress = project.work / ".atelier" / "flows" / flow_id / "progress.json"
+    progress = legacy_record(project.store, flow_id) / "progress.json"
     payload = json.loads(progress.read_text(encoding="utf-8"))
     del payload["workspaces"]
     progress.write_text(json.dumps(payload, indent=2), encoding="utf-8")

@@ -990,7 +990,7 @@ def test_the_readme_section_runs_and_claims_only_what_happens(readme_env, tmp_pa
     # One preparation: neither failed check executed a step.
     assert (workspace / "preparation.log").read_text() == "prepared\n"
 
-    store = FilesystemStore(workspace / ".atelier")
+    store = FilesystemStore(workspace / ".atelier", env["ATELIER_GLOBAL_ATELIER_DIR"])
     flows = store.list_flows("report")
     assert len(flows) == 1
     assert store.read_progress(flows[0]).status.value == "completed"
@@ -1107,7 +1107,7 @@ def test_the_readme_binding_example_really_runs_with_the_tone_it_asks_for(
     assert run.returncode == 0, run.stdout + run.stderr
     assert (project / "preparation.log").read_text() == "prepared\n"
 
-    store = FilesystemStore(project / ".atelier")
+    store = FilesystemStore(project / ".atelier", env["ATELIER_GLOBAL_ATELIER_DIR"])
     flows = store.list_flows("report")
     assert len(flows) == 1
     assert store.read_progress(flows[0]).status.value == "completed"

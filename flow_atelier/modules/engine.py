@@ -610,6 +610,35 @@ class Engine:
         :raises ValueError: required inputs are missing
         :raises Exception: first task failure propagates after fail-fast cancel
         """
+        with contextlib.ExitStack() as locks:
+            return await self._run(
+                conduit, inputs, parent_flow_id, on_task_event, on_flow_started,
+                on_task_starting, show_steps, working_dir, flow_id, resume_from,
+                ancestor_conduits, stoppable, invoking_task, task_agents,
+                workspaces, session_scope, locks=locks,
+            )
+
+    async def _run(
+        self,
+        conduit: Conduit,
+        inputs: dict[str, Any],
+        parent_flow_id: str | None = None,
+        on_task_event: TaskEventCallback | None = None,
+        on_flow_started: FlowStartedCallback | None = None,
+        on_task_starting: TaskStartingCallback | None = None,
+        show_steps: bool = True,
+        working_dir: Path | None = None,
+        flow_id: str | None = None,
+        resume_from: str | None = None,
+        ancestor_conduits: tuple[str, ...] = (),
+        stoppable: bool = False,
+        invoking_task: str | None = None,
+        task_agents: Mapping[str, str] | None = None,
+        workspaces: Workspaces | None = None,
+        session_scope: str | None = None,
+        *,
+        locks: contextlib.ExitStack,
+    ) -> str:
         # Guard nested tool:conduit recursion before any flow dir is created:
         # a self- or mutually-referential conduit would otherwise recurse
         # until the host exhausts the stack or the disk fills.
@@ -653,10 +682,18 @@ class Engine:
 
         if resume_from is not None:
             flow_id = resume_from
-            prior = self.store.read_progress(flow_id)
-            prior_outputs = self.store.read_outputs(flow_id)
         else:
-            flow_id = self.store.create_flow(conduit.name, inputs, parent_flow_id, flow_id=flow_id)
+            flow_id = self.store.create_flow(
+                conduit.name, inputs, parent_flow_id, flow_id=flow_id,
+                project=(working_dir or Path.cwd()).resolve(),
+            )
+        if not locks.enter_context(self.store.lock_writer(flow_id)):
+            raise ValueError(f"flow {flow_id} already has an active writer")
+        if resume_from is not None:
+            prior = self.store.read_progress(flow_id)
+            if prior.status not in (FlowStatus.failed, FlowStatus.running):
+                raise ValueError(f"cannot resume a {prior.status.value} flow")
+            prior_outputs = self.store.read_outputs(flow_id)
         _current_flow_ctx.set(flow_id)
         session_scope = session_scope or flow_id
         if on_flow_started is not None and resume_from is None:
@@ -676,11 +713,11 @@ class Engine:
         # into the {{inputs.*}} namespace on resume. On resume, recover the prior
         # values when this run doesn't supply fresh ones.
         if working_dir:
-            run_path = str(working_dir)
+            run_path = str(working_dir.resolve())
         elif resume_from is not None:
             run_path = prior.run_path
         else:
-            run_path = None
+            run_path = str(Path.cwd())
         if invoking_task is None and resume_from is not None:
             invoking_task = prior.invoking_task
 

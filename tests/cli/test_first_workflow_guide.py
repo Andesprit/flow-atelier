@@ -104,7 +104,7 @@ def test_the_guide_runs_end_to_end_and_records_what_it_claims(guide_env, tmp_pat
     broken = json.loads((workspace / "broken.json").read_text())
     assert broken == {"flow_id": resumed, "status": "failed"}
     assert len({initial, resumed, fresh}) == 3
-    store = FilesystemStore(workspace / ".atelier")
+    store = FilesystemStore(workspace / ".atelier", env["ATELIER_GLOBAL_ATELIER_DIR"])
     assert sorted(store.list_flows("script-check")) == sorted([initial, resumed, fresh])
 
     # The first run stayed intact through the failure, the resume and the re-run.
@@ -173,7 +173,7 @@ def test_one_step_run_and_log_stream(guide_env, tmp_path):
     records = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
     assert records[-1] == {"kind": "end", **completion}
     assert any(row.get("output") == "No finding." for row in records)
-    store = FilesystemStore(tmp_path / ".atelier")
+    store = FilesystemStore(tmp_path / ".atelier", env["ATELIER_GLOBAL_ATELIER_DIR"])
     assert store.read_outputs(completion["flow_id"]) == {"step_1": "No finding."}
     rejected = run_script(missing_brief, tmp_path / "reject.sh", tmp_path, env, 30)
     assert rejected.returncode == 0, rejected.stderr
@@ -206,7 +206,7 @@ def test_readme_agent_and_shell_examples(guide_env, tmp_path):
     run = run_script("set -eu\n" + hello + ask + pair, tmp_path / "start.sh", tmp_path, env, 120)
     assert run.returncode == 0, run.stdout + run.stderr
     assert "hello world" in run.stdout
-    store = FilesystemStore(tmp_path / ".atelier")
+    store = FilesystemStore(tmp_path / ".atelier", env["ATELIER_GLOBAL_ATELIER_DIR"])
     for name in ("hello", "ask", "pair"):
         flow_id, = store.list_flows(name)
         assert store.read_progress(flow_id).status.value == "completed"

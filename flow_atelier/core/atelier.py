@@ -370,7 +370,7 @@ class Atelier:
             raise ValueError(f"missing required inputs: {missing}")
         check_selectors(conduit, tasks, origin=origin)
         source = resolve_source_repo(source_dir, origin=origin)
-        return create_worktrees(source, self.store.workspace_dir(flow_id), tasks)
+        return create_worktrees(source, self.store.workspace_dir(flow_id, source_dir), tasks)
 
     def tool_readiness(
         self, conduit: Conduit, only: Container[str] | None = None
@@ -1201,8 +1201,6 @@ class Atelier:
         :returns: list of :class:`LogEntry` (empty if the file is empty)
         :raises FileNotFoundError: if no flow with that id exists
         """
-        # ``_flow_dir`` raises FileNotFoundError when the id is unknown.
-        self.store._flow_dir(flow_id)
         logs = self.store.read_logs(flow_id)
         for child_id in self.store.list_child_flows(flow_id):
             logs.extend(self._descendant_logs(child_id))
@@ -1234,9 +1232,7 @@ class Atelier:
         :returns: the run page's map
         :raises FileNotFoundError: if no flow with that id exists
         """
-        # A sub-run lives at <parent>/flows/<id>; a top-level run at <base>/flows/<id>.
-        holder = self.store._flow_dir(flow_id).parent.parent
-        parent_flow_id = None if holder == self.store.base_dir else holder.name
+        parent_flow_id = self.store.parent_flow_id(flow_id)
         try:
             conduit_name, _, _ = parse_flow_id(flow_id)
         except ValueError:
@@ -1261,11 +1257,16 @@ class Atelier:
             that order; ``None`` for one not written yet
         :raises FileNotFoundError: if no flow with that id exists
         """
-        flow_dir = self.store._flow_dir(flow_id)
+        if journal := self.store.journal(flow_id):
+            paths = (journal.path, journal.path, journal.side / "steps.jsonl", journal.path.parent)
+        else:
+            directory = self.store._flow_dir(flow_id)
+            names = ("progress.json", "logs.jsonl", "steps.jsonl", "flows")
+            paths = tuple(directory / n for n in names)
         found: list[tuple[int, int] | None] = []
-        for name in ("progress.json", "logs.jsonl", "steps.jsonl", "flows"):
+        for path in paths:
             try:
-                st = (flow_dir / name).stat()
+                st = path.stat()
             except FileNotFoundError:
                 found.append(None)
             else:

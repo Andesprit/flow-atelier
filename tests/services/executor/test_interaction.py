@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from flow_atelier.schemas.interaction import InteractionPolicy
 from flow_atelier.services.executor.harness import DEFAULT_DONE_MARKER
 from flow_atelier.services.executor.interaction import _decision_from
+from flow_atelier.services.store.filesystem import FilesystemStore
 
 REPO = Path(__file__).resolve().parents[3]
 AGENT = REPO / "tests/fixtures/fake_acp_agent.py"
@@ -88,8 +89,8 @@ async def run_flow(tmp_path, policy, turns, *, decision=None, replies="", config
         if proc.returncode is None:
             proc.kill()
             await proc.wait()
-    logs = [json.loads(line) for file in (tmp_path / ".atelier/flows").glob("*/logs.jsonl")
-            for line in file.read_text().splitlines()]
+    store = FilesystemStore(tmp_path / ".atelier", tmp_path / "global")
+    logs = [entry.model_dump() for fid in store.list_flows() for entry in store.read_logs(fid)]
     supervisor_prompts = "".join(
         p.read_text(encoding="utf-8") for p in sorted(supervisor_record.glob("*.jsonl"))
     )

@@ -15,6 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 from flow_atelier.cli import app
+from tests._runs import project_store
 
 FAKE_AGENT = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
 
@@ -89,13 +90,13 @@ def _recipe(work: Path) -> str:
     )
 
 
-def _flows(work: Path) -> list[Path]:
+def _flows(work: Path) -> list[str]:
     """Return every flow directory the project holds.
 
     :param work: the project path.
     :returns: the flow dirs.
     """
-    return sorted((work / ".atelier" / "flows").glob("*"))
+    return project_store(work).list_flows()
 
 
 # ------------------------------------------------------------------------ plan

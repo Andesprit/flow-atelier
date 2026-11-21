@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 import flow_atelier.cli.commands.run as run_mod
 from flow_atelier.cli import app
 from flow_atelier.core.atelier import Atelier
+from tests._runs import project_store
 
 FAKE_AGENT = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
 
@@ -87,13 +88,13 @@ def workdir(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _flows(workdir: Path) -> list[Path]:
+def _flows(workdir: Path) -> list[str]:
     """Return every flow directory the project holds.
 
     :param workdir: the project path.
     :returns: the flow dirs.
     """
-    return sorted((workdir / ".atelier" / "flows").glob("*"))
+    return project_store(workdir).list_flows()
 
 
 def _flags(output: str) -> list[str]:
@@ -178,7 +179,7 @@ def test_appending_the_filled_flags_completes_the_run(workdir, tmp_path):
     result = CliRunner().invoke(app, original + filled)
     assert result.exit_code == 0, result.output
     (flow,) = _flows(workdir)
-    outputs = Atelier().get_outputs(flow.name)
+    outputs = Atelier().get_outputs(flow)
     assert outputs["report"].rstrip("\n") == f"{content}|local box|{SECRET}|slow"
 
 

@@ -92,9 +92,9 @@ def test_one_file_matches_shared_child_plan_run_and_probe(tmp_path: Path, inline
     assert "TESTS FAILED" in str(project.prompts("coder2")[1])
     assert not project.prompts("coder")
     assert project.recipe("ship") == before
-    child_flows = list((project.work / ".atelier" / "flows" / flow_id / "flows").iterdir())
+    child_flows = project.store.list_child_flows(flow_id)
     assert len(child_flows) == 2
-    assert all(json.loads((f / "progress.json").read_text())["task_agents"]["fix"]
+    assert all(project.store.read_progress(f).task_agents["fix"]
                == "harness:coder2" for f in child_flows)
     if inline:
         assert [p.name for p in (project.work / ".atelier" / "conduits").iterdir()] == ["ship"]

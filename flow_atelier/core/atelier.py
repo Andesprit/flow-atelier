@@ -470,6 +470,8 @@ class Atelier:
         stoppable: bool = False,
         agents: Mapping[str, str] | None = None,
         worktrees: Sequence[str] | None = None,
+        *,
+        flow_id: str | None = None,
     ) -> str:
         """Start a new flow for the named conduit.
 
@@ -501,6 +503,7 @@ class Atelier:
             current HEAD before any task starts. The mapping is recorded on the
             flow so a later resume continues in the same directories. Omit it
             and every task shares one working directory, as before.
+        :param flow_id: run ID reserved by a durable event claim.
         :returns: the newly created flow id
         :raises BindingError: a selection names no reachable harness task of
             the conduit, or an agent nothing is registered for
@@ -521,7 +524,8 @@ class Atelier:
         self.require_agent_ready(agents)
         # The destination is named after the flow, so the id has to exist
         # before the checkouts do. The engine takes it as given.
-        flow_id = new_flow_id(name) if worktrees else None
+        if worktrees and flow_id is None:
+            flow_id = new_flow_id(name)
         spaces = (
             self._new_workspaces(conduit, list(worktrees), flow_id, wd, inputs)
             if worktrees

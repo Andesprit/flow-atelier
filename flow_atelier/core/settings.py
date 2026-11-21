@@ -12,6 +12,7 @@ from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
     DotEnvSettingsSource,
+    EnvSettingsSource,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
@@ -35,6 +36,8 @@ ENVIRONMENT_ONLY = frozenset({
     "api_token",
     "serve_url",
 })
+
+USER_FILE_ONLY = frozenset({"webhook_sources", "webhook_secrets", "run_caps"})
 
 # New fields are user-only until explicitly allowed in project files.
 PROJECT_KEYS = frozenset({
@@ -126,10 +129,16 @@ class AtelierSettings(BaseSettings):
     default_timeout: PositiveInt = 3600
     default_max_concurrency: PositiveInt = 3
     cleanup_period_days: int = Field(default=30, ge=0)
-    webhook_sources: dict[str, dict[str, str]] = Field(default_factory=dict)
-    webhook_secrets: dict[str, SecretStr] = Field(default_factory=dict)
     dictaria_account: str | None = None
-    run_caps: dict[str, PositiveInt] = Field(default_factory=dict)
+    webhook_sources: dict[str, dict[str, str]] = Field(
+        default_factory=dict, description="Per-source project and conduit for signed errors.",
+    )
+    webhook_secrets: dict[str, SecretStr] = Field(
+        default_factory=dict, description="Per-source HMAC keys from user settings.",
+    )
+    run_caps: dict[str, PositiveInt] = Field(
+        default_factory=dict, description="Machine-wide concurrent event runs by category.",
+    )
     loop_history_limit: int = Field(
         default=10,
         description=(
@@ -243,7 +252,7 @@ class AtelierSettings(BaseSettings):
         cls,
         settings_cls: type[BaseSettings],
         init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
+        env_settings: EnvSettingsSource,
         dotenv_settings: DotEnvSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
@@ -256,11 +265,19 @@ class AtelierSettings(BaseSettings):
         :param file_secret_settings: secrets files.
         :returns: the sources, highest priority first.
         """
+        # Drop user-file-only values before the environment source decodes its JSON.
+        for key in USER_FILE_ONLY:
+            name = env_settings.env_prefix + key
+            env_settings.env_vars.pop(name if env_settings.case_sensitive else name.lower(), None)
+
+        def other_file_secrets() -> dict[str, Any]:
+            return {k: v for k, v in file_secret_settings().items() if k not in USER_FILE_ONLY}
+
         return (
             init_settings,
             env_settings,
             _FileSettings(dotenv_settings),
-            file_secret_settings,
+            other_file_secrets,
         )
 
     @field_validator("harnesses")

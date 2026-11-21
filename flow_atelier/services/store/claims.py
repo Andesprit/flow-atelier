@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from flow_atelier.schemas.conduit import CONDUIT_NAME_RE
-from flow_atelier.schemas.flow import new_flow_id
+from flow_atelier.schemas.flow import new_flow_id, parse_flow_id
 from flow_atelier.schemas.progress import Progress
 from flow_atelier.services.store.events import RunRecordError, file_lock
 from flow_atelier.services.store.filesystem import FilesystemStore
@@ -94,6 +94,23 @@ class EventClaims:
                  conduit, json.dumps(inputs)),
             )
             return result
+
+    def reserve_run(self, key: str, project: Path, run_id: str) -> Claim:
+        """Reserve a hypothesis for an existing run without enqueuing another."""
+        conduit = parse_flow_id(run_id)[0]
+        if not key or not CONDUIT_NAME_RE.fullmatch(conduit):
+            raise ValueError("expected an event key and a valid run id")
+        with self._transaction() as db:
+            db.execute(
+                """INSERT INTO claims VALUES (?, ?, ?, 'reserved', ?, ?, NULL)
+                   ON CONFLICT(category, key) DO NOTHING""",
+                (self.category, key, run_id, str(project.resolve()), conduit),
+            )
+            row = db.execute(
+                "SELECT run_id, status FROM claims WHERE category=? AND key=?",
+                (self.category, key),
+            ).fetchone()
+            return Claim(*row)
 
     def take(self) -> sqlite3.Row | None:
         """Reserve the oldest waiting run before handing it to the engine."""

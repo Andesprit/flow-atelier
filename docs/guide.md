@@ -1939,7 +1939,8 @@ See [Receive signed application errors](error-webhooks.md) to set up the separat
 
 Use user settings for `cleanupPeriodDays` (default 30), `webhookSources`
 (source ID to configuration), `webhookSecrets` (source ID to secret),
-`errorPrProjects`, `meetingRepositories`, `notificationRecipient`, `notificationProvider`, `dictariaAccount`, `dictariaUrl`, `dictariaAliases` and
+`errorPrProjects`, `deploymentTargets`, `meetingRepositories`,
+`notificationRecipient`, `notificationProvider`, `dictariaAccount`, `dictariaUrl`, `dictariaAliases` and
 `runCaps` (run category to positive limit). Both project files reject changes
 to these keys. Launch commands, `ATELIER_HARNESSES`, `ATELIER_ATELIER_DIR`, `ATELIER_GLOBAL_ATELIER_DIR`,
 `ATELIER_API_TOKEN` and `ATELIER_SERVE_URL` require the shell environment.
@@ -2093,12 +2094,12 @@ project path. Existing unshortened folders remain readable.
 
 ## Install the platform recipe bundle
 
-`atelier install builtin:platform --no-project` installs the bundled version
-in the global conduit store. The manifest lists `error-to-pr`,
+`atelier install builtin:platform --no-project` installs version 3 in the global
+conduit store. It includes `error-to-pr`,
 `idea-to-product`, `continuous-improvement` and `meetings-to-tasks`.
-Version 2 includes [error-to-pr](error-webhooks.md#error-to-pr).
-Meeting intake has an opt-in five-minute schedule. Configure the account
-and test a manual poll before enabling it. [Meeting intake setup](meetings-to-tasks.md)
+Configure the Dictaria account and test a
+manual poll before enabling its five-minute schedule. [Meeting intake setup](meetings-to-tasks.md)
+For application errors, configure a signed webhook source. [Error-to-PR setup](error-webhooks.md#error-to-pr)
 
 A project's own conduit takes precedence. Reinstalling skips existing files.
 Use `atelier update platform --force` only when you intend to replace them.
@@ -2120,6 +2121,35 @@ Harness tasks receive the selected rule text for that project and the text
 of each selected `~/.claude/skills/<name>/SKILL.md`. A skill directory can
 be a symlink. Only user-level settings can select these files. An unreadable
 selection stops the conduit before its harness starts and names the file.
+
+### Idea to product
+
+For staging or production, see [approved Cloud Run deployments](product-deployment.md).
+
+Use an existing directory as the target path. Start the CLI in that directory,
+or select it as the dashboard run path. An empty directory works for a new
+product. Supply a phrase or paste a paragraph, spec or PRD as the `idea`.
+
+```sh
+cd /path/to/target
+atelier run idea-to-product --input 'idea=Build a reading list'
+atelier run idea-to-product --input-file idea=/path/to/prd.md --input 'test_command=make test'
+```
+
+Codex drafts a spec with observable acceptance criteria and a test command.
+An explicit `test_command` overrides the proposal. Review the spec and the
+effective command, then type `APPROVE` to allow edits and test execution.
+Declining ends the run. In a new project, the builder creates the test entry
+point named in the approved spec.
+
+Each of the three allowed attempts runs Claude Code as builder. A passing
+shell test starts the independent Codex review. Failed tests and requested
+changes go back to the next builder attempt. A passing test and an exact
+`PASS` from review release the final `atelier notify` step. Configure the
+sender below before running the recipe. Agent overrides for `attempt.build`
+and `attempt.review` must still name different harnesses.
+
+For fixed-workload experiments, see [Continuous improvement](continuous-improvement.md).
 
 ## Send a WhatsApp run summary
 

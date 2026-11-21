@@ -28,6 +28,9 @@ function appendTask(lines: string[], t: ConduitTask, indent: number): void {
   if (t.while != null) lines.push(`${field}while: ${JSON.stringify(t.while)}`);
   if (t.onExhaust && t.onExhaust !== "complete") lines.push(`${field}on_exhaust: ${t.onExhaust}`);
   if (t.interactive) lines.push(`${field}interactive: true`);
+  if (t.denyCloudConfig) lines.push(`${field}deny_cloud_config: true`);
+  if (t.permissions) lines.push(`${field}permissions: ${t.permissions}`);
+  if (t.differentHarnessFrom) lines.push(`${field}different_harness_from: ${yamlScalar(t.differentHarnessFrom)}`);
   if (t.inputs && Object.keys(t.inputs).length > 0) {
     lines.push(`${field}inputs:`);
     for (const [key, val] of Object.entries(t.inputs)) {

@@ -28,6 +28,7 @@ import re
 import shutil
 import signal
 import sys
+import tempfile
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -46,6 +47,7 @@ from flow_atelier.schemas.log import (
     UsageLimit,
 )
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext, child_environ
+from flow_atelier.services.executor.cloud_sandbox import cloud_sandbox
 from flow_atelier.services.executor.interaction import InteractionRouter
 from flow_atelier.services.executor.prompt_sink import (
     AskQuestion,
@@ -1468,12 +1470,11 @@ class AcpHarnessExecutor(ExecutorBase):
         and drops everything else. That silently breaks agents behind a proxy
         or custom CA, agents authenticated by API key or cloud provider, and
         any ``git push`` the agent tries (no ``SSH_AUTH_SOCK``). Pass the real
-        environment, less Atelier's own secrets, then layer the agent's own
-        variables on top.
+        environment with the agent's overrides, then filter private credentials.
 
         :returns: the environment mapping for the agent process.
         """
-        return {**child_environ(), **self.env}
+        return child_environ(os.environ | self.env)
 
     def is_available(self) -> tuple[bool, str]:
         """Probe whether the harness's launch binary is on PATH.
@@ -1718,13 +1719,17 @@ class AcpHarnessExecutor(ExecutorBase):
 
         spawned_at = time.monotonic()
         try:
-            result = await asyncio.wait_for(
-                self._drive_session(
-                    client, prompt_text, interactive, cwd, agent_stderr,
-                    context.resume_session,
-                ),
-                timeout=context.timeout,
-            )
+            with contextlib.ExitStack() as resources:
+                scratch = None
+                if task.deny_cloud_config:
+                    scratch = Path(resources.enter_context(tempfile.TemporaryDirectory()))
+                result = await asyncio.wait_for(
+                    self._drive_session(
+                        client, prompt_text, interactive, cwd, agent_stderr,
+                        context.resume_session, scratch,
+                    ),
+                    timeout=context.timeout,
+                )
         except TimeoutError:
             await client.flush_pending()
             result = ExecutionResult(
@@ -1770,6 +1775,7 @@ class AcpHarnessExecutor(ExecutorBase):
         cwd: str,
         agent_stderr: deque[str],
         resume_session: str | None = None,
+        scratch: Path | None = None,
     ) -> ExecutionResult:
         """Spawn the agent, initialize a session, and run one or many turns.
 
@@ -1787,6 +1793,10 @@ class AcpHarnessExecutor(ExecutorBase):
 
         cmd, *args = self.launch_cmd
         cmd = _resolve_cmd(cmd)
+        env = self._spawn_env()
+        if scratch is not None:
+            argv, env = cloud_sandbox([cmd, *args], env, Path(cwd), scratch)
+            cmd, *args = argv
         # Public stream-observer hook: lets the client count the session
         # updates a turn produced so it can wait for its own handlers.
         observers = [client.observe]
@@ -1795,12 +1805,12 @@ class AcpHarnessExecutor(ExecutorBase):
             # default; Codex and similar harnesses emit large JSON-RPC frames
             # (tool results, planning output) that routinely exceed it.
             spawn = acp.spawn_agent_process(
-                client, cmd, *args, cwd=cwd, env=self._spawn_env(),
+                client, cmd, *args, cwd=cwd, env=env,
                 transport_kwargs={"limit": 8 * 1024 * 1024}, observers=observers,
             )
         else:
             spawn = _spawn_agent(
-                client, cmd, *args, cwd=cwd, env=self._spawn_env(), observers=observers
+                client, cmd, *args, cwd=cwd, env=env, observers=observers
             )
         succeeded = False
         agent_proc = None

@@ -62,7 +62,7 @@ relay target to match.
 
 ## Error-to-pr
 
-Install version 2 of the platform bundle with `atelier install builtin:platform --no-project`.
+Install the platform bundle with `atelier install builtin:platform --no-project`.
 For a previously installed starter, review local recipe edits before replacing it. Configure
 the webhook source to run `error-to-pr`. Add an entry keyed by the resolved repository path
 in the same user settings file. This example runs a Python project's unittest suite.

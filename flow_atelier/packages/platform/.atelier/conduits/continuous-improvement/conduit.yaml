@@ -1,10 +1,26 @@
 name: continuous-improvement
-description: Reserved for the continuous-improvement workflow in roadmap slice 2.8.
+description: Measure one improvement hypothesis on an isolated branch and submit its decision to main.
+inputs:
+  project:
+    description: Git project with an origin remote and a main branch.
+    default: "."
+  goal:
+    description: Choose latency, cost, clean-code or ux.
+    default: latency
+  schedule:
+    description: Trigger label recorded with the experiment. Set recurring runs with atelier schedule.
+    default: manual
 tasks:
-  - setup:
-      description: Report workflow availability
+  - proposal:
+      description: Inspect prior decisions, active improvements and the fixed baseline
       tool: tool:bash
       task: |
-        echo 'continuous-improvement is pending roadmap slice 2.8.' >&2
-        exit 1
+        atelier experiment "$ATELIER_FLOW_ID" "$INPUT_PROJECT" "$INPUT_GOAL" "$INPUT_SCHEDULE"
+  - measure:
+      description: Claim, implement, evaluate and publish the experiment
+      tool: tool:bash
+      depends_on: [proposal]
+      task: |
+        atelier experiment "$ATELIER_FLOW_ID" "$INPUT_PROJECT" "$INPUT_GOAL" "$INPUT_SCHEDULE" \
+          --proposal-file "$OUTPUT_PROPOSAL_FILE"
 

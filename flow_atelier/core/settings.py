@@ -19,6 +19,7 @@ from pydantic_settings import (
 
 from flow_atelier.core.step_instructions import StepInstructions
 from flow_atelier.schemas.conduit import HARNESS_NAME_RE, AgentPermissions
+from flow_atelier.schemas.deployment import DeploymentTarget
 
 # Settings that decide what Atelier executes, where it looks for shared
 # conduits, or which credentials and servers it uses. A `.env` file in the
@@ -42,7 +43,7 @@ USER_FILE_ONLY = frozenset({
     "webhook_sources", "webhook_secrets", "run_caps",
     "dictaria_account", "dictaria_aliases", "dictaria_url",
     "meeting_repositories",
-    "notification_recipient", "notification_provider", "error_pr_projects",
+    "notification_recipient", "notification_provider", "error_pr_projects", "deployment_targets",
 })
 
 # New fields are user-only until explicitly allowed in project files.
@@ -237,6 +238,7 @@ class AtelierSettings(BaseSettings):
         ),
     )
     error_pr_projects: dict[str, ErrorPrProject] = Field(default_factory=dict)
+    deployment_targets: dict[str, dict[str, DeploymentTarget]] = Field(default_factory=dict)
     step_instructions: StepInstructions = Field(default_factory=StepInstructions)
     done_marker: str = "[ATELIER_DONE]"
     api_token: str = Field(

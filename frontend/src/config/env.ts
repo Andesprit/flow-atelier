@@ -16,6 +16,12 @@ export const BASE_URL = env.VITE_BACKEND_URL ?? window.location.origin;
 // used to 401 the bundled UI out of its own API with no way to authenticate.
 // VITE_API_TOKEN still seeds it, for a dev server pointed at a remote backend.
 let bearer = env.VITE_API_TOKEN ?? "";
+if (window.location.protocol === "http:" && BASE_URL === window.location.origin) {
+  // The desktop window injects its sidecar token before the bundled app loads.
+  try {
+    bearer = window.sessionStorage.getItem("atelier:api-token") ?? bearer;
+  } catch { /* Browser storage may be disabled. */ }
+}
 
 export function getApiToken(): string {
   return bearer;

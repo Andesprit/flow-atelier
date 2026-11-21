@@ -18,6 +18,23 @@ describe("runtime API token", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("uses the injected desktop token for the first API request and WebSocket", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_API_TOKEN", "dev-fallback");
+    sessionStorage.setItem("atelier:api-token", "desktop/token");
+    const request = vi.fn().mockResolvedValue(Response.json([]));
+    const socket = vi.fn();
+    vi.stubGlobal("fetch", request);
+    vi.stubGlobal("WebSocket", socket);
+    const { BASE_URL, fetchJson } = await import("@/services/client");
+    const { RunConduitSocket } = await import("@/services/api/run-conduit");
+    await fetchJson(BASE_URL + "/conduits", undefined, { method: "GET" });
+    new RunConduitSocket();
+    expect(request.mock.calls[0][1].headers.Authorization).toBe("Bearer desktop/token");
+    expect(socket).toHaveBeenCalledWith(BASE_URL.replace(/^http/, "ws") + "/ws/run-conduit?token=desktop%2Ftoken");
   });
 
   it("keeps fallback bearer credentials in memory", () => {

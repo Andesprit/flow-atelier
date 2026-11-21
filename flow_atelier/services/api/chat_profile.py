@@ -6,10 +6,13 @@ import json
 import os
 import shutil
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 from flow_atelier.services.api.chat_cli import sandbox
 from flow_atelier.services.executor.acp_registry import INSTALL_DIRNAME, installed_executable
+from flow_atelier.services.store.events import file_lock
 
 PACKAGES = ("@agentclientprotocol/claude-agent-acp@0.62.0", "@agentclientprotocol/codex-acp@1.1.7")
 
@@ -26,15 +29,59 @@ def supported(atelier, executor) -> bool:
     return False
 
 
-def _login(source: Path, destination: Path, roots: set[Path]):
-    if source.is_file() and not destination.exists():
-        destination.parent.mkdir(mode=0o700, exist_ok=True)
-        destination.symlink_to(source.resolve())
-    if destination.is_symlink():
-        roots.add(source.resolve())
+def check_login(executor):
+    if (
+        sys.platform == "darwin"
+        and Path(executor.launch_cmd[0]).name == "claude-agent-acp"
+        and not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    ):
+        raise ValueError("Set CLAUDE_CODE_OAUTH_TOKEN from claude setup-token before starting chat")
 
 
+def _replace_private(path: Path, data: bytes):
+    with NamedTemporaryFile(dir=path.parent, delete_on_close=False) as tmp:
+        tmp.write(data)
+        tmp.close()
+        os.replace(tmp.name, path)
+
+
+@contextmanager
+def _login(source: Path | None, destination: Path):
+    if destination.parent.resolve() != destination.parent:
+        raise ValueError("Invalid adapter credential directory")
+    destination.parent.mkdir(mode=0o700, exist_ok=True)
+    if source is None or not source.is_file():
+        destination.unlink(missing_ok=True)
+        yield
+        return
+    source = source.resolve()
+    original = source.read_bytes()
+    _replace_private(destination, original)
+    try:
+        yield
+    finally:
+        # The adapter has exited. Only accept a regular private file in this scratch home.
+        if (
+            destination.resolve() == destination
+            and destination.is_file()
+            and destination.stat().st_nlink == 1
+        ):
+            refreshed = destination.read_bytes()
+            if refreshed != original:
+                if not isinstance(json.loads(refreshed), dict):
+                    raise ValueError("Invalid refreshed adapter credentials")
+                with file_lock(source.with_suffix(".atelier.lock"), wait=True):
+                    if (
+                        source.is_file()
+                        and source.resolve() == source
+                        and source.read_bytes() == original
+                    ):
+                        _replace_private(source, refreshed)
+
+
+@contextmanager
 def launch(executor, workspace: str):
+    check_login(executor)
     root = Path(workspace).resolve()
     binary = Path(executor.launch_cmd[0])
     node = shutil.which("node")
@@ -42,11 +89,16 @@ def launch(executor, workspace: str):
         raise ValueError("The installed ACP adapter requires Node.js")
     modules = binary.parent.parent.resolve()
     roots = {modules, Path(node).resolve()}
+    ca = Path("/etc/ssl/cert.pem")
     if sys.platform == "darwin":
         # Homebrew's Node links other formulae under the same Cellar.
         cellar = Path(node).resolve()
         if "Cellar" in cellar.parts:
-            roots.add(Path(*cellar.parts[: cellar.parts.index("Cellar") + 1]))
+            cellar = Path(*cellar.parts[: cellar.parts.index("Cellar") + 1])
+            roots.add(cellar)
+            brew_ca = cellar.parent / "etc/ca-certificates/cert.pem"
+            if brew_ca.is_file():
+                ca = brew_ca
     env = dict(
         PATH=os.pathsep.join([str(Path(node).resolve().parent), os.defpath]),
         HOME=str(root),
@@ -56,15 +108,18 @@ def launch(executor, workspace: str):
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1",
         CLAUDE_CODE_DISABLE_AUTO_MEMORY="1",
     )
+    if sys.platform == "darwin" and ca.is_file():
+        ca = ca.resolve()
+        roots.add(ca)
+        env.update(NODE_EXTRA_CA_CERTS=str(ca), SSL_CERT_FILE=str(ca))
     meta = {}
     if binary.name == "codex-acp":
         home = root / ".codex"
-        home.mkdir(exist_ok=True)
-        _login(
-            Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "auth.json",
-            home / "auth.json",
-            roots,
-        )
+        if home.resolve() != home:
+            raise ValueError("Invalid adapter home")
+        home.mkdir(mode=0o700, exist_ok=True)
+        source = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "auth.json"
+        credential = home / "auth.json"
         # Configure both app-server startup and the adapter's thread/start request.
         disabled = (
             "shell_tool unified_exec code_mode code_mode_host apps browser_use computer_use "
@@ -76,10 +131,12 @@ def launch(executor, workspace: str):
             "sandbox_mode": "read-only",
             "mcp_servers": {},
         }
-        (home / "config.toml").write_text(
-            'sandbox_mode = "read-only"\nweb_search = "disabled"\n[features]\n'
-            + "".join(f"{key} = false\n" for key in config["features"]),
-            encoding="utf-8",
+        _replace_private(
+            home / "config.toml",
+            (
+                'sandbox_mode = "read-only"\nweb_search = "disabled"\n[features]\n'
+                + "".join(f"{key} = false\n" for key in config["features"])
+            ).encode(),
         )
         env.update(
             CODEX_HOME=str(home),
@@ -88,14 +145,15 @@ def launch(executor, workspace: str):
             CODEX_CONFIG=json.dumps(config),
         )
     else:
-        # Linux file login and macOS Keychain login stay in the trusted adapter.
+        source = None
         if token := os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
             env["CLAUDE_CODE_OAUTH_TOKEN"] = token
-        creds = (
-            Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
-            / ".credentials.json"
-        )
-        _login(creds, root / ".claude/.credentials.json", roots)
+        else:
+            source = (
+                Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+                / ".credentials.json"
+            )
+        credential = root / ".claude/.credentials.json"
         options = dict(
             tools=[],
             allowedTools=[],
@@ -110,4 +168,5 @@ def launch(executor, workspace: str):
         )
         meta = {"disableBuiltInTools": True, "claudeCode": {"options": options}}
     argv = [*sandbox(root, roots, model=True), str(Path(node).resolve()), str(binary.resolve())]
-    return argv, env, meta
+    with _login(source, credential):
+        yield argv, env, meta

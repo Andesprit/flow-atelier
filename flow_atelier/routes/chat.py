@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import sys
 import time
 from uuid import UUID
 
@@ -11,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from flow_atelier.services.api.chat import ChatSession, available
 from flow_atelier.services.api.chat_cli import cli
+from flow_atelier.services.api.chat_profile import check_login
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -33,8 +35,14 @@ def session(request: Request, chat_id: str) -> ChatSession:
     return chat
 
 
+def require_chat_controls(request: Request):
+    if sys.platform == "linux" and not request.app.state.api_token:
+        raise HTTPException(403, "Linux chat requires a server started with ATELIER_API_TOKEN")
+
+
 @router.get("/harnesses")
 async def harnesses(request: Request):
+    require_chat_controls(request)
     return sorted(available(request.app.state.atelier))
 
 
@@ -45,7 +53,7 @@ async def history(request: Request, source: str | None = None):
     settings = request.app.state.atelier.settings
     if source is not None and not re.fullmatch(r"[0-9a-f]{64}", source):
         raise HTTPException(422, "Invalid session source ID")
-    args = [source] if source else []
+    args = [source, "--chat-import"] if source else []
     try:
         return json.loads(
             await cli(
@@ -62,10 +70,15 @@ async def history(request: Request, source: str | None = None):
 
 @router.post("")
 async def create(body: NewChat, request: Request):
+    require_chat_controls(request)
     atelier = request.app.state.atelier
     executor = available(atelier).get(body.harness)
     if executor is None:
         raise HTTPException(422, "Harness unavailable")
+    try:
+        check_login(executor)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     chats = request.app.state.chats
     for key, old in list(chats.items()):
         if not old.task and not old.jobs and time.monotonic() - old.last_seen > 3600:

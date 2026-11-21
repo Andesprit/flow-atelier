@@ -1598,6 +1598,19 @@ each verified source under `.atelier/migrated-runs/` and preserves its worktrees
 Migrated runs retain their last heartbeat and finish time. The next cleanup can
 expire an already-old finished tree. Its source archive stays in the project.
 
+### Dashboard chat
+
+On Linux, set `ATELIER_API_TOKEN` when starting the server to enable chat controls.
+For Claude on macOS, run `claude setup-token` and set `CLAUDE_CODE_OAUTH_TOKEN`
+in the server environment. The sandboxed adapter uses that token to sign in.
+
+Chat previews show the resolved conduit path before a start and the project
+destination before saving a recipe. Stop, resume, start, schedule enablement and
+recipe saves each need a dashboard click. Chat runs the proposed recipe in an
+isolated checkout first. It uses `atelier save-recipe <name>` because that command
+takes the complete tested definition as JSON on stdin, validates it, and writes
+it to the selected project when you confirm.
+
 ## Commands
 
 ```

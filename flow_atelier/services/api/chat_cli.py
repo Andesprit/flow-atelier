@@ -48,6 +48,7 @@ def sandbox(root: Path, roots: set[Path], *, model: bool = False) -> list[str]:
         """
         if model:
             profile += """(allow network-outbound (remote tcp "*:443"))
+                (allow network-outbound (literal "/private/var/run/mDNSResponder"))
                 (allow system-socket (socket-domain AF_SYSTEM))
                 (allow mach-lookup (global-name "com.apple.dnssd.service")
                                    (global-name "com.apple.securityd")

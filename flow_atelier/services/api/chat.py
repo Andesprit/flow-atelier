@@ -95,7 +95,9 @@ class ChatSession(_ProbeClient):
         if self.proc and self.proc.returncode is None:
             return
         await self.disconnect()
-        argv, env, meta = chat_profile.launch(self.executor, self.directory.name)
+        argv, env, meta = self.stack.enter_context(
+            chat_profile.launch(self.executor, self.directory.name)
+        )
         cmd, *args = argv
         spawn = acp.spawn_agent_process if sys.platform == "win32" else _spawn_agent
         self.conn, self.proc = await self.stack.enter_async_context(
@@ -115,19 +117,19 @@ class ChatSession(_ProbeClient):
         if self.session_id is None:
             session = await self.conn.new_session(**options)
             self.session_id = session.session_id
-            if env.get("INITIAL_AGENT_MODE") and (
-                not session.modes or session.modes.current_mode_id != "read-only"
-            ):
-                raise ValueError("The adapter did not enter its read-only session mode")
         else:
             caps = init.agent_capabilities
             if caps.session_capabilities and caps.session_capabilities.resume:
-                await self.conn.resume_session(session_id=self.session_id, **options)
+                session = await self.conn.resume_session(session_id=self.session_id, **options)
             elif caps.load_session:
-                await self.conn.load_session(session_id=self.session_id, **options)
+                session = await self.conn.load_session(session_id=self.session_id, **options)
                 await self.await_pending_updates()
             else:
                 raise ValueError("Harness cannot restore this session")
+        if env.get("INITIAL_AGENT_MODE") and (
+            not session.modes or session.modes.current_mode_id != "read-only"
+        ):
+            raise ValueError("The adapter did not enter its read-only session mode")
 
     def submit(self, request_id: str, text: str, source: str | None = None):
         existing = self.turns.get(request_id)
@@ -157,9 +159,19 @@ class ChatSession(_ProbeClient):
                     )
                 )
             if turn["source"]:
-                data = json.loads(await self.actions.call("history", turn["source"], "--json"))
-                if data.get("error"):
-                    raise ValueError(data["error"])
+                try:
+                    data = json.loads(
+                        await self.actions.call(
+                            "history", turn["source"], "--chat-import", "--json"
+                        )
+                    )
+                    if data.get("error"):
+                        raise ValueError(data["error"])
+                except (OSError, TimeoutError, ValueError) as exc:
+                    turn.update(status="failed", result=str(exc))
+                    return
+                if warning := data.get("warning"):
+                    turn["result"] = warning
                 prompt.append(
                     TextContentBlock(
                         type="text",
@@ -177,9 +189,11 @@ class ChatSession(_ProbeClient):
             turn["status"] = result.stop_reason
             if result.stop_reason == "end_turn":
                 try:
-                    turn["result"] = await self.actions.reply(turn["answer"])
+                    action_result = await self.actions.reply(turn["answer"])
                 except (OSError, TimeoutError, ValueError) as exc:
-                    turn["result"] = str(exc)
+                    action_result = str(exc)
+                if action_result:
+                    turn["result"] = "\n".join(filter(None, [turn.get("result"), action_result]))
         except asyncio.CancelledError:
             turn["status"] = "cancelled"
             raise

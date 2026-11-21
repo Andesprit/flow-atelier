@@ -128,3 +128,20 @@ def test_repeated_question_is_a_new_turn_after_a_reply(tmp_path, monkeypatch):
     )
     turns = history(history()[0]["id"])["messages"]
     assert [turn["content"] for turn in turns] == ["again", "ok", "again"]
+
+
+def test_linked_provider_roots_and_custom_claude_home(tmp_path, monkeypatch):
+    configured = tmp_path / "claude-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured))
+    actual = tmp_path / "real-claude"
+    session = actual / "projects/repo/session.jsonl"
+    put(session, {"type": "user", "message": {"content": "hi"}})
+    configured.symlink_to(actual, target_is_directory=True)
+    outside = tmp_path / "private.jsonl"
+    put(outside, {"type": "user", "message": {"content": "private"}})
+    session.with_name("escape.jsonl").symlink_to(outside)
+    gemini = tmp_path / "real-gemini"
+    transcript = gemini / "antigravity/brain/id/.system_generated/logs/transcript.jsonl"
+    put(transcript, {"type": "USER_INPUT", "content": "hi"})
+    (Path.home() / ".gemini").symlink_to(gemini, target_is_directory=True)
+    assert {r["source"] for r in history()} == {str(session), str(transcript)}

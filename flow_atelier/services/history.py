@@ -14,7 +14,7 @@ from pathlib import Path
 def _sources() -> Iterator[tuple[str, Path, Path]]:
     home = Path.home()
     codex = Path(os.environ.get("CODEX_HOME") or home / ".codex").resolve()
-    claude = home / ".claude/projects"
+    claude = (Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude") / "projects").resolve()
     patterns = [
         ("codex", codex, "sessions/*/*/*/rollout-*.jsonl"),
         ("codex", codex, "archived_sessions/rollout-*.jsonl"),
@@ -27,7 +27,7 @@ def _sources() -> Iterator[tuple[str, Path, Path]]:
             if path.resolve() == path and path.is_file():
                 yield provider, path, root
     for name in ("antigravity", "antigravity-cli"):
-        root = home / ".gemini" / name
+        root = (home / ".gemini" / name).resolve()
         found = set()
         for directory in sorted((root / "brain").glob("*")):
             if directory.resolve() == directory and directory.is_dir():
@@ -82,7 +82,7 @@ def _message(provider, row):
     return None, None
 
 
-def _read(provider: str, path: Path, root: Path, selected: bool) -> dict:
+def _read(provider: str, path: Path, root: Path, selected: bool, chat_import: bool = False) -> dict:
     subagent = path.parent.name == "subagents"
     session = path.parent.parent.name if subagent else path.stem
     if provider.startswith("antigravity") and path.name == "transcript.jsonl":
@@ -113,7 +113,15 @@ def _read(provider: str, path: Path, root: Path, selected: bool) -> dict:
         seen = Counter()
         previous = None
         with opener(path, "rb") as stream:
-            for number, line in enumerate(stream, 1):
+            # Limit decompressed bytes before parsing even a single oversized tool result.
+            remaining = 64 * 1024
+            lines = iter(lambda: stream.readline(remaining + 1), b"") if chat_import else stream
+            for number, line in enumerate(lines, 1):
+                if chat_import:
+                    remaining -= len(line)
+                    if remaining < 0:
+                        info["warning"] = "Transcript truncated at 64 KiB for chat."
+                        break
                 if not line.strip():
                     continue
                 try:
@@ -154,14 +162,14 @@ def _read(provider: str, path: Path, root: Path, selected: bool) -> dict:
     return info
 
 
-def read_history(source_id: str | None = None) -> list[dict] | dict:
+def read_history(source_id: str | None = None, *, chat_import: bool = False) -> list[dict] | dict:
     """Index metadata or read one previously discovered transcript."""
     rows = []
     for provider, path, root in _sources():
         if source_id is None:
             rows.append(_read(provider, path, root, False))
         elif hashlib.sha256(os.fsencode(path)).hexdigest() == source_id:
-            return _read(provider, path, root, True)
+            return _read(provider, path, root, True, chat_import)
     if source_id is not None:
         raise ValueError("Unknown session source ID")
     return rows

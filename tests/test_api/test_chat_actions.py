@@ -57,7 +57,17 @@ async def test_allowlist_and_confirm(actions):
     await actions.reply(request("start", **args))
     first = actions.pending.copy()
     assert first["folder"] == str(actions.project)
+    assert first["path"] == str(actions.project / ".atelier/conduits/hello/conduit.yaml")
     assert first["inputs"] == {"name": "old"}
+    project_file = actions.project / ".atelier/conduits/hello/conduit.yaml"
+    global_file = actions.global_dir / "conduits/hello/conduit.yaml"
+    global_file.parent.mkdir(parents=True)
+    project_file.rename(global_file)
+    with pytest.raises(ValueError, match="action changed"):
+        await actions.confirm(first["id"])
+    await actions.reply(request("start", **args))
+    assert actions.pending["path"] == str(global_file)
+    global_file.rename(project_file)
     args["inputs"]["name"] = "new"
     await actions.reply(request("start", **args))
     with pytest.raises(ValueError):
@@ -118,10 +128,14 @@ async def test_recipe_checkout(actions, tmp_path):
     assert not (actions.project / ".atelier/conduits/trial/conduit.yaml").exists()
     recipe["tasks"][0]["step"]["task"] = "echo yes > result.txt"
     await actions.reply(request("recipe", conduit="trial", definition=recipe))
+    assert actions.pending["replaces_existing"] is False
+    assert actions.pending["path"] == str(actions.project / ".atelier/conduits/trial/conduit.yaml")
     assert actions.pending["op"] == "recipe"
     assert not (actions.project / "result.txt").exists()
     await actions.confirm(actions.pending["id"])
     assert (actions.project / ".atelier/conduits/trial/conduit.yaml").is_file()
+    await actions.reply(request("recipe", conduit="trial", definition=recipe))
+    assert actions.pending["replaces_existing"] is True
     assert not (actions.project / "result.txt").exists()
 
 
@@ -170,6 +184,14 @@ async def test_resume_and_stop_require_exact_project_run(actions, tmp_path):
                     break
                 await asyncio.sleep(0.05)
         await actions.reply(request("stop", run=found["flow_id"]))
+        assert actions.pending["run"] == found["flow_id"]
+        assert actions.pending["conduit"] == "slow"
+        assert actions.pending["status"] == "running"
+        assert (
+            json.loads(await actions.call("status", found["flow_id"], "--json"))["status"]
+            == "running"
+        )
+        await actions.confirm(actions.pending["id"])
         assert (
             next(
                 r

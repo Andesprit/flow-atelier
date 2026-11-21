@@ -38,6 +38,8 @@ def _isolate_global_atelier_dir(tmp_path_factory, monkeypatch, request):
     global_dir = home / ".atelier"
     global_dir.mkdir()
     if request.node.get_closest_marker("live") is None:
+        for key in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"):
+            monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("ATELIER_GLOBAL_ATELIER_DIR", str(global_dir))

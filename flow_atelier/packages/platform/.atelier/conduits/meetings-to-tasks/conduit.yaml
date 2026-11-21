@@ -1,10 +1,8 @@
 name: meetings-to-tasks
-description: Reserved for the meetings-to-tasks workflow in roadmap slice 2.10.
+description: Read completed Dictaria meetings and queue tasks for the configured user.
 tasks:
-  - setup:
-      description: Report workflow availability
+  - intake:
+      description: Read meetings and extract assigned tasks
       tool: tool:bash
-      task: |
-        echo 'meetings-to-tasks is pending roadmap slice 2.10.' >&2
-        exit 1
+      task: atelier meetings-intake
 

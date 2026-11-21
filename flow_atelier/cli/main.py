@@ -257,6 +257,7 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     harness,
     init,
     logs,
+    meetings,
     migrate,
     notify,
     outputs,

@@ -1,0 +1,6 @@
+conduit_name: meetings-to-tasks
+run_path: .
+schedule:
+  name: meetings-to-tasks
+  mode: interval
+  every_minutes: 5

@@ -19,6 +19,9 @@ dependencies = [
     "fastapi>=0.136.1",
     "uvicorn[standard]>=0.46.0",
     "prompt-toolkit>=3.0",
+    "mcp>=1.30,<2",
+    "keyring>=25,<26",
+    "httpx>=0.28,<1",
 ]
 
 [project.scripts]

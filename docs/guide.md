@@ -1939,7 +1939,7 @@ See [Receive signed application errors](error-webhooks.md) to set up the separat
 
 Use user settings for `cleanupPeriodDays` (default 30), `webhookSources`
 (source ID to configuration), `webhookSecrets` (source ID to secret),
-`notificationRecipient`, `notificationProvider`, `dictariaAccount` and
+`notificationRecipient`, `notificationProvider`, `dictariaAccount`, `dictariaUrl`, `dictariaAliases` and
 `runCaps` (run category to positive limit). Both project files reject changes
 to these keys. Launch commands, `ATELIER_HARNESSES`, `ATELIER_GLOBAL_ATELIER_DIR`,
 `ATELIER_API_TOKEN` and `ATELIER_SERVE_URL` require the shell environment.
@@ -2092,9 +2092,9 @@ two projects can share a folder while retaining their separate identities.
 
 `atelier install builtin:platform --no-project` installs the bundled version
 in the global conduit store. The manifest lists `error-to-pr`,
-`idea-to-product`, `continuous-improvement` and `meetings-to-tasks`. Version
-1 reserves those names. Each starter exits with the roadmap slice that will
-provide its implementation. The package creates no schedules.
+`idea-to-product`, `continuous-improvement` and `meetings-to-tasks`.
+Meeting intake has an opt-in five-minute schedule. Configure the account
+and test a manual poll before enabling it. [Meeting intake setup](meetings-to-tasks.md)
 
 A project's own conduit takes precedence. Reinstalling skips existing files.
 Use `atelier update platform --force` only when you intend to replace them.

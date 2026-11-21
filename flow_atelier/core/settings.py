@@ -37,7 +37,10 @@ ENVIRONMENT_ONLY = frozenset({
     "serve_url",
 })
 
-USER_FILE_ONLY = frozenset({"webhook_sources", "webhook_secrets", "run_caps"})
+USER_FILE_ONLY = frozenset({
+    "webhook_sources", "webhook_secrets", "run_caps",
+    "dictaria_account", "dictaria_aliases", "dictaria_url",
+})
 
 # New fields are user-only until explicitly allowed in project files.
 PROJECT_KEYS = frozenset({
@@ -130,6 +133,8 @@ class AtelierSettings(BaseSettings):
     default_max_concurrency: PositiveInt = 3
     cleanup_period_days: int = Field(default=30, ge=0)
     dictaria_account: str | None = None
+    dictaria_aliases: list[str] = Field(default_factory=list)
+    dictaria_url: str | None = None
     webhook_sources: dict[str, dict[str, str]] = Field(
         default_factory=dict, description="Per-source project and conduit for signed errors.",
     )

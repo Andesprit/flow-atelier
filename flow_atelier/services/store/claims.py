@@ -103,6 +103,22 @@ class EventClaims:
                 ) RETURNING run_id, project, conduit, inputs""", (self.category,),
             ).fetchone()
 
+    def waiting(self) -> list[sqlite3.Row]:
+        """Read the backlog for a producer that holds its own exclusive processing lease."""
+        with self._transaction() as db:
+            return db.execute(
+                "SELECT run_id, project, inputs FROM claims WHERE category=? AND status='queued'"
+                " ORDER BY rowid", (self.category,),
+            ).fetchall()
+
+    def complete_queued(self, run_id: str) -> None:
+        """Acknowledge inline processing only after its durable outputs are committed."""
+        with self._transaction() as db:
+            db.execute(
+                "UPDATE claims SET status='succeeded', inputs=NULL"
+                " WHERE category=? AND run_id=? AND status='queued'", (self.category, run_id),
+            )
+
     def _recover(self) -> None:
         # Only the dispatch lease holder may decide whether a reserved run actually started.
         with self._transaction() as db:

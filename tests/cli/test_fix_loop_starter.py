@@ -16,16 +16,18 @@ GUIDE = ROOT / "docs" / "loop-agents-graph.md"
 
 def _project(tmp_path: Path) -> Project:
     project = Project(tmp_path)
+    project.extras["codex"] = {"turns": [{"chunks": ["I expect TESTS PASSED."]}]}
+    project.apply_agents()
     subprocess.run(["git", "init", "-q"], cwd=project.work, check=True)
     (project.work / "check.sh").write_text(
         'n=$(cat .attempts 2>/dev/null || echo 0)\n'
         'n=$((n + 1))\n'
         'echo "$n" > .attempts\n'
-        'if [ "$n" -lt 2 ]; then echo "one failing test"; exit 1; fi\n'
+        'if [ "$n" -lt 2 ]; then echo "one failing test on stderr" >&2; exit 1; fi\n'
         'echo "test suite green"\n',
     )
     (project.work / "always-fail.sh").write_text(
-        'echo "one failing test on stderr" >&2\nexit 1\n'
+        'echo attempted >> .failed-attempts\necho "one failing test on stderr" >&2\nexit 7\n'
     )
     return project
 
@@ -76,10 +78,10 @@ def test_fix_loop_starter_and_walkthrough(tmp_path: Path):
     assert planned.returncode == 0, planned.stdout + planned.stderr
     waves = json.loads(planned.stdout)["waves"]
     assert [[task["name"] for task in wave] for wave in waves] == [
-        ["plan"], ["fix_until_green"],
+        ["fix_until_green"],
         ["review_correctness", "review_maintainability"], ["verdict"],
     ]
-    loop = waves[1][0]
+    loop = waves[0][0]
     assert loop["loop_text"] == "x4 until output.match(TESTS PASSED) on_exhaust=fail"
     body = [task for wave in loop["child"]["waves"] for task in wave]
     assert [(task["name"], task["tool"]) for task in body] == [
@@ -101,17 +103,19 @@ def test_fix_loop_starter_and_walkthrough(tmp_path: Path):
     assert all(status["tasks"][name]["status"] == "completed" for name in (
         "review_correctness", "review_maintainability", "verdict",
     ))
-    assert len(project.prompts("codex")) == 2
-    assert "TESTS FAILED" in project.prompts("codex")[1]
-    assert len(project.prompts("claude-code")) == 4
+    first_fix, retry = project.prompts("codex")
+    assert "make the demo pass" in first_fix and "make the demo pass" in retry
+    assert "one failing test on stderr" in retry and "TESTS FAILED" in retry
+    assert (project.work / ".attempts").read_text().strip() == "2"
+    reviews = project.prompts("claude-code")
+    assert len(reviews) == 3
+    assert sum("working tree diff" in p and "test suite green" in p for p in reviews) == 2
     assert recipe_path.read_bytes() == recipe
     banners = re.findall(r"▶ \[(\d+)/(\d+)\]", run.stdout)
     assert banners and all(int(index) <= int(total) for index, total in banners)
     assert "fix_until_green 2/4 > fix" in run.stdout
-    # The footer counts the five top-level tasks, not the loop body's tasks.
-    assert re.search(r"✓5 +⚠1 condition not met", run.stdout)
+    assert "✓4" in run.stdout
     assert "~inline~" not in run.stdout
-    assert "condition not met" in run.stdout
     assert "condition met" in run.stdout
     assert [item["condition_met"] for item in status["loop_passes"]] == [False, True]
     assert all(item["agents"] == ["fix [harness:codex]"] for item in status["loop_passes"])
@@ -134,25 +138,28 @@ def test_fix_loop_starter_and_walkthrough(tmp_path: Path):
     assert failed_status["status"] == "failed"
     assert "exhausted 4 iterations" in failed_status["tasks"]["fix_until_green"]["reason"]
     assert failed_status["tasks"]["fix_until_green"]["iteration"] == 4
-    assert len(failed_status["loop_passes"]) == 4
-    assert all(item["condition_met"] is False for item in failed_status["loop_passes"])
+    assert [p["condition_met"] for p in failed_status["loop_passes"]] == [False] * 4
+    assert (project.work / ".failed-attempts").read_text().splitlines() == ["attempted"] * 4
+    assert len(project.prompts("codex")) == 6
+    assert project.prompts("claude-code") == reviews
     # The test command's stderr is the failure detail the fix agent needs.
     assert "one failing test on stderr" in project.prompts("codex")[-1]
     failed_banners = re.findall(r"▶ \[(\d+)/(\d+)\]", failed.stdout)
     assert failed_banners and all(int(index) <= int(total) for index, total in failed_banners)
     assert "fix_until_green 4/4 > fix" in failed.stdout
     assert "~inline~" not in failed.stdout
-    assert "condition not met" in failed.stdout
     assert "✓ fix_until_green [tool:conduit] (4/4)" not in failed.stdout
     failed_status_text = project.cli("status", failed_id).stdout
     assert "fix_until_green pass 4/4" in failed_status_text
-    assert "TESTS FAILED · condition not met" in " ".join(failed_status_text.split())
-    assert failed_status["tasks"]["review_correctness"]["status"] == "cancelled"
+    assert "test [tool:bash], loop iteration 4/4: exit=7" in " ".join(failed_status_text.split())
+    assert all(failed_status["tasks"][name]["status"] == "cancelled" for name in (
+        "review_correctness", "review_maintainability", "verdict",
+    ))
     diagnosis = project.cli("diagnose", failed_id)
     assert diagnosis.returncode == 0, diagnosis.stdout + diagnosis.stderr
     assert "fix_until_green" in diagnosis.stdout
     assert "exhausted 4 iterations" in " ".join(diagnosis.stdout.split())
-    assert "TESTS FAILED" in diagnosis.stdout
+    assert "exit=7" in diagnosis.stdout
     assert "fix_until_green pass 4/4" in diagnosis.stdout
     assert "fix [harness:codex]" in diagnosis.stdout
     assert "~inline~" not in diagnosis.stdout

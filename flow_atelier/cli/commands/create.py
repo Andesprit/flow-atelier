@@ -138,23 +138,14 @@ _FIX_LOOP = {
     "max_concurrency": 2,
     "tasks": [
         {
-            "plan": {
-                "description": "plan the change",
-                "tool": "harness:claude-code",
-                "task": "Plan how to achieve this goal: {{inputs.goal}}. Keep the plan actionable.",
-            }
-        },
-        {
             "fix_until_green": {
                 "description": "fix and test until the test command succeeds",
                 "tool": "tool:conduit",
-                "depends_on": ["plan"],
                 "repeat": 4,
                 "until": "output.match(TESTS PASSED)",
                 "on_exhaust": "fail",
                 "inputs": {
                     "goal": "{{inputs.goal}}",
-                    "plan": "{{plan.output}}",
                     "feedback": "{{loop.previous}}",
                     "test_command": "{{inputs.test_command}}",
                 },
@@ -165,9 +156,9 @@ _FIX_LOOP = {
                             "tool": "harness:claude-code",
                             "task": (
                                 "Goal: {{inputs.goal}}\n"
-                                "Plan: {{inputs.plan}}\n"
                                 "Previous test result: {{inputs.feedback}}\n"
-                                "Make the needed changes.\n"
+                                "On the first attempt, plan and implement the change. "
+                                "On retries, use the failure output to revise it.\n"
                             ),
                         }
                     },
@@ -180,7 +171,9 @@ _FIX_LOOP = {
                                 "if ( eval \"${INPUT_TEST_COMMAND:?}\" ) 2>&1; then\n"
                                 "  printf 'TESTS PASSED\\n'\n"
                                 "else\n"
+                                "  status=$?\n"
                                 "  printf 'TESTS FAILED\\n'\n"
+                                "  exit \"$status\"\n"
                                 "fi\n"
                             ),
                         }
@@ -194,7 +187,7 @@ _FIX_LOOP = {
                 "tool": "harness:claude-code",
                 "depends_on": ["fix_until_green"],
                 "task": (
-                    "Review correctness for {{inputs.goal}}.\n"
+                    "Inspect the working tree diff for correctness against {{inputs.goal}}.\n"
                     "Test result: {{fix_until_green.output}}\n"
                     "Report concrete findings.\n"
                 ),
@@ -206,7 +199,7 @@ _FIX_LOOP = {
                 "tool": "harness:claude-code",
                 "depends_on": ["fix_until_green"],
                 "task": (
-                    "Review maintainability for {{inputs.goal}}.\n"
+                    "Inspect the working tree diff for maintainability against {{inputs.goal}}.\n"
                     "Test result: {{fix_until_green.output}}\n"
                     "Report concrete findings.\n"
                 ),

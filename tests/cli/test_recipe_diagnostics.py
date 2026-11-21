@@ -15,14 +15,14 @@ from tests.cli.test_agent_binding_workflow import Project
     [
         ("conduit_description", "ship", "description:"),
         ("body_description", "ship.fix_until_green.fix", "description:"),
-        ("depends_on_spelling", "ship.fix_until_green", "depends_on"),
+        ("depends_on_spelling", "ship.review_correctness", "depends_on"),
         ("until_plain", "ship.fix_until_green", "until: output.match(TESTS PASSED)"),
         ("until_contains", "ship.fix_until_green", "until: output.match(TESTS PASSED)"),
-        ("harness_typo", "ship.plan", "harness:claude-code"),
-        ("tool_bash", "ship.plan", "tool:bash"),
+        ("harness_typo", "ship.review_correctness", "harness:claude-code"),
+        ("tool_bash", "ship.review_correctness", "tool:bash"),
         ("on_exhaust_value", "ship.fix_until_green", "on_exhaust: fail"),
-        ("body_parent_ref", "ship.fix_until_green.fix", "{{inputs.plan}}"),
-        ("loop_previous_outside", "ship.plan", "repeat"),
+        ("body_parent_ref", "ship.fix_until_green.fix", "{{inputs.review_correctness}}"),
+        ("loop_previous_outside", "ship.review_correctness", "repeat"),
         ("on_exhaust_without_until", "ship.fix_until_green", "until: output.match"),
         ("depends_on_task_typo", "ship.review_correctness", "review_maintainability"),
     ],
@@ -40,21 +40,21 @@ def test_starter_mistakes_point_to_line_task_and_fix(tmp_path, mistake, task, fi
     elif mistake == "body_description":
         del body["fix"]["description"]
     elif mistake == "depends_on_spelling":
-        loop["depends-on"] = loop.pop("depends_on")
+        tasks["review_correctness"]["depends-on"] = tasks["review_correctness"].pop("depends_on")
     elif mistake == "until_plain":
         loop["until"] = "TESTS PASSED"
     elif mistake == "until_contains":
         loop["until"] = "output.contains(TESTS PASSED)"
     elif mistake == "harness_typo":
-        tasks["plan"]["tool"] = "harness:claude-cod"
+        tasks["review_correctness"]["tool"] = "harness:claude-cod"
     elif mistake == "tool_bash":
-        tasks["plan"]["tool"] = "bash"
+        tasks["review_correctness"]["tool"] = "bash"
     elif mistake == "on_exhaust_value":
         loop["on_exhaust"] = "error"
     elif mistake == "body_parent_ref":
-        body["fix"]["task"] = "{{plan.output}}"
+        body["fix"]["task"] = "{{review_correctness.output}}"
     elif mistake == "loop_previous_outside":
-        tasks["plan"]["task"] = "{{loop.previous}}"
+        tasks["review_correctness"]["task"] = "{{loop.previous}}"
     elif mistake == "on_exhaust_without_until":
         del loop["until"]
     elif mistake == "depends_on_task_typo":
@@ -106,8 +106,8 @@ def test_multiple_schema_errors_are_all_reported_in_original_json_shape(tmp_path
     path = project.work / ".atelier/conduits/ship/conduit.yaml"
     recipe = yaml.safe_load(path.read_text())
     del recipe["description"]
-    loop = recipe["tasks"][1]["fix_until_green"]
-    loop["depends-on"] = loop.pop("depends_on")
+    loop = recipe["tasks"][0]["fix_until_green"]
+    loop["depends-on"] = []
     path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     checked = project.cli("check", "ship", "--recursive", "--json")
     assert checked.returncode == 1
@@ -124,14 +124,14 @@ def test_plan_and_run_name_invalid_inline_body_task(tmp_path, command):
     assert project.cli("create", "ship", "--template", "fix-loop").returncode == 0
     path = project.work / ".atelier/conduits/ship/conduit.yaml"
     recipe = yaml.safe_load(path.read_text())
-    del recipe["tasks"][1]["fix_until_green"]["tasks"][0]["fix"]["description"]
+    del recipe["tasks"][0]["fix_until_green"]["tasks"][0]["fix"]["description"]
     path.write_text(yaml.safe_dump(recipe, sort_keys=False))
 
     result = project.cli(*command)
     assert result.returncode == 1
     assert "conduit.yaml:" in result.stdout
     assert "ship.fix_until_green.fix: missing description" in result.stdout
-    assert "tasks[1].tasks[0]" not in result.stdout
+    assert "tasks[0].tasks[0]" not in result.stdout
 
 
 def test_defaulted_child_input_need_not_be_forwarded(tmp_path):
@@ -139,7 +139,7 @@ def test_defaulted_child_input_need_not_be_forwarded(tmp_path):
     assert project.cli("create", "ship", "--template", "fix-loop").returncode == 0
     path = project.work / ".atelier/conduits/ship/conduit.yaml"
     recipe = yaml.safe_load(path.read_text())
-    loop = recipe["tasks"][1]["fix_until_green"]
+    loop = recipe["tasks"][0]["fix_until_green"]
     del loop["inputs"]["test_command"]
     loop["inputs"].clear()
     # A named child can provide its own default even if the call omits it.

@@ -115,8 +115,6 @@ class FilesystemStore(StoreBase):
         # entries are tiny and bounded by process lifetime, so that's fine.
         self._log_locks: dict[str, asyncio.Lock] = {}
         self._flow_paths: dict[str, Path] = {}
-        self._journal_paths: dict[str, tuple[Path, ...]] = {}
-        self._bucket_versions: dict[Path, int] = {}
         self._warned_records: set[str] = set()
 
     # ------------------------------------------------------------------ paths
@@ -224,23 +222,10 @@ class FilesystemStore(StoreBase):
             raise FileNotFoundError(f"flow not found: {flow_id}")
         if self.global_dir is None:
             return None
-        # New, moved or retired journals can change which IDs are unique.
-        versions = {}
-        for folder in (self.global_dir / "projects").glob("*/"):
-            try:
-                versions[folder] = folder.stat().st_mtime_ns
-            except FileNotFoundError:
-                continue
-        if versions != self._bucket_versions:
-            self._journal_paths.clear()
-            self._bucket_versions = versions
-        matches = self._journal_paths.get(flow_id)
-        if matches is None:
-            matches = tuple(
-                path for folder in versions if (path := folder / f"{flow_id}.jsonl").is_file()
-            )
-            if matches:
-                self._journal_paths[flow_id] = matches
+        matches = [
+            path for folder in (self.global_dir / "projects").glob("*/")
+            if (path := folder / f"{flow_id}.jsonl").is_file()
+        ]
         if matches and (self.base_dir / "flows").is_dir():
             try:
                 self._flow_dir(flow_id)
@@ -256,7 +241,6 @@ class FilesystemStore(StoreBase):
         try:
             journal.header()
         except FileNotFoundError:
-            self._journal_paths.pop(flow_id, None)
             return None
         return journal
 
@@ -721,7 +705,6 @@ class FilesystemStore(StoreBase):
             shutil.rmtree(directory)
             self._flow_paths.pop(run, None)
             self._log_locks.pop(run, None)
-            self._journal_paths.pop(run, None)
         return True
 
     # ------------------------------------------------------------------ logs

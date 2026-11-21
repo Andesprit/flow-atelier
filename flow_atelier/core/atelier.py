@@ -64,6 +64,7 @@ from flow_atelier.services.executor.acp_registry import (
 )
 from flow_atelier.services.executor.bash import BashExecutor
 from flow_atelier.services.executor.conduit import ConduitExecutor
+from flow_atelier.services.executor.error_pr import ErrorPrExecutor
 from flow_atelier.services.executor.harness import AcpHarnessExecutor
 from flow_atelier.services.executor.hitl import HitlExecutor
 from flow_atelier.services.executor.prompt_sink import PromptSink, TerminalPromptSink
@@ -132,6 +133,7 @@ class Atelier:
             "tool:bash": BashExecutor(),
             "tool:hitl": HitlExecutor(),
             "tool:conduit": ConduitExecutor(),
+            "tool:error-to-pr": ErrorPrExecutor(self.settings),
         }
         self._register_harnesses(sink)
         self.engine = Engine(

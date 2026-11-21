@@ -3,6 +3,9 @@ import re
 import time
 from datetime import UTC, datetime
 
+from pydantic import ValidationError
+
+from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.schemas.log import LogEntry
 from flow_atelier.services.notification.base import (
     NotificationProvider,
@@ -10,6 +13,7 @@ from flow_atelier.services.notification.base import (
     Rejected,
     Uncertain,
 )
+from flow_atelier.services.notification.twilio import PHONE, Twilio
 from flow_atelier.services.store.events import RunJournal, file_lock
 
 PR_URL = re.compile(r"https://github\.com/[A-Za-z0-9-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*")
@@ -77,3 +81,18 @@ def send_summary(
             else:
                 return record("accepted", receipt=receipt)
 
+
+def notify_configured(
+    settings: AtelierSettings, journal: RunJournal, status: str | None, links: list[str],
+    *, retry_uncertain: bool = False,
+) -> str:
+    """Load sender credentials in the trusted notification step."""
+    recipient = settings.notification_recipient or ""
+    if settings.notification_provider != "twilio" or not re.fullmatch(PHONE, recipient):
+        raise ValueError("configure notificationProvider (twilio) and an E.164 recipient")
+    path = settings.global_atelier_dir / "twilio.json"
+    try:
+        sender = Twilio.model_validate_json(path.read_bytes())
+    except ValidationError:
+        raise ValueError(f"invalid Twilio settings in {path}") from None
+    return send_summary(journal, sender, recipient, status, links, retry_uncertain=retry_uncertain)

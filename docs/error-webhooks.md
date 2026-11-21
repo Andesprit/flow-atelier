@@ -59,3 +59,45 @@ settings and include the supplied [webhook relay configuration](webhook-relay.co
 It forwards the error path to the receiver's loopback port and returns 404 on
 other paths, including `/flows`. If you set `serve-hooks --port`, update the
 relay target to match.
+
+## Error-to-pr
+
+Install version 2 of the platform bundle with `atelier install builtin:platform --no-project`.
+For a previously installed starter, review local recipe edits before replacing it. Configure
+the webhook source to run `error-to-pr`. Add an entry keyed by the resolved repository path
+in the same user settings file. This example runs a Python project's unittest suite.
+
+```json
+{
+  "errorPrProjects": {
+    "/absolute/path/to/orders": {
+      "repository": "example/orders",
+      "test_file": "test_atelier_{id}.py",
+      "regression": ["/usr/bin/python3", "{test}"],
+      "suite": ["/usr/bin/python3", "-m", "unittest", "discover"]
+    }
+  }
+}
+```
+
+The regression command receives the new test's relative path as a separate argument.
+Use a runner that exits 1 for a failing regression and 0 for success. Both commands must
+work offline from a fresh checkout of committed files. Set up the local GitHub CLI
+login for the configured repository and the [WhatsApp sender](guide.md#send-a-whatsapp-run-summary).
+The repository's `origin` must match the configured GitHub destination.
+
+The shared worker uses the Codex CLI on macOS or Linux with named filesystem permission
+profiles and the app-server protocol. Its launcher creates a temporary configuration,
+uses the current file-backed Codex login, and checks the effective workspace-write roots,
+disabled tool networking, disabled web search, and empty MCP server list before sending
+the report. Unsupported configurations stop the run. The worker sees a scratch checkout
+of committed `main`, its own Git metadata and the user-selected instructions. Application
+credentials, publisher credentials and the original checkout stay outside the workspace.
+
+Atelier first checks the parent suite. It runs the new test against a fresh copy of the
+parent plus that test, then reruns the identical test and full suite against fresh copies
+of the proposed commit. Failed reproduction or verification leaves a diagnostic in the
+run log. The publisher accepts the verified commit, checks that remote `main` still
+matches its parent, and creates a draft PR from `atelier/errors/<run-id>`. The notify step
+sends the PR URL. Replays return the original run ID. Its publish output holds the PR URL
+until run history expires. A person reviews and merges the draft.

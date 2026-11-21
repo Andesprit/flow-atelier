@@ -1,0 +1,13 @@
+[package]
+name = "flow-atelier-desktop"
+version = "0.14.1"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+uuid = { version = "1", features = ["v4"] }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"

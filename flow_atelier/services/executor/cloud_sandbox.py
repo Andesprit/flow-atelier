@@ -2,13 +2,19 @@
 
 import asyncio
 import errno
+import json
 import os
 import shutil
+import stat
 import sys
-from contextlib import asynccontextmanager
+from collections.abc import Iterator
+from contextlib import ExitStack, asynccontextmanager, contextmanager, suppress
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
+from flow_atelier.schemas.conduit import split_harness_tool
 from flow_atelier.services.executor.base import PUBLISHER_ENV, child_environ, drop_credential_env
+from flow_atelier.services.store.events import file_lock
 
 _PATH_ENV = (
     "CLOUDSDK_CONFIG",
@@ -90,6 +96,75 @@ async def product_git_guard(cwd: Path | None):
         os.close(fd)
 
 
+def _read_scratch_login(path: Path) -> bytes | None:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        with ExitStack() as resources:
+            parent = os.open(path.parent, flags | os.O_DIRECTORY)
+            resources.callback(os.close, parent)
+            fd = os.open(path.name, flags, dir_fd=parent)
+            resources.callback(os.close, fd)
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                with os.fdopen(fd, "rb", closefd=False) as file:
+                    return file.read()
+    except OSError as exc:
+        if exc.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.ENXIO):
+            raise
+    return None
+
+
+@contextmanager
+def product_login(tool: str, env: dict[str, str], scratch: Path) -> Iterator[str | None]:
+    """Yield the Claude token or provision a file-backed login for the selected agent."""
+    if sys.platform not in {"darwin", "linux"}:
+        yield
+        return
+    name, _, _ = split_harness_tool(tool)
+    if name in {"harness:claude-code", "harness:claude-acp"}:
+        if token := env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            yield token
+            return
+        if sys.platform == "darwin":
+            raise ValueError(
+                "Run 'claude setup-token' and set CLAUDE_CODE_OAUTH_TOKEN before the product step"
+            )
+        variable, dirname, filename = "CLAUDE_CONFIG_DIR", ".claude", ".credentials.json"
+    elif name in {"harness:codex", "harness:codex-acp"}:
+        variable, dirname, filename = "CODEX_HOME", ".codex", "auth.json"
+    else:
+        yield
+        return
+
+    source = Path(env.get(variable) or Path.home() / dirname) / filename
+    real = source.resolve()
+    if not real.is_file():
+        yield
+        return
+    original = real.read_bytes()
+    copy = scratch / dirname / filename
+    copy.parent.mkdir(mode=0o700, exist_ok=True)
+    copy.write_bytes(original)
+    copy.chmod(0o600)
+    try:
+        yield
+    finally:
+        refreshed = _read_scratch_login(copy)
+        if refreshed is not None and refreshed != original:
+            if not isinstance(json.loads(refreshed), dict):
+                raise ValueError("Invalid refreshed agent credentials")
+            # The user can log out and remove the login directory during the step.
+            with (
+                suppress(FileNotFoundError),
+                file_lock(real.with_suffix(".atelier.lock"), wait=True),
+            ):
+                if source.resolve() == real and real.is_file() and real.read_bytes() == original:
+                    with NamedTemporaryFile(dir=real.parent, delete_on_close=False) as temp:
+                        temp.write(refreshed)
+                        temp.close()
+                        os.replace(temp.name, real)
+
+
 def cloud_sandbox(
     argv: list[str], env: dict[str, str], cwd: Path, scratch: Path
 ) -> tuple[list[str], dict[str, str]]:
@@ -99,7 +174,7 @@ def cloud_sandbox(
     if any(cwd.is_relative_to(p) or p.is_relative_to(cwd) for p in protected):
         raise RuntimeError("Product workspace overlaps a private configuration directory")
     dropped = PUBLISHER_ENV | {"ATELIER_ERROR_KEY"} | {k for k in env if k.startswith(_PREFIXES)}
-    with drop_credential_env(*dropped):
+    with drop_credential_env("CLAUDE_CODE_OAUTH_TOKEN", *dropped):
         # Preserve step output files and explicit harness environment; filter both sources.
         safe = child_environ(env)
     safe.update(
@@ -111,15 +186,9 @@ def cloud_sandbox(
         npm_config_cache=str(scratch / "npm"),
     )
     writable = [cwd, scratch]
-    for variable, dirname, login in (
-        ("CLAUDE_CONFIG_DIR", ".claude", ".credentials.json"),
-        ("CODEX_HOME", ".codex", "auth.json"),
-    ):
-        source = Path(env.get(variable, Path.home() / dirname)) / login
+    for variable, dirname in (("CLAUDE_CONFIG_DIR", ".claude"), ("CODEX_HOME", ".codex")):
         private = scratch / dirname
         private.mkdir(mode=0o700, exist_ok=True)
-        if source.is_file():
-            (private / login).symlink_to(source.resolve())
         if variable in env:
             safe[variable] = str(private)
     # Protect repository metadata even when the checkout lies inside a writable workspace.

@@ -41,6 +41,15 @@ can run local inspection commands, while its checkout is read-only and command
 networking is disabled. The builder and shell tests run in the outer OS sandbox
 with disposable agent configuration directories.
 
+On macOS, Claude product steps use a scratch home and cannot read your Keychain
+login. Run `claude setup-token`, then set `CLAUDE_CODE_OAUTH_TOKEN` to the token
+it prints in the environment of the process that launches Atelier. A Claude
+product step stops before launch if the token is missing.
+
+For a file-backed agent login, the outer sandbox gives the selected agent a
+private copy. If the agent refreshes the login, Atelier saves it after exit
+provided the original login still matches the copy taken at startup.
+
 ## Runtime events
 
 Configure the 2.3 receiver for the same source, signing key and target project,

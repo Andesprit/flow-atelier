@@ -209,10 +209,20 @@ async def test_both_real_acp_child_processes_are_denied_cloud_config(tmp_path, m
     secret = cloud / "fixture"
     secret.write_text("fixture-only")
     monkeypatch.setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "fixture-only")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "fixture-only")
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    login = codex_home / "auth.json"
+    login.write_text('{"fixture":"original"}')
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     checker = tmp_path / "agent.sh"
     checker.write_text(
         '#!/bin/sh\nif cat "$1" >/dev/null 2>&1 || [ -n "${CLOUDSDK_AUTH_ACCESS_TOKEN-}" ]; then exit 45; fi\n'
         "if touch ../launcher-file 2>/dev/null; then exit 46; fi\n"
+        'case "$2" in */build) test "$CLAUDE_CODE_OAUTH_TOKEN" = fixture-only || exit 47;; '
+        '*/review) test -z "${CLAUDE_CODE_OAUTH_TOKEN-}" && '
+        'grep -q original "$CODEX_HOME/auth.json" && '
+        """echo '{"fixture":"refreshed"}' > "$CODEX_HOME/auth.json" || exit 48;; esac\n"""
         'echo blocked > "$2"\nshift 2\nexec "$@"\n'
     )
     checker.chmod(0o755)
@@ -255,7 +265,8 @@ async def test_both_real_acp_child_processes_are_denied_cloud_config(tmp_path, m
             deny_cloud_config=True,
             depends_on=["build", "review"],
             task='! cat "$HOME/.config/gcloud/fixture" && '
-            'test -z "${CLOUDSDK_AUTH_ACCESS_TOKEN-}" && echo blocked > test',
+            'test -z "${CLOUDSDK_AUTH_ACCESS_TOKEN-}${CLAUDE_CODE_OAUTH_TOKEN-}" && '
+            'echo blocked > test',
         )
     )
     atelier = Atelier(base_dir=root / ".atelier")
@@ -265,6 +276,7 @@ async def test_both_real_acp_child_processes_are_denied_cloud_config(tmp_path, m
             await atelier.engine.run(recipe, {}, working_dir=root)
         return
     await atelier.engine.run(recipe, {}, working_dir=root)
+    assert json.loads(login.read_bytes()) == {"fixture": "refreshed"}
     assert all(
         (root / role).read_text().strip() == "blocked" for role in ("build", "review", "test")
     )

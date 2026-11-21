@@ -210,6 +210,8 @@ class WorkerSandbox:
         """Send data only after confirming the active thread's permissions and empty MCP list."""
         answer = ""
         location = f"Use {self.workspace} as the working directory for every command."
+        if self.read_only:
+            location += " Temporary files are unavailable in this read-only session."
         async with asyncio.timeout(timeout):
             await self._rpc(
                 "turn/start",

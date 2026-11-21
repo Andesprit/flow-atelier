@@ -47,7 +47,11 @@ from flow_atelier.schemas.log import (
     UsageLimit,
 )
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext, child_environ
-from flow_atelier.services.executor.cloud_sandbox import cloud_sandbox, product_git_guard
+from flow_atelier.services.executor.cloud_sandbox import (
+    cloud_sandbox,
+    product_git_guard,
+    product_login,
+)
 from flow_atelier.services.executor.interaction import InteractionRouter
 from flow_atelier.services.executor.prompt_sink import (
     AskQuestion,
@@ -1549,6 +1553,8 @@ class AcpHarnessExecutor(ExecutorBase):
 
         :param cwd: working directory for the agent process.
         :param agent_stderr: bounded deque the agent's stderr is drained into.
+        :param argv: resolved agent launch command, including any sandbox wrapper.
+        :param env: environment for this process.
         :param prompt: also send :data:`PROBE_PROMPT` and require a reply.
         :returns: a :class:`ProbeResult` for the handshake.
         """
@@ -1735,14 +1741,20 @@ class AcpHarnessExecutor(ExecutorBase):
         spawned_at = time.monotonic()
         try:
             async with contextlib.AsyncExitStack() as resources:
-                scratch = None
+                cmd, *args = self.launch_cmd
+                argv = [_resolve_cmd(cmd), *args]
+                env = self._spawn_env()
                 if task.deny_cloud_config:
                     scratch = Path(resources.enter_context(tempfile.TemporaryDirectory()))
+                    token = resources.enter_context(product_login(task.tool, env, scratch))
                     await resources.enter_async_context(product_git_guard(Path(cwd)))
+                    argv, env = cloud_sandbox(argv, env, Path(cwd), scratch)
+                    if token:
+                        env["CLAUDE_CODE_OAUTH_TOKEN"] = token
                 result = await asyncio.wait_for(
                     self._drive_session(
                         client, prompt_text, interactive, cwd, agent_stderr,
-                        context.resume_session, scratch,
+                        argv, env, context.resume_session,
                     ),
                     timeout=context.timeout,
                 )
@@ -1790,8 +1802,9 @@ class AcpHarnessExecutor(ExecutorBase):
         interactive: bool,
         cwd: str,
         agent_stderr: deque[str],
+        argv: list[str],
+        env: dict[str, str],
         resume_session: str | None = None,
-        scratch: Path | None = None,
     ) -> ExecutionResult:
         """Spawn the agent, initialize a session, and run one or many turns.
 
@@ -1801,18 +1814,15 @@ class AcpHarnessExecutor(ExecutorBase):
         :param interactive: ``True`` to loop until the done marker arrives.
         :param cwd: working directory passed to the agent process.
         :param agent_stderr: bounded deque the agent's stderr is drained into.
+        :param argv: resolved agent launch command, including any sandbox wrapper.
+        :param env: environment for this process.
         :param resume_session: the agent's id of an earlier session to
             continue, or ``None`` to open a new one.
         :returns: :class:`ExecutionResult` from single-turn or interactive run.
         """
         import acp
 
-        cmd, *args = self.launch_cmd
-        cmd = _resolve_cmd(cmd)
-        env = self._spawn_env()
-        if scratch is not None:
-            argv, env = cloud_sandbox([cmd, *args], env, Path(cwd), scratch)
-            cmd, *args = argv
+        cmd, *args = argv
         # Public stream-observer hook: lets the client count the session
         # updates a turn produced so it can wait for its own handlers.
         observers = [client.observe]

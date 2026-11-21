@@ -7,12 +7,14 @@ import inspect
 import os
 import re
 import sys
+from contextlib import nullcontext
 
 import click
 import typer
+import yaml
 from typer.core import TyperCommand
 
-from flow_atelier.cli._shared import cli_error
+from flow_atelier.cli._shared import cli_error, json_diagnostics
 
 
 def _use_utf8_streams() -> None:
@@ -87,12 +89,19 @@ class AtelierCommand(TyperCommand):
             raise
 
     def invoke(self, ctx: click.Context) -> object:
-        try:
-            return super().invoke(ctx)
-        except click.UsageError as exc:
-            if ctx.params.get("json_mode"):
-                raise _usage_error(exc) from exc
-            raise
+        machine = ctx.params.get("json_mode")
+        streaming = self.name == "run" or ctx.params.get("follow")
+        with json_diagnostics() if machine and not streaming else nullcontext():
+            try:
+                return super().invoke(ctx)
+            except click.UsageError as exc:
+                if machine:
+                    raise _usage_error(exc) from exc
+                raise
+            except (OSError, ValueError, yaml.YAMLError) as exc:
+                if machine:
+                    raise cli_error("command_failed", str(exc), json_mode=True) from exc
+                raise
 
 
 class AtelierTyper(typer.Typer):

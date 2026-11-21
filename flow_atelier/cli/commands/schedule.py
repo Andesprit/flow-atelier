@@ -9,7 +9,7 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
-from flow_atelier.cli._shared import _format_clock, _schedule_store, console
+from flow_atelier.cli._shared import _format_clock, _schedule_store, cli_error, console
 from flow_atelier.cli.main import list_app, schedule_app
 from flow_atelier.cli.rendering.render import (
     render_planned_table,
@@ -174,8 +174,10 @@ def schedule_history_cmd(
     store = _schedule_store()
     job = _resolve_schedule(store, ref)
     if job is None:
-        console.print(f"[red]schedule not found:[/red] {ref}")
-        raise typer.Exit(code=1)
+        raise cli_error(
+            "unknown_schedule", f"schedule not found: {ref}", json_mode=json_mode,
+            out=console, schedule=ref,
+        )
 
     records = list(reversed(store.run_history(job.id)))
 

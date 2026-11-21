@@ -10,6 +10,7 @@ from rich.table import Table
 from flow_atelier.cli._shared import (
     _format_duration_seconds,
     _resolve_flow_id,
+    cli_error,
     console,
 )
 from flow_atelier.cli.main import app
@@ -37,20 +38,21 @@ def timing_cmd(
     :param json_mode: when true, emit machine-readable JSON instead of a table.
     """
     atelier = Atelier()
-    flow_id = _resolve_flow_id(atelier, flow_id)
+    flow_id = _resolve_flow_id(atelier, flow_id, json_mode=json_mode)
 
     try:
         entries = atelier.store.read_logs(flow_id)
     except FileNotFoundError:
-        console.print(f"[red]unknown flow:[/red] {flow_id}")
-        raise typer.Exit(code=1)
+        raise cli_error(
+            "unknown_flow", f"unknown flow: {flow_id}", json_mode=json_mode,
+            out=console, flow_id=flow_id,
+        )
 
     if not entries:
-        if json_mode:
-            typer.echo("[]")
-            raise typer.Exit(code=1)
-        console.print("[yellow]no log entries for this flow[/yellow]")
-        raise typer.Exit(code=1)
+        raise cli_error(
+            "no_log_entries", "no log entries for this flow",
+            json_mode=json_mode, out=console, flow_id=flow_id,
+        )
 
     totals: dict[str, dict[str, float]] = {}
     for entry in entries:

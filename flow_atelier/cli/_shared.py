@@ -6,8 +6,12 @@ from __future__ import annotations
 
 import difflib
 import json
+import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager, redirect_stderr
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
 
 import typer
@@ -35,6 +39,29 @@ err_console = Console(stderr=True)
 _last_activity: float = time.monotonic()
 
 
+class _JsonDiagnostics(StringIO):
+    """Hold stderr until the command either produces a result or raises cli_error."""
+
+    error: dict[str, object] | None = None
+
+
+@contextmanager
+def json_diagnostics() -> Iterator[None]:
+    """Replay warnings on success or attach them to the single JSON error."""
+    pending = _JsonDiagnostics()
+    try:
+        with redirect_stderr(pending):
+            yield
+    finally:
+        output = pending.getvalue()
+        if pending.error is not None:
+            if output:
+                pending.error["diagnostics"] = output.splitlines()
+            output = json.dumps({"error": pending.error}) + "\n"
+        if output:
+            typer.echo(output, err=True, nl=False)
+
+
 def cli_error(
     code: str, message: str, *, exit_code: int = 1, json_mode: bool = False,
     out: Console = err_console, hint: str = "", **details: object,
@@ -46,7 +73,13 @@ def cli_error(
     Human callers can select their existing console and add a recovery hint.
     """
     if json_mode:
-        typer.echo(json.dumps({"error": {"code": code, "message": message, **details}}), err=True)
+        if hint:
+            details["hint"] = hint
+        error = {"code": code, "message": message, **details}
+        if isinstance(sys.stderr, _JsonDiagnostics):
+            sys.stderr.error = error
+        else:
+            typer.echo(json.dumps({"error": error}), err=True)
     else:
         out.print(escape(message), style="red", soft_wrap=True)
         if hint:
@@ -87,7 +120,9 @@ def _parse_inputs(pairs: list[str]) -> dict[str, str]:
     return out
 
 
-def parse_agents_option(raw: list[str], out: Console | None = None) -> dict[str, str]:
+def parse_agents_option(
+    raw: list[str], out: Console | None = None, *, json_mode: bool = False
+) -> dict[str, str]:
     """Parse ``--agent TASK=HARNESS`` values, exiting with the diagnostic.
 
     Shared by ``run``, ``plan`` and ``check`` so they can never disagree about
@@ -102,11 +137,13 @@ def parse_agents_option(raw: list[str], out: Console | None = None) -> dict[str,
     try:
         return parse_agent_bindings(raw)
     except BindingError as exc:
-        (out or console).print(f"[red]{escape(str(exc))}[/red]")
-        raise typer.Exit(code=exc.code) from exc
+        raise cli_error(
+            "invalid_arguments", str(exc), exit_code=exc.code, json_mode=json_mode,
+            out=out or console, parameter="--agent",
+        ) from exc
 
 
-def parse_worktrees_option(raw: list[str]) -> list[str]:
+def parse_worktrees_option(raw: list[str], *, json_mode: bool = False) -> list[str]:
     """Parse ``--worktree TASK`` values, exiting with the diagnostic.
 
     Shared by ``run`` and ``plan`` so a preview and the run it previews can
@@ -118,8 +155,10 @@ def parse_worktrees_option(raw: list[str]) -> list[str]:
     try:
         return parse_worktree_selectors(raw)
     except WorkspaceError as exc:
-        console.print(f"[red]{escape(str(exc))}[/red]")
-        raise typer.Exit(code=exc.code) from exc
+        raise cli_error(
+            "invalid_arguments", str(exc), exit_code=exc.code, json_mode=json_mode,
+            out=console, parameter="--worktree",
+        ) from exc
 
 
 def _read_input_file(key: str, raw_path: str) -> str:
@@ -194,7 +233,7 @@ def _parse_input_files(pairs: list[str], taken: dict[str, str]) -> dict[str, str
 
 
 def _exit_unknown_conduit(
-    name: str, known: list[str], out: Console | None = None
+    name: str, known: list[str], out: Console | None = None, *, json_mode: bool = False
 ) -> None:
     """Print the ``unknown conduit`` error, suggest close names, and exit 1.
 
@@ -203,14 +242,12 @@ def _exit_unknown_conduit(
     :param out: console to write the guidance to; defaults to stdout, which
         is what every command whose output is prose already wants.
     """
-    out = out or console
-    out.print(
-        f"[red]unknown conduit:[/red] {escape(name)} — try 'atelier list conduits'"
-    )
     close = difflib.get_close_matches(name, known, n=3)
-    if close:
-        out.print(f"[dim]did you mean: {escape(', '.join(close))}?[/dim]")
-    raise typer.Exit(code=1)
+    message = f"unknown conduit: {name} — try 'atelier list conduits'"
+    raise cli_error(
+        "unknown_conduit", message, json_mode=json_mode, out=out or console,
+        conduit=name, candidates=close, hint=f"did you mean: {', '.join(close)}?" if close else "",
+    )
 
 
 def _latest_flow_id(atelier: Atelier) -> str | None:

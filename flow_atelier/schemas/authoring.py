@@ -34,6 +34,14 @@ def conduit_json_schema() -> dict[str, Any]:
 
     schema = Conduit.model_json_schema(by_alias=True)
     defs = schema["$defs"]
+    fields = defs["TaskDefinition"]["properties"]
+    fields["description"]["description"] = "Summarize the one checkable result this task delivers."
+    fields["task"]["description"] = (
+        "Give the selected tool its instructions. For an agent task, give one agent "
+        "the whole assignment and say how to check the result. Let it use its skills "
+        "to plan, implement and verify the work. Split when you need a clean context, "
+        "parallel work, an independent test or review, different permissions or a different agent."
+    )
 
     # `- greet:` puts the name in the mapping key, so the body below it does
     # not repeat one. A body that does carry an explicit `name` still wins,

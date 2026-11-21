@@ -121,6 +121,20 @@ def test_the_export_is_a_valid_schema_and_repeatable(workdir):
     assert _export() == schema
 
 
+def test_task_fields_explain_the_result_and_when_to_split(workdir):
+    """Both task forms publish the same guidance in the editor's field help."""
+    definitions = _export()["$defs"]
+    for name in ("TaskDefinition", "WrappedTaskBody"):
+        fields = definitions[name]["properties"]
+        assert "one checkable result" in fields["description"]["description"]
+        help_text = fields["task"]["description"]
+        for phrase in (
+            "one agent", "its skills", "clean context", "parallel work",
+            "independent test or review", "different permissions", "different agent",
+        ):
+            assert phrase in help_text
+
+
 def test_every_reference_resolves_inside_the_document(workdir):
     """No `$ref` points at a URL or a file the user does not have."""
     schema = _export()

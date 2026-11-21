@@ -24,16 +24,12 @@ from flow_atelier.modules.improvement_metrics import (
     python_metrics,
 )
 from flow_atelier.schemas.conduit import Conduit, TaskDefinition
-from flow_atelier.services.executor.base import child_environ, drop_credential_env
+from flow_atelier.services.executor.base import PUBLISHER_ENV, child_environ, drop_credential_env
 from flow_atelier.services.store.claims import EventClaims
 
 LOG = Path("docs/improvement-log.md")
 DRIVERS = Path("docs/improvement")
 PREFIX = "atelier/improvements/"
-PUBLISHER_ENV = frozenset({
-    "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-    "GH_CONFIG_DIR", "SSH_AUTH_SOCK", "SSH_ASKPASS", "GIT_ASKPASS", "GIT_SSH_COMMAND",
-})
 
 
 class Hypothesis(BaseModel):

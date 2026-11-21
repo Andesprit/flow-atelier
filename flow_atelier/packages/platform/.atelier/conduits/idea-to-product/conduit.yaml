@@ -5,10 +5,14 @@ inputs:
   test_command:
     description: Optional shell command. Overrides the test command proposed in the spec.
     default: ""
+  deployment_target:
+    description: Optional target name from deploymentTargets in user settings. Empty builds locally.
+    default: ""
 tasks:
   - spec:
       description: Draft the spec and measurable acceptance criteria
       tool: harness:codex
+      deny_cloud_config: true
       permissions: read-only
       task: |
         Turn the following request into a product spec for the current target directory.
@@ -62,10 +66,15 @@ tasks:
       task: |
         echo 'Spec approval declined.' >&2
         exit 1
+  - reporting:
+      description: Prepare the selected target's application reporting contract
+      tool: tool:product-deployment
+      depends_on: ['approval.output.match(^decision: APPROVE$)']
+      task: prepare
   - attempt:
       description: Build, test, and independently review the approved spec
       tool: tool:conduit
-      depends_on: ['approval.output.match(^decision: APPROVE$)']
+      depends_on: [reporting]
       repeat: 3
       until: output.match(^PASS$)
       on_exhaust: fail
@@ -73,10 +82,12 @@ tasks:
         spec: "{{spec.output}}"
         command: "{{select_test.output}}"
         feedback: "{{loop.previous}}"
+        reporting: "{{reporting.output}}"
       tasks:
         - build:
             description: Implement the approved spec in the target directory
             tool: harness:claude-code
+            deny_cloud_config: true
             task: |
               Implement the following approved spec in this working directory, including
               the tests for its acceptance criteria. Ensure the approved command runs them.
@@ -86,14 +97,18 @@ tasks:
               {{inputs.command}}
               Previous attempt's feedback:
               {{inputs.feedback}}
+              Target reporting requirements:
+              {{inputs.reporting}}
         - test:
             description: Run the approved shell test and preserve its exit status
             tool: tool:bash
+            deny_cloud_config: true
             depends_on: [build]
             task: bash -e -o pipefail "$INPUT_COMMAND_FILE"
         - review:
             description: Independently inspect the implementation and tests
             tool: harness:codex
+            deny_cloud_config: true
             permissions: read-only
             different_harness_from: build
             depends_on: [test]
@@ -107,6 +122,8 @@ tasks:
               {{inputs.command}}
               Test output:
               {{test.output}}
+              Verify these target reporting requirements:
+              {{inputs.reporting}}
         - verdict:
             description: Require the reviewer's exact passing verdict
             tool: tool:bash
@@ -116,9 +133,36 @@ tasks:
                 cat "$OUTPUT_REVIEW_FILE" >&2; exit 1
               fi
               echo PASS
+  - deployment_plan:
+      description: Show the destination, release digest and impersonated identity
+      tool: tool:product-deployment
+      depends_on: [attempt]
+      task: plan
+  - deployment_approval:
+      description: Review the exact deployment plan
+      tool: tool:hitl
+      depends_on: ['deployment_plan.output.not_match(^Build only$)']
+      task: "{{deployment_plan.output}}"
+      inputs:
+        deploy_decision: Type DEPLOY to deploy the displayed source to this target, or decline.
+  - deploy:
+      description: Verify the approved plan and deploy with its short-lived identity
+      tool: tool:product-deployment
+      depends_on: ['deployment_approval.output.match(^deploy_decision: DEPLOY$)']
+      task: deploy
+  - notify_deployed:
+      description: Send the completed deployment summary
+      tool: tool:bash
+      depends_on: [deploy]
+      task: atelier notify "$ATELIER_FLOW_ID" --status "Product deployed"
+  - notify_declined:
+      description: Send the build summary when the user declines deployment
+      tool: tool:bash
+      depends_on: ['deployment_approval.output.not_match(^deploy_decision: DEPLOY$)']
+      task: atelier notify "$ATELIER_FLOW_ID" --status "Product built, deployment declined"
   - notify:
       description: Send the successful run summary to the configured recipient
       tool: tool:bash
-      depends_on: [attempt]
+      depends_on: ['deployment_plan.output.match(^Build only$)']
       task: atelier notify "$ATELIER_FLOW_ID" --status "Product tests and review passed"
 

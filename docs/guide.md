@@ -2093,7 +2093,7 @@ two projects can share a folder while retaining their separate identities.
 `atelier install builtin:platform --no-project` installs the bundled version
 in the global conduit store. The manifest lists `error-to-pr`,
 `idea-to-product`, `continuous-improvement` and `meetings-to-tasks`. Version
-2 ships the error-to-PR, idea-to-product and continuous-improvement workflows.
+3 ships the error-to-PR, idea-to-product and continuous-improvement workflows.
 The meetings starter reports its roadmap slice. The package creates no schedules.
 See the [error-to-PR setup](error-webhooks.md#error-to-pr).
 
@@ -2119,6 +2119,8 @@ be a symlink. Only user-level settings can select these files. An unreadable
 selection stops the conduit before its harness starts and names the file.
 
 ### Idea to product
+
+For staging or production, see [approved Cloud Run deployments](product-deployment.md).
 
 Use an existing directory as the target path. Start the CLI in that directory,
 or select it as the dashboard run path. An empty directory works for a new

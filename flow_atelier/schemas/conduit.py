@@ -87,6 +87,7 @@ class ToolType(str, Enum):
     hitl = "tool:hitl"
     conduit = "tool:conduit"
     error_pr = "tool:error-to-pr"
+    product_deployment = "tool:product-deployment"
     claude = "harness:claude-code"
     codex = "harness:codex"
     opencode = "harness:opencode"
@@ -139,6 +140,7 @@ class TaskDefinition(BaseModel):
     interactive: bool = False
     session: str | None = None
     permissions: AgentPermissions | None = None
+    deny_cloud_config: bool = Field(default=False, description="Deny access to local cloud config.")
     different_harness_from: str | None = Field(
         default=None, description="Upstream task that must use a different harness."
     )
@@ -154,6 +156,9 @@ class TaskDefinition(BaseModel):
 
     @model_validator(mode="after")
     def _validate_inline_body(self) -> TaskDefinition:
+        if self.deny_cloud_config and not (self.tool == ToolType.bash
+                                           or self.tool.startswith("harness:")):
+            raise ValueError("deny_cloud_config requires a harness or tool:bash")
         if self.tasks is not None:
             if self.tool != ToolType.conduit:
                 raise ValueError("inline tasks require tool: tool:conduit")

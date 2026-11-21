@@ -48,6 +48,9 @@ def workflow(tmp_path, monkeypatch):
     planner = FakeHarness("harness:codex")
     builder = FakeHarness("harness:claude-code")
     atelier.executors.update({planner.tool: planner, builder.tool: builder})
+    # These loop fixtures use fake workers. The deployment suite exercises the host OS sandbox.
+    monkeypatch.setattr("flow_atelier.services.executor.bash.cloud_sandbox",
+                        lambda argv, env, *_: (argv, env))
     # Capture the trusted shell step's invocation of the separately tested sender.
     bindir = tmp_path / "bin"
     bindir.mkdir()

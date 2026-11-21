@@ -1,5 +1,5 @@
 /** Tools backed by flow-atelier's own executors. A closed set. */
-export type BuiltinToolType = "tool:bash" | "tool:hitl" | "tool:conduit" | "tool:error-to-pr";
+export type BuiltinToolType = "tool:bash" | "tool:hitl" | "tool:conduit" | "tool:error-to-pr" | "tool:product-deployment";
 
 /**
  * Any ACP agent, named by its ACP-registry id (`harness:gemini`) or by a
@@ -38,6 +38,9 @@ export interface ConduitTask {
    */
   conditions?: Record<string, TaskCondition>;
   interactive?: boolean;
+  denyCloudConfig?: boolean;
+  permissions?: "full" | "edits" | "read-only";
+  differentHarnessFrom?: string;
   repeat?: number;
   until?: string | null;
   while?: string | null;

@@ -57,6 +57,9 @@ class WsHitlExecutor(ExecutorBase):
             {"name": name, "description": description}
             for name, description in task.inputs.items()
         ]
+        if inputs_descriptor and resolved_command.strip():
+            first = inputs_descriptor[0]
+            first["description"] = f"{resolved_command.strip()}\n\n{first['description']}"
         await self.broker.send(
             {
                 "type": "hitl_request",

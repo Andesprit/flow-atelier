@@ -16,6 +16,7 @@ from pathlib import Path
 from flow_atelier.schemas.conduit import TaskDefinition
 from flow_atelier.schemas.log import ExecutionResult, IntermediateStep, StepKind
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext, child_environ
+from flow_atelier.services.executor.cloud_sandbox import cloud_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -352,7 +353,8 @@ class BashExecutor(ExecutorBase):
                     "".join(f"{note}\n" for note in notes).encode()
                 )
             env = {**inherited, **values, "ATELIER_FLOW_ID": context.flow_id}
-            result = await self._run(args, env, context)
+            scratch = Path(tmp) if task.deny_cloud_config else None
+            result = await self._run(args, env, context, scratch)
         if script is not None:
             # bash names its script in its own error lines. The temp path is
             # new on every try, so keep it out of the result: the same failure
@@ -368,7 +370,8 @@ class BashExecutor(ExecutorBase):
         return result
 
     async def _run(
-        self, args: list[str], env: dict[str, str], context: FlowContext
+        self, args: list[str], env: dict[str, str], context: FlowContext,
+        scratch: Path | None = None,
     ) -> ExecutionResult:
         """Run bash with ``args`` and collect its result.
 
@@ -386,9 +389,11 @@ class BashExecutor(ExecutorBase):
             raise RuntimeError(
                 "tool:bash requires `bash` on PATH (install git-bash/WSL on Windows)"
             )
+        argv = [bash, *args]
+        if scratch is not None:
+            argv, env = cloud_sandbox(argv, env, context.working_dir or Path.cwd(), scratch)
         spawn = asyncio.ensure_future(asyncio.create_subprocess_exec(
-            bash,
-            *args,
+            *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(context.working_dir) if context.working_dir else None,

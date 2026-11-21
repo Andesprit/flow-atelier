@@ -64,6 +64,7 @@ from flow_atelier.services.executor.acp_registry import (
 )
 from flow_atelier.services.executor.bash import BashExecutor
 from flow_atelier.services.executor.conduit import ConduitExecutor
+from flow_atelier.services.executor.deployment import DeploymentExecutor
 from flow_atelier.services.executor.error_pr import ErrorPrExecutor
 from flow_atelier.services.executor.harness import AcpHarnessExecutor
 from flow_atelier.services.executor.hitl import HitlExecutor
@@ -134,6 +135,7 @@ class Atelier:
             "tool:hitl": HitlExecutor(),
             "tool:conduit": ConduitExecutor(),
             "tool:error-to-pr": ErrorPrExecutor(self.settings),
+            "tool:product-deployment": DeploymentExecutor(self.settings),
         }
         self._register_harnesses(sink)
         self.engine = Engine(

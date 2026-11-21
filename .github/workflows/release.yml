@@ -80,6 +80,7 @@ jobs:
             --onefile --name atelier --clean --noconfirm \
             --copy-metadata flow-atelier \
             --collect-data flow_atelier \
+            --add-data "flow_atelier/product_events.py:flow_atelier" \
             --collect-all uvicorn \
             --collect-all apscheduler \
             --collect-all tzdata \

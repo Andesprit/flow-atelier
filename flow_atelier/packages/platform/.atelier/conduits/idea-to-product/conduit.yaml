@@ -1,10 +1,124 @@
 name: idea-to-product
-description: Reserved for the idea-to-product workflow in roadmap slice 2.6.
+description: Build an approved product spec. The target path is the run's working directory.
+inputs:
+  idea: A phrase, paragraph, specification or PRD to implement.
+  test_command:
+    description: Optional shell command. Overrides the test command proposed in the spec.
+    default: ""
 tasks:
-  - setup:
-      description: Report workflow availability
-      tool: tool:bash
+  - spec:
+      description: Draft the spec and measurable acceptance criteria
+      tool: harness:codex
+      permissions: read-only
       task: |
-        echo 'idea-to-product is pending roadmap slice 2.6.' >&2
+        Turn the following request into a product spec for the current target directory.
+        Preserve supplied requirements. Include a "## Acceptance criteria" section with
+        one or more "- " bullets describing observable results. Finish with a single line
+        "Test command: <command>" naming the shell test to run in the target directory.
+        For a new project, specify the test entry point the builder must create.
+        Write the spec in your reply without changing files.
+
+        Request:
+        {{inputs.idea}}
+
+        User's test command override (if any):
+        {{inputs.test_command}}
+  - select_test:
+      description: Validate the criteria and select the exact command for approval
+      tool: tool:bash
+      depends_on: [spec]
+      task: |
+        set -eu
+        awk '/^## / {criteria = ($0 == "## Acceptance criteria")}
+             criteria && /^- [^[:space:]]/ {found = 1}
+             END {exit !found}' "$OUTPUT_SPEC_FILE" || {
+          echo 'Spec requires a list of acceptance criteria.' >&2; exit 1
+        }
+        if grep -q '[^[:space:]]' "$INPUT_TEST_COMMAND_FILE"; then
+          cat "$INPUT_TEST_COMMAND_FILE"
+        else
+          awk '/^Test command: / {sub(/^Test command: /, ""); cmd = $0; count++}
+               END {if (count != 1 || cmd !~ /[^[:space:]]/) exit 1; print cmd}' "$OUTPUT_SPEC_FILE" || {
+            echo 'Provide a test command in the spec or test_command input.' >&2; exit 1
+          }
+        fi
+  - approval:
+      description: Review the spec and test command before any edits
+      tool: tool:hitl
+      depends_on: [select_test]
+      task: |
+        Target path: {{spec.workspace}}
+
+        {{spec.output}}
+
+        Exact command to run after building:
+        {{select_test.output}}
+      inputs:
+        decision: Read the spec and select_test outputs. Type APPROVE to build or reject to stop.
+  - declined:
+      description: Stop when the human declines the spec
+      tool: tool:bash
+      depends_on: ['approval.output.not_match(^decision: APPROVE$)']
+      task: |
+        echo 'Spec approval declined.' >&2
         exit 1
+  - attempt:
+      description: Build, test, and independently review the approved spec
+      tool: tool:conduit
+      depends_on: ['approval.output.match(^decision: APPROVE$)']
+      repeat: 3
+      until: output.match(^PASS$)
+      on_exhaust: fail
+      inputs:
+        spec: "{{spec.output}}"
+        command: "{{select_test.output}}"
+        feedback: "{{loop.previous}}"
+      tasks:
+        - build:
+            description: Implement the approved spec in the target directory
+            tool: harness:claude-code
+            task: |
+              Implement the following approved spec in this working directory, including
+              the tests for its acceptance criteria. Ensure the approved command runs them.
+              Spec:
+              {{inputs.spec}}
+              Approved test command:
+              {{inputs.command}}
+              Previous attempt's feedback:
+              {{inputs.feedback}}
+        - test:
+            description: Run the approved shell test and preserve its exit status
+            tool: tool:bash
+            depends_on: [build]
+            task: bash -e -o pipefail "$INPUT_COMMAND_FILE"
+        - review:
+            description: Independently inspect the implementation and tests
+            tool: harness:codex
+            permissions: read-only
+            different_harness_from: build
+            depends_on: [test]
+            task: |
+              Inspect the actual files and tests against the approved spec below. Verify
+              that the command exercises the acceptance criteria. Reply with exactly PASS
+              only if every criterion is met. Otherwise describe the required changes.
+              Spec:
+              {{inputs.spec}}
+              Test command:
+              {{inputs.command}}
+              Test output:
+              {{test.output}}
+        - verdict:
+            description: Require the reviewer's exact passing verdict
+            tool: tool:bash
+            depends_on: [review]
+            task: |
+              if [[ "$(cat "$OUTPUT_REVIEW_FILE")" != PASS ]]; then
+                cat "$OUTPUT_REVIEW_FILE" >&2; exit 1
+              fi
+              echo PASS
+  - notify:
+      description: Send the successful run summary to the configured recipient
+      tool: tool:bash
+      depends_on: [attempt]
+      task: atelier notify "$ATELIER_FLOW_ID" --status "Product tests and review passed"
 

@@ -246,7 +246,8 @@ def validate_conduit(conduit: Conduit) -> dict[str, list[Dependency]]:
     :param conduit: parsed conduit whose tasks/dependencies to validate.
     :returns: mapping of task name to its list of parsed dependencies.
     """
-    task_names = {t.name for t in conduit.tasks}
+    tools = {t.name: t.tool for t in conduit.tasks}
+    task_names = tools.keys()
     parsed: dict[str, list[Dependency]] = {}
     for t in conduit.tasks:
         try:
@@ -323,6 +324,15 @@ def validate_conduit(conduit: Conduit) -> dict[str, list[Dependency]]:
             )
 
         allowed = reachable(t.name)
+        other = t.different_harness_from
+        if other is not None and (
+            other not in allowed or not tools[other].startswith("harness:")
+            or not t.tool.startswith("harness:")
+        ):
+            raise ConduitValidationError(
+                f"task {t.name!r}: different_harness_from requires two harness tasks "
+                f"and {other!r} in its depends_on chain"
+            )
         targets = [t.task, *([t.session] if t.session else [])]
         if t.tool == ToolType.conduit:
             targets += [v for v in t.inputs.values() if isinstance(v, str)]
@@ -430,6 +440,29 @@ class Engine:
         self._session_locks: dict[tuple[str, str], asyncio.Lock] = {}
         # Top-level runs that already printed PERMISSIONS_NOTICE.
         self._permissions_noticed: set[str] = set()
+
+    def _check_independent_harnesses(self, conduit: Conduit) -> None:
+        """Check effective bindings before either task can edit the checkout."""
+        tools = {task.name: split_harness_tool(task.tool)[0] for task in conduit.tasks}
+        for task in conduit.tasks:
+            other = task.different_harness_from
+            if other is None:
+                continue
+            pair = []
+            for name in (other, task.name):
+                tool = tools[name]
+                executor = self.executors.get(tool)
+                if executor is None:
+                    raise ConduitValidationError(f"task {name!r}: missing harness {tool!r}")
+                ok, reason = executor.is_available()
+                if not ok:
+                    raise ConduitValidationError(f"task {name!r}: {tool} unavailable: {reason}")
+                # Registry aliases can register separate executors for the same launcher.
+                pair.append(getattr(executor, "launch_cmd", executor))
+            if pair[0] == pair[1]:
+                raise ConduitValidationError(
+                    f"tasks {other!r} and {task.name!r} require different harnesses"
+                )
 
     async def _notice_permissions(
         self, t: TaskDefinition, conduit: Conduit, scope: str, flow_id: str, iteration: int
@@ -681,6 +714,7 @@ class Engine:
             raise ValueError(f"missing required inputs: {missing}")
 
         parsed_deps = validate_conduit(conduit)
+        self._check_independent_harnesses(conduit)
 
         instructions = ""
         if self.step_instructions and any(t.tool.startswith("harness:") for t in conduit.tasks):

@@ -138,6 +138,9 @@ class TaskDefinition(BaseModel):
     interactive: bool = False
     session: str | None = None
     permissions: AgentPermissions | None = None
+    different_harness_from: str | None = Field(
+        default=None, description="Upstream task that must use a different harness."
+    )
     inputs: dict[str, Any] = Field(default_factory=dict)
     tasks: list[TaskDefinition] | None = None
 

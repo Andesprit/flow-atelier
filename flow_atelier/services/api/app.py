@@ -225,6 +225,10 @@ class FastApiServer(ApiServerBase):
 
             @app.get("/{full_path:path}")
             async def _spa_fallback(full_path: str):
+                if full_path in {"sw.js", "manifest.webmanifest", "pwa/icon-192.png",
+                                 "pwa/icon-512.png"}:
+                    return FileResponse(_STATIC_DIR / full_path,
+                                        headers={"Cache-Control": "no-cache"})
                 return FileResponse(_STATIC_DIR / "index.html")
 
         return app

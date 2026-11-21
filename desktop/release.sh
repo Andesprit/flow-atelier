@@ -2,12 +2,17 @@
 set -euo pipefail
 
 signing_mode() {
-  local key
+  local key count=0
   for key in MACOS_CERTIFICATE MACOS_CERTIFICATE_PASSWORD MACOS_SIGNING_IDENTITY \
              MACOS_NOTARY_KEY MACOS_NOTARY_KEY_ID MACOS_NOTARY_ISSUER; do
-    if [[ -z "${!key:-}" ]]; then echo unsigned; return; fi
+    if [[ -n "${!key:-}" ]]; then count=$((count + 1)); fi
   done
-  echo signed
+  case "$count" in
+    0) echo unsigned ;;
+    6) echo signed ;;
+    *) echo "Incomplete macOS signing configuration: set all six secrets or leave all six empty." >&2
+       return 1 ;;
+  esac
 }
 
 # The test sources only the credential selection above.
@@ -42,7 +47,7 @@ if [[ "$mode" = signed ]]; then
   unset MACOS_CERTIFICATE MACOS_CERTIFICATE_PASSWORD MACOS_NOTARY_KEY password
   desktop/build.sh "$MACOS_SIGNING_IDENTITY"
 else
-  echo "Building unsigned developer DMG (macOS signing secrets incomplete)."
+  echo "Building unsigned developer DMG (no macOS signing secrets configured)."
   unset MACOS_CERTIFICATE MACOS_CERTIFICATE_PASSWORD MACOS_NOTARY_KEY
   desktop/build.sh
 fi
@@ -52,6 +57,8 @@ dmg="desktop/build/Flow-Atelier-macos-arm64-$mode.dmg"
 codesign --verify --deep --strict "$app"
 mkdir "$scratch/home"
 HOME="$scratch/home" ATELIER_NO_UPDATE_CHECK=1 "$app/Contents/Resources/atelier/atelier" --version
+ATELIER_TEST_DESKTOP_SIDECAR="$PWD/$app/Contents/Resources/atelier/atelier" \
+  uv run --locked pytest -q tests/cli/test_serve_idle_exit.py::test_desktop_parent_death_stops_server_and_active_shell
 notarize() {
   xcrun notarytool submit "$1" --key "$scratch/notary.p8" --key-id "$MACOS_NOTARY_KEY_ID" \
     --issuer "$MACOS_NOTARY_ISSUER" --wait --timeout 30m --output-format json > "$scratch/result.json"

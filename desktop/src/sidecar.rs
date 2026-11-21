@@ -18,12 +18,14 @@ fn shell_path(shell: &OsStr, script: &str, timeout: Duration) -> Option<OsString
             record=$(/usr/bin/dscl /Search -read "/Users/$account" UserShell) || exit 1
             shell=${record#UserShell: }
         fi
-        exec "$shell" -lc "$2"
+        exec "$shell" -ilc "$2"
     "#;
     let mut child = Command::new("/bin/sh")
         .args(["-c", launcher, "atelier-login"])
         .arg(shell)
         .arg(script)
+        .env("DISABLE_AUTO_UPDATE", "true")
+        .env("ZSH_TMUX_AUTOSTART", "false")
         .process_group(0)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -69,24 +71,28 @@ pub struct Sidecar(Child);
 
 impl Drop for Sidecar {
     fn drop(&mut self) {
-        if matches!(self.0.try_wait(), Ok(None)) {
-            let _ = Command::new("/bin/kill")
-                .args(["-TERM", &self.0.id().to_string()])
-                .status();
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < deadline {
-                if matches!(self.0.try_wait(), Ok(Some(_))) {
-                    return;
-                }
-                thread::sleep(Duration::from_millis(50));
+        // EOF gives the server time to cancel runs in their own process groups.
+        drop(self.0.stdin.take());
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < deadline {
+            if matches!(self.0.try_wait(), Ok(Some(_))) {
+                break;
             }
-            let _ = self.0.kill();
-            let _ = self.0.wait();
+            thread::sleep(Duration::from_millis(50));
         }
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", "--", &format!("-{}", self.0.id())])
+            .stderr(Stdio::null())
+            .status();
+        let _ = self.0.wait();
     }
 }
 
-pub fn start(executable: &Path, home: &Path) -> io::Result<(Sidecar, u16, bool)> {
+pub fn start(
+    executable: &Path,
+    workspace: &Path,
+    token: &str,
+) -> io::Result<(Sidecar, u16, Option<&'static str>)> {
     let mut cmd = Command::new(executable);
     let shell = env::var_os("SHELL").unwrap_or_default();
     let path = shell_path(
@@ -94,33 +100,48 @@ pub fn start(executable: &Path, home: &Path) -> io::Result<(Sidecar, u16, bool)>
         "printf '\\0'; /usr/bin/printenv PATH; printf '\\0'",
         Duration::from_secs(3),
     );
-    let fallback = path.is_none();
+    let shell_failed = path.is_none();
     if let Some(path) = path {
         cmd.env("PATH", path);
     }
+    std::fs::create_dir_all(workspace)?;
     let mut sidecar = Sidecar(
-        cmd.args(["serve", "--host", "127.0.0.1", "--port", "0"])
-            .current_dir(home)
-            .env("NO_COLOR", "1")
-            .env("COLUMNS", "200")
-            .env("ATELIER_NO_UPDATE_CHECK", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .spawn()?,
+        cmd.args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--exit-with-stdin",
+            "--log-level",
+            "warning",
+        ])
+        .current_dir(workspace)
+        .process_group(0)
+        .env("ATELIER_API_TOKEN", token)
+        .env("NO_COLOR", "1")
+        .env("COLUMNS", "200")
+        .env("ATELIER_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?,
     );
     let stdout = sidecar.0.stdout.take().unwrap();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
+        let mut warning = shell_failed.then_some("The login shell did not return PATH. Atelier is using the app’s inherited PATH. Check your shell startup files and reopen Flow Atelier.");
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(port) = ready_port(&line) {
-                let _ = tx.send(port);
+            if line == "No agent harness found on PATH" {
+                warning = Some("Atelier could not find an agent harness on PATH. Check your installation and shell startup files, then reopen Flow Atelier.");
+            } else if let Some(port) = ready_port(&line) {
+                let _ = tx.send((port, warning));
             }
         }
     });
-    let port = rx
+    let (port, warning) = rx
         .recv_timeout(Duration::from_secs(30))
         .map_err(|e| io::Error::other(format!("Atelier server did not report its port: {e}")))?;
-    Ok((sidecar, port, fallback))
+    Ok((sidecar, port, warning))
 }
 
 #[cfg(test)]

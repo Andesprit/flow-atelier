@@ -104,8 +104,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
       - run: uv python install 3.13 && uv sync --locked
       - run: cargo install tauri-cli --version '=2.12.1' --locked
       - name: Test desktop lifecycle helpers
@@ -123,7 +123,7 @@ jobs:
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
         run: desktop/release.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-macos-arm64
           path: desktop/build/Flow-Atelier-macos-arm64-*.dmg
@@ -141,15 +141,19 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
 
   github-release:
-    needs: [build-wheel, build-binary, build-desktop]
+    needs: [build-wheel, build-binary]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-      - name: Flatten artifacts
-        run: mkdir -p release && find artifacts -type f -exec cp {} release/ \;
+          pattern: bin-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: release
       - name: Generate SHA256SUMS
         working-directory: release
         run: sha256sum -- * > SHA256SUMS
@@ -158,3 +162,19 @@ jobs:
           files: release/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  publish-desktop:
+    needs: [github-release, build-desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-macos-arm64
+      - name: Attach desktop image and checksum to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum -- *.dmg > SHA256SUMS-desktop
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber ./*.dmg SHA256SUMS-desktop

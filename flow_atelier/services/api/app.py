@@ -225,6 +225,15 @@ class FastApiServer(ApiServerBase):
 
             @app.get("/{full_path:path}")
             async def _spa_fallback(full_path: str):
-                return FileResponse(_STATIC_DIR / "index.html")
+                return FileResponse(_STATIC_DIR / "index.html", headers={
+                    # The only inline script applies the saved theme before first paint.
+                    "Content-Security-Policy": (
+                        "default-src 'self'; "
+                        "script-src 'self' 'sha256-1G9wfX3SAFuNp6c2D3ARazNfC3dmtFF+vHXOqfWilLc='; "
+                        "style-src 'self' 'unsafe-inline'; "
+                        "connect-src 'self' ws://127.0.0.1:*; frame-ancestors 'none'; "
+                        "object-src 'none'; base-uri 'self'"
+                    ),
+                })
 
         return app

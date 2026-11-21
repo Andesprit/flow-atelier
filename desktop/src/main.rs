@@ -1,16 +1,69 @@
 mod sidecar;
 
-use std::ffi::{c_char, CStr};
+use std::ffi::{c_char, CStr, CString};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 static WINDOW: OnceLock<(tauri::WebviewWindow, tauri::Url)> = OnceLock::new();
 
 extern "C" {
-    fn start_notices(port: u16);
+    fn start_notices(port: u16, token: *const c_char);
+    fn check_quit();
+}
+
+static CHECKING_QUIT: AtomicBool = AtomicBool::new(false);
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+#[no_mangle]
+extern "C" fn window_visible() -> bool {
+    WINDOW
+        .get()
+        .is_some_and(|(window, _)| window.is_visible().unwrap_or(false))
+}
+
+#[no_mangle]
+extern "C" fn quit_status(status: i32) {
+    let Some((window, _)) = WINDOW.get() else {
+        return;
+    };
+    let finish = move |quit| {
+        if quit {
+            QUITTING.store(true, Ordering::Relaxed);
+            window.app_handle().exit(0);
+        } else {
+            CHECKING_QUIT.store(false, Ordering::Relaxed);
+        }
+    };
+    if status == 0 {
+        finish(true);
+        return;
+    }
+    let message = if status < 0 {
+        "Atelier could not check for active runs. Quit anyway?"
+    } else {
+        "Runs are active. Quitting will stop any runs owned by this app. Quit Flow Atelier?"
+    };
+    window
+        .dialog()
+        .message(message)
+        .title("Quit Flow Atelier")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit".into(),
+            "Keep running".into(),
+        ))
+        .show(finish);
+}
+
+fn open_external(url: &tauri::Url) {
+    if matches!(url.scheme(), "http" | "https") {
+        let _ = std::process::Command::new("/usr/bin/open")
+            .arg(url.as_str())
+            .status();
+    }
 }
 
 fn show_window() {
@@ -43,13 +96,32 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let helpers = app.path().resource_dir()?.join("atelier/atelier");
-            let (child, port, fallback) = sidecar::start(&helpers, &app.path().home_dir()?)?;
+            let token = uuid::Uuid::new_v4().to_string();
+            let workspace = app.path().app_data_dir()?.join("workspace");
+            let (child, port, warning) = sidecar::start(&helpers, &workspace, &token)?;
             app.manage(Mutex::new(Some(child)));
             let url: tauri::Url = format!("http://127.0.0.1:{port}/dashboard").parse()?;
             let origin = url.origin();
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.clone()))
                 .title("Flow Atelier").inner_size(1120.0, 760.0)
-                .on_navigation(move |url| url.origin() == origin)
+                .initialization_script(format!(
+                    "if (location.origin === 'http://127.0.0.1:{port}') sessionStorage.setItem('atelier:api-token', '{token}');"
+                ))
+                .on_navigation(move |url| {
+                    if url.origin() == origin { return true; }
+                    open_external(url);
+                    false
+                })
+                .on_new_window(|url, _| {
+                    if let Some((window, base)) = WINDOW.get() {
+                        if url.origin() == base.origin() {
+                            let _ = window.navigate(url);
+                        } else {
+                            open_external(&url);
+                        }
+                    }
+                    tauri::webview::NewWindowResponse::Deny
+                })
                 .build()?;
             let _ = WINDOW.set((window, url));
             let show = MenuItem::with_id(app, "show", "Show Flow Atelier", true, None::<&str>)?;
@@ -65,9 +137,10 @@ fn main() {
                     _ => {}
                 })
                 .build(app)?;
-            unsafe { start_notices(port) };
-            if fallback {
-                app.dialog().message("The login shell did not return PATH. Atelier is using the app’s inherited PATH. If an agent is missing, check your login shell startup files and reopen Flow Atelier.")
+            let token = CString::new(token)?;
+            unsafe { start_notices(port, token.as_ptr()) };
+            if let Some(warning) = warning {
+                app.dialog().message(warning)
                     .title("Agent PATH unavailable").show(|_| {});
             }
             Ok(())
@@ -83,6 +156,14 @@ fn main() {
         .run(|app, event| {
             if let RunEvent::Reopen { .. } = event {
                 show_window();
+            }
+            if let RunEvent::ExitRequested { ref api, .. } = event {
+                if WINDOW.get().is_some() && !QUITTING.load(Ordering::Relaxed) {
+                    api.prevent_exit();
+                    if !CHECKING_QUIT.swap(true, Ordering::Relaxed) {
+                        unsafe { check_quit() };
+                    }
+                }
             }
             if let RunEvent::Exit = event {
                 if let Some(child) = app.try_state::<Mutex<Option<sidecar::Sidecar>>>() {

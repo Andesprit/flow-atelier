@@ -4,12 +4,13 @@ from flow_atelier.services.scheduler.runner import (
     SchedulerDaemon,
     compute_planned_view,
 )
-from flow_atelier.services.scheduler.store import ScheduleStore
+from flow_atelier.services.scheduler.store import SchedulerAlreadyRunning, ScheduleStore
 from flow_atelier.services.scheduler.triggers import default_local_zone, to_trigger
 
 __all__ = [
     "PlannedJob",
     "ScheduleStore",
+    "SchedulerAlreadyRunning",
     "SchedulerDaemon",
     "compute_planned_view",
     "default_local_zone",

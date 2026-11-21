@@ -10,14 +10,18 @@ from pathlib import Path
 
 import typer
 
-from flow_atelier.cli._shared import console
+from flow_atelier.cli._shared import _migrate_schedules, console
 from flow_atelier.cli.main import app
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.modules.liveness import is_runner_alive
 from flow_atelier.schemas.api import ScheduledJob
 from flow_atelier.schemas.log import TaskEvent
-from flow_atelier.services.scheduler import SchedulerDaemon, default_local_zone
+from flow_atelier.services.scheduler import (
+    SchedulerAlreadyRunning,
+    SchedulerDaemon,
+    default_local_zone,
+)
 
 
 class _IdleClock:
@@ -240,7 +244,7 @@ def serve_cmd(
         allowed_hosts=allowed_hosts,
     )
     if not no_scheduler:
-        atelier.schedule_store.migrate_from(settings.atelier_dir)
+        _migrate_schedules(atelier.schedule_store, settings.atelier_dir)
         daemon = SchedulerDaemon(
             atelier.schedule_store,
             executor=_counted_executor,
@@ -248,20 +252,24 @@ def serve_cmd(
             default_working_dir=Path.cwd(),
             reload_interval_seconds=reload_interval,
         )
-        # The schedules POST/DELETE handlers look here to opportunistically
-        # re-sync the daemon when a schedule is created or removed.
-        atelier.scheduler_daemon = daemon  # type: ignore[attr-defined]
-
         @asynccontextmanager
         async def _lifespan(app):
             """FastAPI lifespan context that starts and stops the scheduler daemon.
 
             :param app: the FastAPI application receiving the lifespan event.
             """
-            await daemon.start()
+            try:
+                await daemon.start()
+            except SchedulerAlreadyRunning as exc:
+                typer.echo(f"{exc}; serving without scheduler", err=True)
+                yield
+                return
+            # The schedules API can resync jobs immediately on the owning daemon.
+            atelier.scheduler_daemon = daemon  # type: ignore[attr-defined]
             try:
                 yield
             finally:
+                del atelier.scheduler_daemon
                 await daemon.stop()
 
         api_app.router.lifespan_context = _lifespan

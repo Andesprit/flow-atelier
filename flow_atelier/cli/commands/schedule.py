@@ -9,7 +9,13 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
-from flow_atelier.cli._shared import _format_clock, _schedule_store, cli_error, console
+from flow_atelier.cli._shared import (
+    _format_clock,
+    _migrate_schedules,
+    _schedule_store,
+    cli_error,
+    console,
+)
 from flow_atelier.cli.main import list_app, schedule_app
 from flow_atelier.cli.rendering.render import (
     render_planned_table,
@@ -17,6 +23,7 @@ from flow_atelier.cli.rendering.render import (
     render_task_event,
 )
 from flow_atelier.core.atelier import Atelier
+from flow_atelier.core.settings import AtelierSettings
 from flow_atelier.schemas.api import CreateScheduleInput
 from flow_atelier.schemas.log import TaskEvent
 from flow_atelier.services.scheduler import (
@@ -81,7 +88,7 @@ def schedule_add_cmd(
     # (a typo'd conduit otherwise installs cleanly and only fails at fire time).
     try:
         atelier = Atelier()
-        atelier.schedule_store.migrate_from(atelier.settings.atelier_dir)
+        _migrate_schedules(atelier.schedule_store, atelier.settings.atelier_dir)
         job = atelier.create_schedule(payload)
     except (ValueError, FileExistsError) as e:
         console.print(f"[red]invalid schedule:[/red] {e}")
@@ -92,7 +99,10 @@ def schedule_add_cmd(
 @schedule_app.command("migrate", help="Move this project's legacy schedules into the global store.")
 def schedule_migrate_cmd() -> None:
     """Migrate an existing installation without starting a scheduler."""
-    store = _schedule_store()
+    settings = AtelierSettings()
+    store = ScheduleStore(settings.global_atelier_dir)
+    moved, kept = _migrate_schedules(store, settings.atelier_dir)
+    typer.echo(f"moved {moved}, kept {kept}")
     typer.echo(f"Schedule store: {store.schedules_dir.resolve()}")
 
 

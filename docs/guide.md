@@ -247,13 +247,12 @@ atelier list flows --conduit hello          # lists previous runs
 
 `atelier init` writes a one-line `hello` conduit that only runs a
 shell command, so this works end-to-end before you install any AI
-tool. Look for `hello world` and a flow ID. When it finds an agent CLI on your `PATH` (`claude`, `codex`,
-`gemini`, `cursor-agent`, `opencode` or `copilot`), it also writes
-`explain` and `pair`. In `explain`, the first available agent in the order
-listed above reads the project and writes a brief for a newcomer. In `pair`,
-that agent proposes a change and revises it after review. The next available
-agent answers questions as supervisor and reviews the proposal. With one
-installed agent, the same harness fills both roles. [Interaction policies](interaction.md)
+tool. Look for `hello world` and a flow ID. When it finds Claude Code or
+Codex on your `PATH`, it also writes the read-only starters `explain` and
+`pair`. In `explain`, Claude Code (or Codex if installed alone) reads the
+project and writes a brief for a newcomer. In `pair`, that agent proposes a
+change and revises it after review. With both installed, Codex supervises
+and reviews. With one, the same harness fills both roles. [Interaction policies](interaction.md)
 
 Every task in both starters declares `permissions: read-only`. By default,
 if a harness cannot enforce that level, the task stops before sending the
@@ -1719,11 +1718,15 @@ Scheduling-enabled `serve`, `schedule daemon`, and writable schedule commands
 also migrate that project's jobs. The source is the configured project store
 (`ATELIER_ATELIER_DIR`, default `./.atelier`). Migration preserves IDs,
 fire markers, history and run counts, and anchors relative run paths to the
-current directory. A name or ID conflict leaves the source job in place and
-prints a warning. Resolve the conflicting definition before retrying.
+current directory. A conflict or unreadable state leaves the affected job in
+place. Migration reports its path and the reason, then continues with the
+remaining jobs. `atelier schedule migrate` prints the moved and kept counts.
 
-Run one scheduler for the shared store, either `atelier schedule daemon` or
-`atelier serve`. Use `atelier serve --no-scheduler` for additional dashboards.
+The first `atelier schedule daemon` or `atelier serve` to start holds the
+scheduler lease for the shared store. While it runs, another `schedule daemon`
+reports the owner's PID and exits with an error. Another `serve` reports the
+PID and serves its dashboard and API without dispatching jobs. Use
+`atelier serve --no-scheduler` to open a dashboard explicitly in that mode.
 
 To register a schedule, write a YAML file like the one below and run
 `atelier schedule add <file>`:

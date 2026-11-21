@@ -87,13 +87,13 @@ async def test_serve_smoke_boots_and_serves_conduits(tmp_path, monkeypatch):
         assert updated.status_code == 200, updated.text
         after = (await c.get("/conduits/ship")).json()
         assert after == before
-        assert after["tasks"][1]["tasks"][0]["tool"] == "harness:claude-code"
+        assert after["tasks"][0]["tasks"][0]["tool"] == "harness:claude-code"
 
-        editor_payload["tasks"][1]["tasks"][0]["tool"] = "harness:codex:gpt-5.6-sol:high"
+        editor_payload["tasks"][0]["tasks"][0]["tool"] = "harness:codex:gpt-5.6-sol:high"
         swapped = await c.patch("/conduits/ship", json=editor_payload)
         assert swapped.status_code == 200, swapped.text
         chosen = (await c.get("/conduits/ship")).json()
-        assert chosen["tasks"][1]["tasks"][0]["tool"] == "harness:codex:gpt-5.6-sol:high"
+        assert chosen["tasks"][0]["tasks"][0]["tool"] == "harness:codex:gpt-5.6-sol:high"
 
     server.should_exit = True
     await serve_task

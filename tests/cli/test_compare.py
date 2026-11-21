@@ -57,7 +57,7 @@ def test_compare_swapped_loop_agents_and_latest_pair(tmp_path):
     }
     assert data["tasks"] == sorted(data["tasks"], key=lambda row: row["task"])
     assert next(row for row in data["tasks"] if row["task"] == "fix_until_green.fix")["different"]
-    assert a["tasks"]["plan"]["agent"] == "harness:claude-code"
+    assert a["tasks"]["review_correctness"]["agent"] == "harness:claude-code"
     assert a["tasks"]["fix_until_green.test"]["agent"] == "tool:bash"
 
     text = project.cli("compare", "ship")
@@ -111,7 +111,7 @@ tasks:
         "  - verdict:\n",
         "  - new_step:\n      description: added later\n"
         "      task: echo new\n      tool: tool:bash\n"
-        "      depends_on: [plan]\n  - verdict:\n",
+        "      depends_on: [fix_until_green]\n  - verdict:\n",
     ))
     second = project.cli("run", "ship", "--again", first_id)
     assert second.returncode == 0, second.stdout + second.stderr
@@ -151,11 +151,11 @@ def test_compare_points_a_failed_loop_body_at_diagnose(tmp_path):
         "      until: output.match(TESTS PASSED)\n      on_exhaust: fail\n", ""
     ))
     ok = project.cli("run", "ship", "--input", "goal=fix tests",
-                     "--input", "test_command=bash check.sh")
+                     "--input", "test_command=true")
     assert ok.returncode == 0, ok.stdout + ok.stderr
     project.break_agent("codex")
     broken = project.cli("run", "ship", "--input", "goal=fix tests",
-                         "--input", "test_command=bash check.sh",
+                         "--input", "test_command=true",
                          "--agent", "fix_until_green.fix=codex")
     assert broken.returncode == 1
     project.env["COLUMNS"] = "200"

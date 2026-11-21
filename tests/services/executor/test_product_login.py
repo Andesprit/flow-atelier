@@ -25,7 +25,7 @@ async def test_macos_claude_product_step_requires_setup_token(tmp_path, monkeypa
     result = await executor.execute(task, task.task, context)
     drive.assert_not_awaited()
     assert result.exit_code and "CLAUDE_CODE_OAUTH_TOKEN" in result.stderr
-    assert "claude setup-token" in result.stderr
+    assert "run claude setup-token" in result.stderr
 
 
 @pytest.fixture(

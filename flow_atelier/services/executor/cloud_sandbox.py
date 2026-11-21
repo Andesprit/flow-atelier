@@ -127,7 +127,8 @@ def product_login(tool: str, env: dict[str, str], scratch: Path) -> Iterator[str
             return
         if sys.platform == "darwin":
             raise ValueError(
-                "Run 'claude setup-token' and set CLAUDE_CODE_OAUTH_TOKEN before the product step"
+                "For Claude product steps on macOS, run claude setup-token "
+                "and set CLAUDE_CODE_OAUTH_TOKEN to the token it prints"
             )
         variable, dirname, filename = "CLAUDE_CONFIG_DIR", ".claude", ".credentials.json"
     elif name in {"harness:codex", "harness:codex-acp"}:

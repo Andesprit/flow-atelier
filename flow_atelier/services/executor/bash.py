@@ -16,6 +16,7 @@ from pathlib import Path
 from flow_atelier.schemas.conduit import TaskDefinition
 from flow_atelier.schemas.log import ExecutionResult, IntermediateStep, StepKind
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext, child_environ
+from flow_atelier.services.executor.cloud_sandbox import cloud_sandbox, product_git_guard
 
 logger = logging.getLogger(__name__)
 
@@ -351,7 +352,11 @@ class BashExecutor(ExecutorBase):
                 await _LiveOutput(context.on_step, StepKind.stderr).feed(
                     "".join(f"{note}\n" for note in notes).encode()
                 )
-            result = await self._run(args, {**inherited, **values}, context)
+            env = {**inherited, **values, "ATELIER_FLOW_ID": context.flow_id}
+            scratch = Path(tmp) if task.deny_cloud_config else None
+            cwd = context.working_dir or Path.cwd()
+            async with product_git_guard(cwd if scratch is not None else None):
+                result = await self._run(args, env, context, scratch)
         if script is not None:
             # bash names its script in its own error lines. The temp path is
             # new on every try, so keep it out of the result: the same failure
@@ -367,7 +372,8 @@ class BashExecutor(ExecutorBase):
         return result
 
     async def _run(
-        self, args: list[str], env: dict[str, str], context: FlowContext
+        self, args: list[str], env: dict[str, str], context: FlowContext,
+        scratch: Path | None = None,
     ) -> ExecutionResult:
         """Run bash with ``args`` and collect its result.
 
@@ -385,9 +391,11 @@ class BashExecutor(ExecutorBase):
             raise RuntimeError(
                 "tool:bash requires `bash` on PATH (install git-bash/WSL on Windows)"
             )
+        argv = [bash, *args]
+        if scratch is not None:
+            argv, env = cloud_sandbox(argv, env, context.working_dir or Path.cwd(), scratch)
         spawn = asyncio.ensure_future(asyncio.create_subprocess_exec(
-            bash,
-            *args,
+            *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(context.working_dir) if context.working_dir else None,

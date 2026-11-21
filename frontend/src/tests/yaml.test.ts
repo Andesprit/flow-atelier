@@ -45,6 +45,14 @@ const fullConduit: Conduit = {
 };
 
 describe("renderConduitYaml", () => {
+  it("preserves the isolation, access level and independent reviewer on export", () => {
+    const review = { ...fullConduit.tasks[1], denyCloudConfig: true,
+      permissions: "read-only" as const, differentHarnessFrom: "build" };
+    const yaml = renderConduitYaml({ ...minimalConduit, tasks: [review] });
+    expect(yaml).toContain("deny_cloud_config: true");
+    expect(yaml).toContain("permissions: read-only");
+    expect(yaml).toContain("different_harness_from: build");
+  });
   it("renders a minimal conduit with name and empty inputs/tasks", () => {
     const result = renderConduitYaml(minimalConduit);
     expect(result).toContain("name: test_flow");

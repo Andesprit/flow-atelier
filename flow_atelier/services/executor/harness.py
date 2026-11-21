@@ -28,6 +28,7 @@ import re
 import shutil
 import signal
 import sys
+import tempfile
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -46,6 +47,11 @@ from flow_atelier.schemas.log import (
     UsageLimit,
 )
 from flow_atelier.services.executor.base import ExecutorBase, FlowContext, child_environ
+from flow_atelier.services.executor.cloud_sandbox import (
+    cloud_sandbox,
+    product_git_guard,
+    product_login,
+)
 from flow_atelier.services.executor.interaction import InteractionRouter
 from flow_atelier.services.executor.prompt_sink import (
     AskQuestion,
@@ -59,6 +65,7 @@ from flow_atelier.services.executor.usage_limit import (
     is_usage_limit_reply,
     parse_reset,
 )
+from flow_atelier.services.executor.worker import WorkerSandbox
 
 if TYPE_CHECKING:
     from acp.connection import StreamEvent
@@ -1418,6 +1425,7 @@ class AcpHarnessExecutor(ExecutorBase):
         env: dict[str, str] | None = None,
         model: str | None = None,
         effort: str | None = None,
+        native_codex: bool = False,
     ) -> None:
         """Initialize the harness executor.
 
@@ -1438,6 +1446,7 @@ class AcpHarnessExecutor(ExecutorBase):
         self.env = dict(env or {})
         self.model = model
         self.effort = effort
+        self.native_codex = native_codex
 
     def with_model(self, model: str, effort: str | None = None) -> AcpHarnessExecutor:
         """Return a copy of this executor pinned to ``model`` (and ``effort``).
@@ -1458,6 +1467,7 @@ class AcpHarnessExecutor(ExecutorBase):
             env=self.env,
             model=model,
             effort=effort,
+            native_codex=self.native_codex,
         )
 
     def _spawn_env(self) -> dict[str, str]:
@@ -1468,12 +1478,11 @@ class AcpHarnessExecutor(ExecutorBase):
         and drops everything else. That silently breaks agents behind a proxy
         or custom CA, agents authenticated by API key or cloud provider, and
         any ``git push`` the agent tries (no ``SSH_AUTH_SOCK``). Pass the real
-        environment, less Atelier's own secrets, then layer the agent's own
-        variables on top.
+        environment with the agent's overrides, then filter private credentials.
 
         :returns: the environment mapping for the agent process.
         """
-        return {**child_environ(), **self.env}
+        return child_environ(os.environ | self.env)
 
     def is_available(self) -> tuple[bool, str]:
         """Probe whether the harness's launch binary is on PATH.
@@ -1544,6 +1553,8 @@ class AcpHarnessExecutor(ExecutorBase):
 
         :param cwd: working directory for the agent process.
         :param agent_stderr: bounded deque the agent's stderr is drained into.
+        :param argv: resolved agent launch command, including any sandbox wrapper.
+        :param env: environment for this process.
         :param prompt: also send :data:`PROBE_PROMPT` and require a reply.
         :returns: a :class:`ProbeResult` for the handshake.
         """
@@ -1702,6 +1713,17 @@ class AcpHarnessExecutor(ExecutorBase):
         # an absolute path"), and a relative --path or schedule run_path would
         # otherwise fail the whole task at session/new.
         cwd = str(Path(context.working_dir).resolve()) if context.working_dir else str(Path.cwd())
+        # macOS cannot nest Codex's command sandbox inside Seatbelt. Use its verified
+        # native read-only profile for the product spec and reviewer instead.
+        if (sys.platform == "darwin" and self.native_codex and task.deny_cloud_config
+                and (task.permissions or context.agent_permissions) == "read-only"):
+            if interactive or context.resume_session or context.supervisor_run:
+                raise ValueError("Native product review requires a fresh noninteractive session")
+            async with WorkerSandbox(Path(cwd), read_only=True) as reviewer:
+                answer = await reviewer.turn(
+                    prompt_text, timeout=context.timeout, model=self.model, effort=self.effort,
+                )
+                return ExecutionResult(output=answer, stdout=answer)
         client = _BufferingClient(
             _SilentSink() if context.supervisor_run else self.sink,
             stream_messages=interactive,
@@ -1718,13 +1740,24 @@ class AcpHarnessExecutor(ExecutorBase):
 
         spawned_at = time.monotonic()
         try:
-            result = await asyncio.wait_for(
-                self._drive_session(
-                    client, prompt_text, interactive, cwd, agent_stderr,
-                    context.resume_session,
-                ),
-                timeout=context.timeout,
-            )
+            async with contextlib.AsyncExitStack() as resources:
+                cmd, *args = self.launch_cmd
+                argv = [_resolve_cmd(cmd), *args]
+                env = self._spawn_env()
+                if task.deny_cloud_config:
+                    scratch = Path(resources.enter_context(tempfile.TemporaryDirectory()))
+                    token = resources.enter_context(product_login(task.tool, argv, env, scratch))
+                    await resources.enter_async_context(product_git_guard(Path(cwd)))
+                    argv, env = cloud_sandbox(argv, env, Path(cwd), scratch)
+                    if token:
+                        env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+                result = await asyncio.wait_for(
+                    self._drive_session(
+                        client, prompt_text, interactive, cwd, agent_stderr,
+                        argv, env, context.resume_session,
+                    ),
+                    timeout=context.timeout,
+                )
         except TimeoutError:
             await client.flush_pending()
             result = ExecutionResult(
@@ -1769,6 +1802,8 @@ class AcpHarnessExecutor(ExecutorBase):
         interactive: bool,
         cwd: str,
         agent_stderr: deque[str],
+        argv: list[str],
+        env: dict[str, str],
         resume_session: str | None = None,
     ) -> ExecutionResult:
         """Spawn the agent, initialize a session, and run one or many turns.
@@ -1779,14 +1814,15 @@ class AcpHarnessExecutor(ExecutorBase):
         :param interactive: ``True`` to loop until the done marker arrives.
         :param cwd: working directory passed to the agent process.
         :param agent_stderr: bounded deque the agent's stderr is drained into.
+        :param argv: resolved agent launch command, including any sandbox wrapper.
+        :param env: environment for this process.
         :param resume_session: the agent's id of an earlier session to
             continue, or ``None`` to open a new one.
         :returns: :class:`ExecutionResult` from single-turn or interactive run.
         """
         import acp
 
-        cmd, *args = self.launch_cmd
-        cmd = _resolve_cmd(cmd)
+        cmd, *args = argv
         # Public stream-observer hook: lets the client count the session
         # updates a turn produced so it can wait for its own handlers.
         observers = [client.observe]
@@ -1795,12 +1831,12 @@ class AcpHarnessExecutor(ExecutorBase):
             # default; Codex and similar harnesses emit large JSON-RPC frames
             # (tool results, planning output) that routinely exceed it.
             spawn = acp.spawn_agent_process(
-                client, cmd, *args, cwd=cwd, env=self._spawn_env(),
+                client, cmd, *args, cwd=cwd, env=env,
                 transport_kwargs={"limit": 8 * 1024 * 1024}, observers=observers,
             )
         else:
             spawn = _spawn_agent(
-                client, cmd, *args, cwd=cwd, env=self._spawn_env(), observers=observers
+                client, cmd, *args, cwd=cwd, env=env, observers=observers
             )
         succeeded = False
         agent_proc = None

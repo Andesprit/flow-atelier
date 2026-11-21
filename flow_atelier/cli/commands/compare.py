@@ -15,6 +15,7 @@ from flow_atelier.cli._shared import (
     _format_duration_seconds,
     _parse_iso,
     _resolve_flow_id,
+    cli_error,
     console,
 )
 from flow_atelier.cli.main import app
@@ -111,43 +112,43 @@ def compare_cmd(
         if first in atelier.list_flows() or (
             first == "latest" and first not in atelier.store.list_conduits()
         ):
-            console.print(
-                f"[red]compare needs a second flow id.[/red] "
-                f"Use 'atelier compare {escape(first)} <other-flow-id>', or "
-                "'atelier compare <conduit>' for that conduit's two newest runs."
+            raise cli_error(
+                "missing_comparison_flow", "compare needs a second flow id. "
+                f"Use 'atelier compare {first} <other-flow-id>', or "
+                "'atelier compare <conduit>' for that conduit's two newest runs.",
+                json_mode=json_mode, out=console, flow_id=first,
             )
-            raise typer.Exit(code=1)
         ids = _newest(atelier, first)
         if len(ids) < 2:
             next_run = (
                 f"atelier run --again {ids[0]}" if ids
                 else f"atelier run {first}"
             )
-            console.print(
-                f"[red]compare needs two runs of {escape(first)}.[/red] "
-                f"Create another with '{escape(next_run)}' "
-                "or pass two flow ids."
+            raise cli_error(
+                "insufficient_runs", f"compare needs two runs of {first}. "
+                f"Create another with '{next_run}' or pass two flow ids.",
+                json_mode=json_mode, out=console, conduit=first,
             )
-            raise typer.Exit(code=1)
         # Oldest on the left, newest on the right.
         first_id, second_id = reversed(ids)
     else:
-        first_id = _resolve_flow_id(atelier, first)
-        second_id = _resolve_flow_id(atelier, second)
+        first_id = _resolve_flow_id(atelier, first, json_mode=json_mode)
+        second_id = _resolve_flow_id(atelier, second, json_mode=json_mode)
     first_conduit = parse_flow_id(first_id)[0]
     second_conduit = parse_flow_id(second_id)[0]
     if first_conduit != second_conduit:
-        console.print(
-            f"[red]cannot compare different conduits:[/red] "
-            f"{escape(first_conduit)} and {escape(second_conduit)}"
+        raise cli_error(
+            "different_conduits",
+            f"cannot compare different conduits: {first_conduit} and {second_conduit}",
+            json_mode=json_mode, out=console, conduits=[first_conduit, second_conduit],
         )
-        raise typer.Exit(code=1)
     try:
         a = _snapshot(atelier, first_id)
         b = _snapshot(atelier, second_id)
     except (OSError, ValueError) as exc:
-        console.print(f"[red]cannot read saved run:[/red] {escape(str(exc))}")
-        raise typer.Exit(code=1) from exc
+        raise cli_error(
+            "unreadable_run", f"cannot read saved run: {exc}", json_mode=json_mode, out=console,
+        ) from exc
     rows = [
         {"task": name, "first": a["tasks"].get(name), "second": b["tasks"].get(name),
          "different": a["tasks"].get(name) != b["tasks"].get(name)}

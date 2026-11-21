@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import typer
 
-from flow_atelier.cli._shared import _resolve_flow_id, console
+from flow_atelier.cli._shared import _resolve_flow_id, cli_error, console
 from flow_atelier.cli.main import app
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.schemas.flow import parse_flow_id
@@ -49,19 +49,25 @@ def rm_cmd(
     :param json_mode: when true, emit machine-readable JSON instead of text.
     """
     atelier = Atelier()
-    flow_id = _resolve_flow_id(atelier, flow_id)
+    flow_id = _resolve_flow_id(atelier, flow_id, json_mode=json_mode)
     try:
         progress = atelier.get_status(flow_id)
     except FileNotFoundError:
-        console.print(f"[red]unknown flow:[/red] {flow_id}")
-        raise typer.Exit(code=1)
+        raise cli_error(
+            "unknown_flow", f"unknown flow: {flow_id}", json_mode=json_mode,
+            out=console, flow_id=flow_id,
+        )
 
     if progress.status == FlowStatus.running and not force:
-        console.print(
-            f"[red]flow is still running:[/red] {flow_id} "
-            "(pass --force to delete anyway)"
+        raise cli_error(
+            "flow_running", f"flow is still running: {flow_id} (pass --force to delete anyway)",
+            json_mode=json_mode, out=console, flow_id=flow_id,
         )
-        raise typer.Exit(code=1)
+    if json_mode and not yes:
+        raise cli_error(
+            "confirmation_required", "pass --yes to delete the flow in JSON mode",
+            exit_code=2, json_mode=True, parameter="--yes", flow_id=flow_id,
+        )
 
     if not yes and not typer.confirm(f"delete flow {flow_id}?"):
         console.print("aborted")
@@ -105,11 +111,10 @@ def prune_cmd(
     :param json_mode: when true, emit machine-readable JSON instead of text.
     """
     if older_than is None and keep is None:
-        console.print(
-            "[red]refusing to prune:[/red] pass --older-than and/or --keep "
-            "to select which flows to delete."
+        raise cli_error(
+            "invalid_arguments", "refusing to prune: pass --older-than and/or --keep "
+            "to select which flows to delete.", exit_code=2, json_mode=json_mode, out=console,
         )
-        raise typer.Exit(code=2)
 
     atelier = Atelier()
     candidates = atelier.list_flows(conduit)  # sorted ascending (oldest first)

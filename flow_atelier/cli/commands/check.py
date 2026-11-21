@@ -18,8 +18,8 @@ from rich.markup import escape
 
 from flow_atelier.cli._shared import (
     _exit_unknown_conduit,
+    cli_error,
     console,
-    err_console,
     parse_agents_option,
 )
 from flow_atelier.cli.commands.recipe_diagnostics import (
@@ -928,22 +928,27 @@ def check_cmd(
     :param agents_raw: list of ``task=harness`` strings from ``--agent``.
     :param timeout: seconds allowed per agent; requires ``--probe``.
     """
-    out = err_console if json_mode else console
-    agents = parse_agents_option(agents_raw, out)
+    agents = parse_agents_option(agents_raw, json_mode=json_mode)
     if timeout is not None and not probe:
-        out.print("[red]--timeout applies to --probe; pass both or neither[/red]")
-        raise typer.Exit(code=2)
+        raise cli_error(
+            "invalid_arguments", "--timeout applies to --probe; pass both or neither",
+            exit_code=2, json_mode=json_mode, out=console, parameter="--timeout",
+        )
     if timeout is None:
         timeout = PROBE_TIMEOUT_SECONDS
     elif not math.isfinite(timeout) or timeout <= 0:
-        out.print(f"[red]--timeout must be a positive number of seconds, not {timeout}[/red]")
-        raise typer.Exit(code=2)
+        raise cli_error(
+            "invalid_arguments", f"--timeout must be a positive number of seconds, not {timeout}",
+            exit_code=2, json_mode=json_mode, out=console, parameter="--timeout",
+        )
     # An omitted name means "every conduit installed", which is a fine default
     # for reading files and a terrible one for starting processes.
     if conduit_name is None and (probe or agents):
         flag = "--probe" if probe else "--agent"
-        out.print(f"[red]{flag} needs a conduit name — it acts on one workflow[/red]")
-        raise typer.Exit(code=2)
+        raise cli_error(
+            "invalid_arguments", f"{flag} needs a conduit name — it acts on one workflow",
+            exit_code=2, json_mode=json_mode, out=console, parameter=flag,
+        )
 
     try:
         atelier = Atelier()
@@ -951,13 +956,14 @@ def check_cmd(
     except OSError as e:
         # No target set could be established, so there is nothing to report:
         # an empty `[]` here would read as "checked everything, all fine".
-        err_console.print(f"[red]FAIL: cannot list conduits — {escape(str(e))}[/red]")
-        raise typer.Exit(code=1) from e
+        raise cli_error(
+            "conduit_lookup_failed", f"FAIL: cannot list conduits — {e}", json_mode=json_mode,
+        ) from e
 
     if conduit_name is not None:
         sources = dict(entries)
         if conduit_name not in sources:
-            _exit_unknown_conduit(conduit_name, list(sources), out=out)
+            _exit_unknown_conduit(conduit_name, list(sources), json_mode=json_mode)
         targets = [(conduit_name, sources[conduit_name])]
     else:
         targets = entries

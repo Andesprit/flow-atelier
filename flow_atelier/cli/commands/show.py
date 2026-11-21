@@ -5,22 +5,12 @@ import json
 
 import typer
 from pydantic import ValidationError
-from rich.markup import escape
 
-from flow_atelier.cli._shared import _exit_unknown_conduit, err_console
+from flow_atelier.cli._shared import _exit_unknown_conduit, cli_error, err_console
 from flow_atelier.cli.main import app
 from flow_atelier.cli.rendering.render import format_conduit_error
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.modules.engine import accepted_input_keys
-
-
-def _exit_unreadable(message: str) -> None:
-    """Report a load failure on stderr and exit 1, leaving stdout empty.
-
-    :param message: plain-text diagnostic; Rich markup in it is escaped.
-    """
-    err_console.print(f"[red]FAIL: {escape(message)}[/red]")
-    raise typer.Exit(code=1)
 
 
 @app.command("show")
@@ -52,27 +42,27 @@ def show_cmd(
     atelier = Atelier()
     sources = dict(atelier.store.list_conduits_with_source())
     if conduit_name not in sources:
-        _exit_unknown_conduit(conduit_name, list(sources), out=err_console)
+        _exit_unknown_conduit(conduit_name, list(sources), out=err_console, json_mode=json_mode)
 
     path = (atelier.store.conduit_dir(conduit_name) / "conduit.yaml").absolute()
 
-    if not json_mode:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as e:
-            _exit_unreadable(f"cannot read {path} — {e}")
-        typer.echo(f"{sources[conduit_name]}: {path}", err=True)
-        # Written verbatim: no Rich markup, wrapping or pager, so `[a]` and
-        # `{{inputs.x}}` survive and the bytes can be redirected to a file.
-        typer.echo(text, nl=not text.endswith("\n"))
-        return
-
     try:
+        if not json_mode:
+            text = path.read_text(encoding="utf-8")
+            typer.echo(f"{sources[conduit_name]}: {path}", err=True)
+            typer.echo(text, nl=not text.endswith("\n"))
+            return
         conduit = atelier.store.read_conduit(conduit_name)
     except (OSError, UnicodeDecodeError) as e:
-        _exit_unreadable(f"cannot read {path} — {e}")
+        raise cli_error(
+            "unreadable_conduit", f"FAIL: cannot read {path} — {e}", json_mode=json_mode,
+            conduit=conduit_name, path=str(path),
+        ) from e
     except (ValidationError, ValueError) as e:
-        _exit_unreadable(format_conduit_error(e))
+        raise cli_error(
+            "invalid_conduit", f"FAIL: {format_conduit_error(e)}", json_mode=json_mode,
+            conduit=conduit_name, path=str(path),
+        ) from e
 
     typer.echo(
         json.dumps(

@@ -6,12 +6,12 @@ import time
 from collections import deque
 
 import typer
-from rich.markup import escape
 
 from flow_atelier.cli._shared import (
     _flow_usage_totals,
     _format_usage,
     _resolve_flow_id,
+    cli_error,
     console,
 )
 from flow_atelier.cli.main import app
@@ -62,20 +62,25 @@ def logs_cmd(
     :param json_mode: when true, emit machine-readable JSON instead of panels.
     """
     if show not in _LOG_SHOW_CHOICES:
-        console.print(
-            f"[red]invalid --show value:[/red] {show}  "
-            f"(allowed: {', '.join(_LOG_SHOW_CHOICES)})"
+        raise cli_error(
+            "invalid_arguments",
+            f"invalid --show value: {show}  (allowed: {', '.join(_LOG_SHOW_CHOICES)})",
+            exit_code=2, json_mode=json_mode, out=console,
+            parameter="--show", allowed=_LOG_SHOW_CHOICES,
         )
-        raise typer.Exit(code=2)
     if follow and json_mode:
-        console.print("[red]--follow and --json are mutually exclusive[/red]")
-        raise typer.Exit(code=2)
+        raise cli_error(
+            "invalid_arguments", "--follow and --json are mutually exclusive",
+            exit_code=2, json_mode=True, parameter="--follow",
+        )
     if follow and last is not None:
         console.print("[red]--follow and --last are mutually exclusive[/red]")
         raise typer.Exit(code=2)
+    if last is not None and last < 0:
+        raise typer.BadParameter("--last must be zero or positive", param_hint="--last")
 
     atelier = Atelier()
-    flow_id = _resolve_flow_id(atelier, flow_id)
+    flow_id = _resolve_flow_id(atelier, flow_id, json_mode=json_mode)
 
     if follow:
         _follow_logs(atelier, flow_id, task, show)
@@ -84,8 +89,10 @@ def logs_cmd(
     try:
         entries = atelier.store.read_logs(flow_id)
     except FileNotFoundError:
-        console.print(f"[red]unknown flow:[/red] {flow_id}")
-        raise typer.Exit(code=1)
+        raise cli_error(
+            "unknown_flow", f"unknown flow: {flow_id}", json_mode=json_mode,
+            out=console, flow_id=flow_id,
+        )
 
     if task is not None:
         entries = [e for e in entries if e.task == task]
@@ -103,11 +110,10 @@ def logs_cmd(
 
     if not entries and not orphans:
         scope = f"task {task!r}" if task else "this flow"
-        if json_mode:
-            typer.echo("[]")
-            raise typer.Exit(code=1)
-        console.print(f"[yellow]no log entries for {escape(scope)}[/yellow]")
-        raise typer.Exit(code=1)
+        raise cli_error(
+            "no_log_entries", f"no log entries for {scope}",
+            json_mode=json_mode, out=console, flow_id=flow_id,
+        )
 
     # `--last` bounds what gets *rendered*, so it counts entries and orphan
     # panels together in the order they are printed. Slicing only `entries`
@@ -115,8 +121,6 @@ def logs_cmd(
     renderable: list = [("entry", e) for e in entries]
     renderable += [("orphan", key, steps) for key, steps in orphans.items()]
     if last is not None:
-        if last < 0:
-            raise typer.BadParameter("--last must be zero or positive")
         # renderable[-0:] is the whole list, so handle 0 explicitly as "none".
         renderable = renderable[-last:] if last > 0 else []
     entries = [item[1] for item in renderable if item[0] == "entry"]

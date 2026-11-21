@@ -631,6 +631,30 @@ YAML comment or a file beside the conduit. And if you exported
 the old copy still accepts the typo your editor should now be
 underlining.
 
+### Reading JSON command errors
+
+When a command with `--json` fails before it has a result, stdout is empty.
+Stderr contains one JSON object. Branch on `error.code` and display
+`error.message` to the user. For example, `atelier logs missing --follow --json`
+exits 2 and writes this object to stderr.
+
+```json
+{"error":{"code":"invalid_arguments","message":"--follow and --json are mutually exclusive","parameter":"--follow"}}
+```
+
+Warnings from inspection commands go to stderr with a result or into
+`error.diagnostics` with a command error. Streaming commands keep stderr live.
+
+An unknown flow exits 1 with `unknown_flow` and the requested `flow_id`.
+An ambiguous prefix exits 1 with `ambiguous_flow_id` and a `candidates` array
+of matching IDs. An invalid choice can include an `allowed` array.
+For `rm --json`, supply `--yes` to confirm deletion.
+
+A nonzero exit can also accompany a result on stdout. `check --json` returns
+its report even when a conduit fails validation. `wait --json` returns the
+observed terminal status for failed, stopped and crashed flows. A wait that
+times out exits 124 with a `wait_timeout` error on stderr.
+
 ### Checking conduits from a script or an agent
 
 `atelier check --json` answers the same question as `atelier check`, in a

@@ -86,6 +86,11 @@ def test_list_empty(store):
     :param store: ScheduleStore fixture.
     """
     assert store.list() == []
+    assert store.fired_at("missing") is None
+    assert not store.atelier_dir.exists()
+    store.mark_fired("first")
+    assert store.fired_at("first") is not None
+    assert not store.schedules_dir.exists()
 
 
 def test_create_assigns_id_created_at_counters(store):

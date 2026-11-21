@@ -94,15 +94,7 @@ class FilesystemStore(StoreBase):
         :param global_dir: optional user-level directory for shared conduits
         """
         self.base_dir = Path(base_dir)
-        (self.base_dir / "conduits").mkdir(parents=True, exist_ok=True)
-        (self.base_dir / "flows").mkdir(parents=True, exist_ok=True)
         self.global_dir: Path | None = Path(global_dir) if global_dir else None
-        if self.global_dir is not None:
-            try:
-                (self.global_dir / "conduits").mkdir(parents=True, exist_ok=True)
-            except OSError:
-                # Read-only HOME / sandbox — degrade to project-only mode.
-                self.global_dir = None
         # Both caches grow with distinct flow ids and are never pruned;
         # entries are tiny and bounded by process lifetime, so that's fine.
         self._log_locks: dict[str, asyncio.Lock] = {}
@@ -274,11 +266,13 @@ class FilesystemStore(StoreBase):
 
         :param root: directory expected to contain ``<name>/conduit.yaml``
         """
-        if not root.exists():
+        try:
+            entries = list(root.iterdir())
+        except FileNotFoundError:
             return []
         return sorted(
             p.name
-            for p in root.iterdir()
+            for p in entries
             if p.is_dir() and (p / "conduit.yaml").exists()
         )
 
@@ -449,10 +443,12 @@ class FilesystemStore(StoreBase):
             ``conduit_name`` are returned.
         """
         root = self.base_dir / "flows"
-        if not root.exists():
+        try:
+            entries = list(root.iterdir())
+        except FileNotFoundError:
             return []
         ids: list[str] = []
-        for p in root.iterdir():
+        for p in entries:
             if not p.is_dir():
                 continue
             if conduit_name is None:

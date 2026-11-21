@@ -107,6 +107,7 @@ async def test_get_logs_rejects_encoded_dot_segment(fixture, tmp_path):
     :param tmp_path: pytest temp directory fixture.
     """
     client, atelier = fixture
+    (atelier.store.base_dir / "flows").mkdir(parents=True, exist_ok=True)
     (atelier.store.base_dir / "logs.jsonl").write_text(
         '{"task":"t","tool":"tool:bash","command":"c","exit_code":0,'
         '"output":"SECRET","stdout":"SECRET","stderr":"",'

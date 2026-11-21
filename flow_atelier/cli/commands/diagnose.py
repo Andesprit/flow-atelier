@@ -29,6 +29,7 @@ _STATE_STYLE = {
     "failed": "red",
     "crashed": "red",
     "running": "yellow",
+    "needs_input": "yellow",
     "stopped": "yellow",
     "completed": "green",
 }

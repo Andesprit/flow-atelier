@@ -132,9 +132,9 @@ case ":${PATH}:" in
     *)
         echo "Open a new shell, or run this command in your current shell:"
         if [ "$LOGIN_SHELL" = "fish" ]; then
-            echo 'set -gx PATH $PATH "$HOME/.atelier/bin"'
+            echo 'set -gx PATH "$HOME/.atelier/bin" $PATH'
         else
-            echo 'export PATH="$PATH:$HOME/.atelier/bin"'
+            echo 'export PATH="$HOME/.atelier/bin:$PATH"'
         fi
         ;;
 esac

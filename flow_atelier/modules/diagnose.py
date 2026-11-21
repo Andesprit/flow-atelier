@@ -285,6 +285,10 @@ def _observe(progress: Progress) -> Observation:
     :returns: the state, how certain it is, and the reason in words.
     """
     status = progress.status
+    if progress.pending_ask:
+        return Observation(
+            state="needs_input", certainty="proven", note="the agent is waiting for an answer",
+        )
     if status == FlowStatus.failed:
         return Observation(
             state="failed",
@@ -630,7 +634,9 @@ def _next_steps(
                 command=f"atelier outputs {quoted}",
             )
         )
-    if observed.state in ("failed", "crashed"):
+    if observed.state == "needs_input":
+        steps.insert(0, NextStep(what="needs input", command=f"atelier ask {quoted} --json"))
+    elif observed.state in ("failed", "crashed"):
         if not recipe.available:
             steps.append(
                 NextStep(
@@ -907,10 +913,12 @@ def build_report(atelier: Any, flow_id: str) -> DiagnoseReport:
     else:
         before_shape = (
             progress.status,
+            progress.pending_ask,
             {n: (t.status, t.iteration) for n, t in progress.tasks.items()},
         )
         after_shape = (
             after.status,
+            after.pending_ask,
             {n: (t.status, t.iteration) for n, t in after.tasks.items()},
         )
         if before_shape != after_shape:

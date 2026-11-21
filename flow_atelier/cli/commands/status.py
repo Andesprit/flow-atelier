@@ -91,7 +91,11 @@ def status_cmd(
     console.print(header)
     for warning in unmet_loop_messages(progress):
         console.print(f"[yellow]⚠ {escape(warning)}[/yellow]")
-    if is_crashed(progress):
+    if progress.pending_ask:
+        console.print(
+            f"[yellow]needs input[/yellow] → atelier ask {flow_id} --json", soft_wrap=True
+        )
+    elif is_crashed(progress):
         console.print(f"[dim]→ atelier run --resume {flow_id}[/dim]")
 
     show_iteration = any(tp.of > 1 for tp in progress.tasks.values())

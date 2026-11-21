@@ -77,7 +77,7 @@ def _run_turn(
             conduit, {"message": message}, working_dir=target, flow_id=flow_id,
             resume_from=resume_from, stoppable=True,
         ))
-    except RuntimeError as exc:
+    except Exception as exc:  # noqa: BLE001
         raise cli_error(sink.error_code, str(exc), flow_id=flow_id, json_mode=json_mode) from exc
     except asyncio.CancelledError:
         raise cli_error(
@@ -154,7 +154,9 @@ def ask_cmd(
                 )
             progress = atelier.get_status(flow_id)
             pending = progress.pending_ask
-            if not pending or (answer is not None and (request_id or query) != pending.request_id):
+            if not pending or (
+                answer is not None and (request_id or flow_id) != pending.request_id
+            ):
                 raise cli_error(
                     "no_pending_question",
                     "no matching pending question; read the flow and pass its --request-id",

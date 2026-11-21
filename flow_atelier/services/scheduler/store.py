@@ -19,9 +19,11 @@ import os
 import re
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC
+from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Concatenate
 
 import yaml
 
@@ -86,6 +88,28 @@ def _filename_for_name(name: str) -> str:
     """
     digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
     return f"{_slug(name)}-{digest}.yaml"
+
+
+def _serialized[**P, R](
+    method: Callable[Concatenate[ScheduleStore, P], R],
+) -> Callable[Concatenate[ScheduleStore, P], R]:
+    """Serialize global store writers, including concurrent CLI processes and migrations."""
+    @wraps(method)
+    def write(self: ScheduleStore, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        self.atelier_dir.mkdir(parents=True, exist_ok=True)
+        with (self.atelier_dir / ".scheduler.lock").open("a+b") as lock:
+            if os.name == "nt":
+                import msvcrt
+
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            return method(self, *args, **kwargs)
+
+    return write
 
 
 class ScheduleStore:
@@ -179,6 +203,56 @@ class ScheduleStore:
         jobs.sort(key=lambda j: j.created_at)
         return jobs
 
+    def migrate_from(self, project_dir: Path) -> None:
+        """Move valid project jobs to this store, resolving old paths against the CLI's cwd."""
+        project = ScheduleStore(project_dir)
+        if project.schedules_dir.resolve() == self.schedules_dir.resolve():
+            return
+        for source in project._job_files():
+            self._migrate_file(project, source)
+
+    @_serialized
+    def _migrate_file(self, project: ScheduleStore, source: Path) -> None:
+        if not source.exists():
+            return  # Another invocation already moved it.
+        job = project._load_file(source)
+        if job is None:
+            return
+        job = job.model_copy(update={"run_path": str(Path(job.run_path).absolute())})
+        destination = self._path_for_name(job.schedule.name)
+        existing = self.get(job.id)
+        if existing is not None:
+            # Resume after publication but before unlink, even if the job has since fired.
+            if (
+                existing.model_copy(update={"runs_completed": job.runs_completed}) != job
+                or existing.runs_completed < job.runs_completed
+            ):
+                logger.warning("Schedule id conflict. Kept %s in place", source)
+                return
+        elif destination.exists() or self.get_by_name(job.schedule.name) is not None:
+            logger.warning("Schedule name conflict. Kept %s in place", source)
+            return
+
+        # Install the one-shot marker and history before the daemon can see the YAML.
+        old = project._read_state(strict=True)
+        if job.id in old["schedules"]:
+            state = self._read_state(strict=True)
+            if (
+                job.id in state["schedules"]
+                and state["schedules"][job.id] != old["schedules"][job.id]
+            ):
+                logger.warning("Schedule history conflict. Kept %s in place", source)
+                return
+            if job.id not in state["schedules"]:
+                state["schedules"][job.id] = old["schedules"][job.id]
+                self._write_state(state)
+        if existing is None:
+            self._save_job(job)
+        if job.id in old["schedules"]:
+            del old["schedules"][job.id]
+            project._write_state(old)
+        source.unlink()
+
     # --------------------------------------------------------------- list / get
 
     def list(self) -> list[ScheduledJob]:
@@ -207,6 +281,7 @@ class ScheduleStore:
 
     # --------------------------------------------------------------- create / delete
 
+    @_serialized
     def create(self, payload: CreateScheduleInput) -> ScheduledJob:
         """Persist a new :class:`ScheduledJob` derived from ``payload``.
 
@@ -241,6 +316,7 @@ class ScheduleStore:
         self._save_job(job)
         return job
 
+    @_serialized
     def delete(self, schedule_id: str) -> ScheduledJob:
         """Remove the schedule's YAML file and clear its fired marker.
 
@@ -253,9 +329,10 @@ class ScheduleStore:
             raise KeyError(f"schedule not found: {schedule_id}")
         path, job = hit
         path.unlink(missing_ok=True)
-        self.clear_fired(schedule_id)
+        self._clear_fired(schedule_id)
         return job
 
+    @_serialized
     def increment_runs(self, schedule_id: str) -> None:
         """Bump ``runs_completed`` for ``schedule_id`` if it still exists.
 
@@ -276,7 +353,7 @@ class ScheduleStore:
 
     # --------------------------------------------------------------- fired state
 
-    def _read_state(self) -> dict[str, Any]:
+    def _read_state(self, *, strict: bool = False) -> dict[str, Any]:
         """Load the ``scheduler_state.json`` payload, returning a safe default."""
         if not self.state_path.exists():
             return {"schedules": {}}
@@ -294,12 +371,18 @@ class ScheduleStore:
                 time.sleep(delay)
                 delay = min(delay * 2, 0.1)
         if text is None:
+            if strict:
+                raise OSError(f"cannot read scheduler state: {self.state_path}")
             return {"schedules": {}}
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
+            if strict:
+                raise
             return {"schedules": {}}
-        if not isinstance(data, dict) or "schedules" not in data:
+        if not isinstance(data, dict) or not isinstance(data.get("schedules"), dict):
+            if strict:
+                raise ValueError(f"invalid scheduler state: {self.state_path}")
             return {"schedules": {}}
         return data
 
@@ -325,6 +408,7 @@ class ScheduleStore:
         value = entry.get("fired_at_iso")
         return value if isinstance(value, str) else None
 
+    @_serialized
     def mark_fired(self, schedule_id: str, scheduled_at_iso: str | None = None) -> None:
         """Record that ``schedule_id`` has fired.
 
@@ -346,6 +430,7 @@ class ScheduleStore:
         data["schedules"][schedule_id] = entry
         self._write_state(data)
 
+    @_serialized
     def clear_fired(self, schedule_id: str) -> None:
         """Drop the fired-once marker for ``schedule_id`` if present.
 
@@ -354,6 +439,9 @@ class ScheduleStore:
 
         :param schedule_id: schedule identifier
         """
+        self._clear_fired(schedule_id)
+
+    def _clear_fired(self, schedule_id: str) -> None:
         data = self._read_state()
         if schedule_id in data["schedules"]:
             del data["schedules"][schedule_id]
@@ -361,6 +449,7 @@ class ScheduleStore:
 
     # --------------------------------------------------------------- run history
 
+    @_serialized
     def append_run_record(
         self, schedule_id: str, status: str, flow_id: str | None
     ) -> None:

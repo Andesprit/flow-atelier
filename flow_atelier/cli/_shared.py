@@ -474,10 +474,15 @@ def _format_next_fire(value: datetime | None) -> str:
     return value.astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()
 
 
-def _schedule_store() -> ScheduleStore:
-    """Build a :class:`ScheduleStore` rooted at the configured atelier dir.
-
-    :returns: a ScheduleStore bound to the current atelier directory.
-    """
+def _schedule_store(*, migrate: bool = True) -> ScheduleStore:
+    """Open the shared schedule store, moving this project's jobs on writable commands."""
     settings = AtelierSettings()
-    return ScheduleStore(settings.atelier_dir)
+    store = ScheduleStore(settings.global_atelier_dir)
+    if migrate:
+        store.migrate_from(settings.atelier_dir)
+    elif (
+        settings.atelier_dir.resolve() != settings.global_atelier_dir.resolve()
+        and ScheduleStore(settings.atelier_dir).list()
+    ):
+        typer.echo("Legacy project schedules found. Run atelier schedule migrate here.", err=True)
+    return store

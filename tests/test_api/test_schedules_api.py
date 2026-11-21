@@ -10,13 +10,11 @@ from flow_atelier.services.api.app import FastApiServer
 
 
 @pytest.fixture
-async def fixture(tmp_path, monkeypatch):
+async def fixture(tmp_path):
     """Yield an httpx client wired to a fresh Atelier instance.
 
     :param tmp_path: pytest temp directory fixture.
-    :param monkeypatch: pytest monkeypatch fixture.
     """
-    monkeypatch.delenv("ATELIER_GLOBAL_ATELIER_DIR", raising=False)
     atelier = Atelier(base_dir=tmp_path / ".atelier")
     # create_schedule validates conduit_name and rejects inputs the conduit
     # cannot use, so the scheduled conduit must exist on disk and reference
@@ -102,11 +100,11 @@ async def test_create_schedule_persists_to_yaml_file(fixture):
 
     :param fixture: client+atelier+tmp_path tuple fixture.
     """
-    client, _, tmp_path = fixture
+    client, atelier, _ = fixture
     resp = await client.post("/schedules", json=_payload())
     sch_id = resp.json()["id"]
     (yaml_path,) = list(
-        (tmp_path / ".atelier" / "schedules").glob("weekday-mornings-*.yaml")
+        (atelier.settings.global_atelier_dir / "schedules").glob("weekday-mornings-*.yaml")
     )
     raw = yaml.safe_load(yaml_path.read_text())
     assert raw["id"] == sch_id

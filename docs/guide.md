@@ -2092,8 +2092,10 @@ two projects can share a folder while retaining their separate identities.
 
 `atelier install builtin:platform --no-project` installs the bundled version
 in the global conduit store. The manifest lists `error-to-pr`,
-`idea-to-product`, `continuous-improvement` and `meetings-to-tasks`.
-The package creates no schedules.
+`idea-to-product`, `continuous-improvement` and `meetings-to-tasks`. Version
+2 ships the error-to-PR, idea-to-product and continuous-improvement workflows.
+The meetings starter reports its roadmap slice. The package creates no schedules.
+See the [error-to-PR setup](error-webhooks.md#error-to-pr).
 
 A project's own conduit takes precedence. Reinstalling skips existing files.
 Use `atelier update platform --force` only when you intend to replace them.

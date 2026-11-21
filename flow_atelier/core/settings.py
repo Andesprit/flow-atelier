@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, PositiveInt, SecretStr, field_validator
+from pydantic import BaseModel, Field, PositiveInt, SecretStr, field_validator
 from pydantic.alias_generators import to_snake
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
@@ -37,7 +37,10 @@ ENVIRONMENT_ONLY = frozenset({
     "serve_url",
 })
 
-USER_FILE_ONLY = frozenset({"webhook_sources", "webhook_secrets", "run_caps"})
+USER_FILE_ONLY = frozenset({
+    "webhook_sources", "webhook_secrets", "run_caps",
+    "notification_recipient", "notification_provider", "error_pr_projects",
+})
 
 # New fields are user-only until explicitly allowed in project files.
 PROJECT_KEYS = frozenset({
@@ -105,6 +108,15 @@ class _FileSettings(PydanticBaseSettingsSource):
         if project_path != user_path:
             merge(_read_json(project_path), str(project_path), project=True)
         return values
+
+
+class ErrorPrProject(BaseModel):
+    """Trusted repository destination and test commands for one application."""
+
+    repository: str = Field(pattern=r"^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$")
+    test_file: str
+    regression: list[str] = Field(min_length=1)
+    suite: list[str] = Field(min_length=1)
 
 
 class AtelierSettings(BaseSettings):
@@ -218,6 +230,7 @@ class AtelierSettings(BaseSettings):
             '"gemini-acp"]}\'. A name matching a bundled harness overrides it.'
         ),
     )
+    error_pr_projects: dict[str, ErrorPrProject] = Field(default_factory=dict)
     step_instructions: StepInstructions = Field(default_factory=StepInstructions)
     done_marker: str = "[ATELIER_DONE]"
     api_token: str = Field(

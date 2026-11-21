@@ -1,10 +1,20 @@
 name: error-to-pr
-description: Reserved for the error-to-pr workflow in roadmap slice 2.5.
+description: Reproduce a reported application error and publish a verified fix as a draft PR.
+inputs:
+  report_b64:
+    description: Original signed JSON report in standard Base64.
 tasks:
-  - setup:
-      description: Report workflow availability
-      tool: tool:bash
-      task: |
-        echo 'error-to-pr is pending roadmap slice 2.5.' >&2
-        exit 1
-
+  - repair:
+      description: Add a failing regression test and verify the fix in a scratch checkout
+      tool: tool:error-to-pr
+      task: repair
+  - publish:
+      description: Publish the verified commit to its run-owned draft PR
+      tool: tool:error-to-pr
+      task: publish
+      depends_on: [repair]
+  - notify:
+      description: Send the draft PR link to the configured recipient
+      tool: tool:error-to-pr
+      task: notify
+      depends_on: [publish]

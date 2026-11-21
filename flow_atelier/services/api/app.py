@@ -6,24 +6,33 @@ facade; routes do at most: validate → call facade → serialize.
 """
 from __future__ import annotations
 
+import secrets
 from collections.abc import Iterable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
+from importlib.util import find_spec
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Request
+from anyio import Lock, create_task_group
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.datastructures import Headers
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from flow_atelier import __version__
 from flow_atelier.core.atelier import Atelier
-from flow_atelier.services.api.base import ApiServerBase, origin_permitted
+from flow_atelier.services.api.base import (
+    SESSION_COOKIE,
+    ApiServerBase,
+    origin_permitted,
+    require_token,
+)
 from flow_atelier.services.store.events import AmbiguousFlowId, RunRecordError
 from flow_atelier.services.store.retention import daily_cleanup
+from flow_atelier.services.web_push import WebPush
 
 # Bundled SPA assets. Lives inside the package (flow_atelier/dist/) so it ships
 # in the wheel and is found both from a source checkout and an installed wheel.
@@ -68,7 +77,8 @@ class HostHeaderMiddleware:
     handed an HTTP response, which is not valid on a ``websocket`` scope.
     """
 
-    def __init__(self, app: ASGIApp, allowed_hosts: Iterable[str]) -> None:
+    def __init__(self, app: ASGIApp, allowed_hosts: Iterable[str],
+                 api_token: str | None = None) -> None:
         """Wrap ``app``, admitting only ``allowed_hosts``.
 
         :param app: the downstream ASGI application.
@@ -76,6 +86,7 @@ class HostHeaderMiddleware:
         """
         self.app = app
         self.allowed = {h.lower() for h in allowed_hosts}
+        self.authenticated = bool(api_token)
         self.allow_any = "*" in self.allowed
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -85,18 +96,37 @@ class HostHeaderMiddleware:
         :param receive: ASGI receive channel.
         :param send: ASGI send channel.
         """
-        if self.allow_any or scope["type"] not in ("http", "websocket"):
+        if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
-        if _header_host(Headers(scope=scope).get("host", "")) in self.allowed:
+        headers = Headers(scope=scope)
+        error, status = "Invalid host header", 400
+        if not self.authenticated and any(
+            h in headers for h in ("forwarded", "x-forwarded-for", "x-forwarded-host")
+        ):
+            error, status = "Forwarded requests require ATELIER_API_TOKEN", 403
+        elif self.allow_any or _header_host(headers.get("host", "")) in self.allowed:
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1008})
             return
-        await PlainTextResponse("Invalid host header", status_code=400)(
-            scope, receive, send
-        )
+        await PlainTextResponse(error, status_code=status)(scope, receive, send)
+
+
+class NoStoreMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def send_headers(message):
+            if message["type"] == "http.response.start" and not (
+                message["status"] < 400 and scope["path"].startswith("/assets/")
+            ):
+                MutableHeaders(scope=message).setdefault("Cache-Control", "no-store")
+            await send(message)
+
+        await self.app(scope, receive, send_headers)
 
 
 class OriginGuardMiddleware:
@@ -164,16 +194,32 @@ class FastApiServer(ApiServerBase):
         """
         @asynccontextmanager
         async def lifespan(app):
-            async with daily_cleanup(
+            # The owning scheduler already runs retention for this global store.
+            cleanup = nullcontext() if hasattr(atelier, "scheduler_daemon") else daily_cleanup(
                 atelier.settings.global_atelier_dir, atelier.settings.cleanup_period_days
-            ):
-                try:
-                    yield
-                finally:
-                    for chat in list(app.state.chats.values()):
-                        await chat.close()
+            )
+            try:
+                async with cleanup, create_task_group() as runs:
+                    app.state.mobile_runs = runs
+                    app.state.launch_lock = Lock()
+                    app.state.launches = {}
+                    if find_spec("pywebpush") is not None:
+                        runs.start_soon(WebPush(atelier.settings.global_atelier_dir).watch, atelier)
+                    try:
+                        yield
+                    finally:
+                        runs.cancel_scope.cancel()
+            finally:
+                for chat in list(app.state.chats.values()):
+                    await chat.close()
 
         app = FastAPI(title="flow-atelier", version=__version__, lifespan=lifespan)
+
+        @app.exception_handler(500)
+        async def server_error(request: Request, exc: Exception) -> PlainTextResponse:
+            return PlainTextResponse(
+                "Internal Server Error", 500, headers={"Cache-Control": "no-store"}
+            )
 
         @app.exception_handler(RunRecordError)
         async def record_error(request: Request, exc: RunRecordError) -> JSONResponse:
@@ -185,6 +231,22 @@ class FastApiServer(ApiServerBase):
         app.state.chats = {}
         app.state.atelier = atelier
         app.state.api_token = api_token or ""
+        app.state.session_key = secrets.token_hex(32).encode()
+
+        @app.post("/session", dependencies=[Depends(require_token)])
+        def start_session() -> Response:
+            response = Response(status_code=204)
+            if api_token:
+                response.set_cookie(SESSION_COOKIE, app.state.session_key.decode(), secure=True,
+                                    httponly=True, samesite="strict")
+            return response
+
+        @app.delete("/session", dependencies=[Depends(require_token)])
+        def forget_session() -> Response:
+            response = Response(status_code=204)
+            response.delete_cookie(SESSION_COOKIE, secure=True, httponly=True, samesite="strict")
+            return response
+
         app.state.cors_origins = list(cors_origins or [])
 
         # The bundled UI is served from this origin and needs no CORS. Only
@@ -208,8 +270,11 @@ class FastApiServer(ApiServerBase):
         # on behalf of a host we do not accept.
         app.add_middleware(
             HostHeaderMiddleware,
+            api_token=api_token,
             allowed_hosts=list(allowed_hosts) if allowed_hosts else LOOPBACK_HOSTS,
         )
+
+        app.add_middleware(NoStoreMiddleware)
 
         # Routes mount themselves below — imported here to avoid
         # circular imports between routes and the app factory.
@@ -232,6 +297,10 @@ class FastApiServer(ApiServerBase):
 
             @app.get("/{full_path:path}")
             async def _spa_fallback(full_path: str):
+                if full_path in {"sw.js", "manifest.webmanifest", "pwa/icon-192.png",
+                                 "pwa/icon-512.png"}:
+                    return FileResponse(_STATIC_DIR / full_path,
+                                        headers={"Cache-Control": "no-cache"})
                 return FileResponse(_STATIC_DIR / "index.html", headers={
                     # The only inline script applies the saved theme before first paint.
                     "Content-Security-Policy": (

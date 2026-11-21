@@ -1,5 +1,5 @@
-import { BASE_URL, USE_MOCK, getApiToken, setApiToken } from "@/config/env";
-import { fetchJson } from "@/services/client";
+import { BASE_URL, USE_MOCK, getApiToken } from "@/config/env";
+import { authenticate, fetchJson } from "@/services/client";
 import { toCamelCase } from "@/services/transforms";
 import type { RunSummary, RunView, TaskLog, TaskLogUpdate } from "@/types/run";
 
@@ -77,15 +77,12 @@ export function openRunFeed(flowId: string, handlers: RunFeedHandlers): RunFeed 
       // 1008 is the server refusing the socket: a missing or wrong token.
       if (ev.code === 1008 && !askedForToken) {
         askedForToken = true;
-        const entered = window.prompt(
-          "This flow-atelier server requires an API token (ATELIER_API_TOKEN):",
-          "",
-        );
-        if (entered) {
-          setApiToken(entered);
-          connect();
-          return;
-        }
+        void authenticate().then((ok) => {
+          if (closed) return;
+          if (ok) connect();
+          else handlers.onError("The server requires an API token.");
+        }).catch((err) => { if (!closed) handlers.onError(err.message); });
+        return;
       }
       if (ev.code === 1008) {
         handlers.onError(ev.reason || "The server refused the connection.");

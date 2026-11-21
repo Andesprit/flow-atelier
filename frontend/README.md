@@ -21,6 +21,63 @@ A web UI for building, scheduling, and running conduit workflows — DAG-based p
 
 ## Getting Started
 
+### Install on a phone
+
+The phone needs an HTTPS origin with a trusted certificate. To serve the dashboard
+through Caddy on the same machine:
+
+1. Choose a hostname you control (shown here as `atelier.example.com`). Point its
+   DNS record at Caddy and route TCP ports 80 and 443 to Caddy. Keep the Atelier
+   backend bound to loopback.
+   Always set `ATELIER_API_TOKEN` before exposing the port, because a raw TCP
+   forward such as `ssh -R` or `socat` adds no proxy headers and can expose an
+   unauthenticated server even when it listens only on loopback.
+2. Install Atelier with the optional push extra on the serving machine if you
+   want notifications, for example `uv tool install 'flow-atelier[push]'`. The
+   standalone binary supports the launcher, and push delivery requires the
+   Python installation with this extra. From your project directory, supply a long random token from your password
+   manager and start the server. In Bash:
+
+   ```bash
+   read -rsp 'Atelier API token: ' ATELIER_API_TOKEN
+   export ATELIER_API_TOKEN
+   atelier serve --host 127.0.0.1 --port 8000 --cors-origin https://atelier.example.com
+   ```
+
+3. Install Caddy and save this as `Caddyfile`, substituting your hostname.
+   Run `caddy run --config Caddyfile` with permission to bind the HTTPS ports.
+   Caddy obtains the certificate and sends the upstream Host expected by Atelier.
+   [Caddy reverse proxy setup](https://caddyserver.com/docs/quick-starts/reverse-proxy)
+
+   ```caddyfile
+   atelier.example.com {
+       reverse_proxy 127.0.0.1:8000 {
+           header_up Host 127.0.0.1:8000
+       }
+   }
+   ```
+
+4. Verify that `curl -i https://atelier.example.com/flows` returns **401**.
+   Open the same hostname on the phone, enter the token and choose **Install app**
+   in Chromium or **Add to Home Screen** in Safari. The HTTPS app shares an
+   HttpOnly session cookie between its windows. **Forget token** clears it.
+   A server restart or the end of the browser session requires signing in again.
+
+The launcher lists projects from this machine’s global run history. To use a
+different folder, enter its absolute path and confirm that its own recipes may
+run on this machine. Choose a conduit, fill in its inputs and tap **Launch**.
+Closing the phone app leaves the run going. Stopping Atelier, including quitting
+the serving desktop app, cancels its mobile runs. Use the interactive dashboard
+for live human-input steps. Offline, the app displays a connection message.
+
+Tap **Enable completion notifications** to receive completions from every
+project on the machine, including CLI, scheduled and desktop runs. Keep the server
+running for delivery. The default VAPID contact is the HTTPS origin used to
+subscribe. To set a contact explicitly, add `"vapidSubject": "mailto:ops@example.org"`
+to your user `~/.atelier/settings.json` and restart Atelier. Delivery errors appear
+under the toggle. Tapping a notice opens the run after authentication.
+**Disable completion notifications** removes the device subscription.
+
 ### Prerequisites
 
 - **Node.js** ≥ 18

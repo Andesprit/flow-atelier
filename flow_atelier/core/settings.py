@@ -144,6 +144,9 @@ class AtelierSettings(BaseSettings):
     )
     default_timeout: PositiveInt = 3600
     default_max_concurrency: PositiveInt = 3
+    vapid_subject: str | None = Field(
+        default=None, pattern=r"^(mailto:[^\s@]+@[^\s@]+|https://[^\s/?#]+(?:/[^\s]*)?)$",
+    )
     cleanup_period_days: int = Field(default=30, ge=0)
     dictaria_account: str | None = None
     dictaria_aliases: list[str] = Field(default_factory=list)

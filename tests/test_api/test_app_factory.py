@@ -266,11 +266,74 @@ async def test_token_accepts_valid_bearer(atelier):
         )
     assert resp.status_code == 200
 
+
+@pytest.mark.parametrize("header", ["Forwarded", "X-Forwarded-For", "X-Forwarded-Host"])
+def test_forwarded_requests_require_configured_token(atelier, header):
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    client = TestClient(FastApiServer().create_app(atelier), base_url="http://localhost")
+    refused = client.get("/flows", headers={header: "proxy"})
+    assert refused.status_code == 403
+    assert refused.headers["cache-control"] == "no-store"
+    with pytest.raises(WebSocketDisconnect) as exc, client.websocket_connect(
+        "/ws/run-conduit", headers={header: "proxy"}
+    ):
+        pass
+    assert exc.value.code == 1008
+
+
+def test_browser_session_reaches_http_and_ws_and_can_be_forgotten(atelier):
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    origin = "https://phone.example"
+    client = TestClient(FastApiServer().create_app(
+        atelier, api_token="secret", cors_origins=[origin],
+    ), base_url="https://localhost")
+    assert client.post("/session").status_code == 401
+    client.headers["Origin"] = origin
+    login = client.post("/session", headers={"Authorization": "Bearer secret"})
+    assert login.status_code == 204
+    cookie = login.headers["set-cookie"].lower()
+    assert all(flag in cookie for flag in ("httponly", "samesite=strict", "secure"))
+    assert "secret" not in cookie and "max-age" not in cookie
+    assert login.headers["cache-control"] == "no-store"
+    assert client.get("/flows").status_code == 200
+    assert client.get("/flows", headers={"Origin": "https://other.example"}).status_code == 403
+    with client.websocket_connect("wss://localhost/ws/flows/missing") as ws:
+        assert ws.receive_json()["type"] == "error"
+    with pytest.raises(WebSocketDisconnect), client.websocket_connect(
+        "wss://localhost/ws/run-conduit", headers={"Origin": "https://other.example"}
+    ):
+        pass
+    assert client.delete("/session").status_code == 204
+    logged_out = client.get("/flows")
+    assert logged_out.status_code == 401
+    assert logged_out.headers["cache-control"] == "no-store"
+
+
+def test_unhandled_server_error_is_not_cacheable(atelier):
+    from fastapi.testclient import TestClient
+
+    app = FastApiServer().create_app(atelier)
+    @app.post("/test-failure")
+    def fail():
+        raise RuntimeError("private detail")
+
+    client = TestClient(app, base_url="http://localhost", raise_server_exceptions=False)
+    response = client.post("/test-failure")
+    assert response.status_code == 500
+    assert response.headers.get("cache-control") == "no-store"
+    assert "private detail" not in response.text
+
+
 async def test_dashboard_content_security_policy(atelier):
     transport = httpx.ASGITransport(app=FastApiServer().create_app(atelier))
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
         for route in ("/dashboard", "/runs/example"):
             page = await client.get(route)
+            assert page.headers["cache-control"] == "no-store"
             policy = page.headers["content-security-policy"]
             assert "default-src 'self'" in policy
             assert "connect-src 'self' ws://127.0.0.1:*" in policy

@@ -190,7 +190,8 @@ class FilesystemStore(StoreBase):
         return conduit_dir / "conduit.yaml" if conduit_dir is not None else None
 
     def _journals(
-        self, projects: tuple[Path, ...] = (), pattern: str = "*.jsonl"
+        self, projects: tuple[Path, ...] = (), pattern: str = "*.jsonl",
+        modified_since: float | None = None,
     ) -> Iterator[tuple[RunJournal, dict[str, Any]]]:
         if self.global_dir is None:
             return
@@ -203,6 +204,8 @@ class FilesystemStore(StoreBase):
             for path in folder.glob(pattern):
                 journal = RunJournal(path)
                 try:
+                    if modified_since is not None and path.stat().st_mtime < modified_since:
+                        continue
                     header = journal.header()
                 except FileNotFoundError:
                     continue
@@ -270,12 +273,13 @@ class FilesystemStore(StoreBase):
 
     def flow_projects(
         self, project: Path | None = None, conduit_name: str | None = None,
+        *, modified_since: float | None = None, global_only: bool = False,
     ) -> dict[str, Path]:
         """Scan global headers and this store's pre-migration top-level records."""
         found: dict[str, Path] = {}
         ambiguous = set()
         targets = (Path(os.path.abspath(project)), project.resolve()) if project is not None else ()
-        for journal, header in self._journals(targets):
+        for journal, header in self._journals(targets, modified_since=modified_since):
             if header["parent_flow_id"] or (conduit_name and header["conduit"] != conduit_name):
                 continue
             run = journal.path.stem
@@ -284,9 +288,13 @@ class FilesystemStore(StoreBase):
             found[run] = Path(header["project"])
         legacy = FilesystemStore(self.base_dir)
         origin = self.base_dir.resolve().parent
-        for run in legacy.list_flows(conduit_name):
+        for run in ([] if global_only else legacy.list_flows(conduit_name)):
             directory = origin
             try:
+                if modified_since is not None:
+                    record = self.base_dir / "flows" / run / "progress.json"
+                    if record.stat().st_mtime < modified_since:
+                        continue
                 progress = legacy.read_progress(run)
             except (OSError, ValueError):
                 pass  # Older or damaged records still belong in the listing.

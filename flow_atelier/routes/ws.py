@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -30,7 +29,7 @@ from flow_atelier.schemas.ws import (
     ResumeMessage,
     RunMessage,
 )
-from flow_atelier.services.api.base import get_atelier, origin_allowed
+from flow_atelier.services.api.base import get_atelier, origin_allowed, websocket_authenticated
 from flow_atelier.services.api.ws_hitl import WsHitlExecutor
 from flow_atelier.services.api.ws_manager import WebSocketBroker
 from flow_atelier.services.api.ws_sink import WsPromptSink
@@ -71,10 +70,7 @@ async def run_conduit_ws(websocket: WebSocket) -> None:
     # configured) is checked from the ?token= query parameter instead. The
     # check runs *before* accept() so an unauthenticated peer never completes
     # the upgrade (Starlette turns a pre-accept close into an HTTP 403 denial).
-    expected_token = getattr(websocket.app.state, "api_token", "")
-    if expected_token and not secrets.compare_digest(
-        websocket.query_params.get("token", ""), expected_token
-    ):
+    if not websocket_authenticated(websocket):
         await websocket.close(code=1008, reason="invalid or missing API token")
         return
     if not origin_allowed(websocket):

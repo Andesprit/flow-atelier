@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
 from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
-from flow_atelier.services.api.base import get_atelier, origin_allowed
+from flow_atelier.services.api.base import get_atelier, origin_allowed, websocket_authenticated
 from flow_atelier.services.api.flow_watch import FlowWatcher
 from flow_atelier.services.store.events import RunRecordError
 
@@ -43,10 +42,7 @@ async def watch_flow_ws(websocket: WebSocket, flow_id: str) -> None:
     :param websocket: the incoming Starlette WebSocket connection.
     :param flow_id: flow identifier from the URL path.
     """
-    expected_token = getattr(websocket.app.state, "api_token", "")
-    if expected_token and not secrets.compare_digest(
-        websocket.query_params.get("token", ""), expected_token
-    ):
+    if not websocket_authenticated(websocket):
         await websocket.close(code=1008, reason="invalid or missing API token")
         return
     if not origin_allowed(websocket):

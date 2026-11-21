@@ -7,8 +7,11 @@ from collections.abc import Iterable
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
+from starlette.requests import HTTPConnection
 
 from flow_atelier.core.atelier import Atelier
+
+SESSION_COOKIE = "__Host-atelier-session"
 
 
 class ApiServerBase(ABC):
@@ -53,8 +56,30 @@ def require_token(request: Request) -> None:
     if not token:
         return
     auth = request.headers.get("authorization", "")
-    if not secrets.compare_digest(auth, f"Bearer {token}"):
-        raise HTTPException(status_code=401, detail="invalid or missing API token")
+    if auth:
+        if secrets.compare_digest(auth.encode(), f"Bearer {token}".encode()):
+            return
+    elif valid_session(request):
+        if origin_permitted(request.headers.get("origin"), request.headers.get("host", ""),
+                            request.app.state.cors_origins):
+            return
+        raise HTTPException(403, "Origin not allowed")
+    raise HTTPException(status_code=401, detail="invalid or missing API token")
+
+
+def valid_session(connection: HTTPConnection) -> bool:
+    cookie = connection.cookies.get(SESSION_COOKIE, "")
+    return secrets.compare_digest(cookie.encode(), connection.app.state.session_key)
+
+
+def websocket_authenticated(websocket: WebSocket) -> bool:
+    expected = websocket.app.state.api_token
+    supplied = websocket.query_params.get("token")
+    if not expected:
+        return True
+    if supplied is not None:
+        return secrets.compare_digest(supplied.encode(), expected.encode())
+    return valid_session(websocket)
 
 
 def origin_permitted(origin: str | None, host: str, cors_origins: Iterable[str]) -> bool:

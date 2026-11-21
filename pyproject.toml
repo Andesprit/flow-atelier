@@ -24,11 +24,17 @@ dependencies = [
     "httpx>=0.28,<1",
 ]
 
+[project.optional-dependencies]
+push = ["pywebpush>=2.5.0"]
+
 [project.scripts]
 atelier = "flow_atelier.main:app"
 
 [dependency-groups]
+build = ["pyinstaller>=6.10"]
 dev = [
+    { include-group = "build" },
+    "pywebpush>=2.5.0",
     "httpx>=0.28.1",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -36,7 +42,6 @@ dev = [
     "websockets>=16.0",
     "ruff>=0.6",
     "pre-commit>=3.8",
-    "pyinstaller>=6.10",
     "jsonschema>=4.23",
 ]
 

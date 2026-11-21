@@ -255,6 +255,7 @@ from flow_atelier.cli.commands import (  # noqa: E402, F401
     create,
     diagnose,
     harness,
+    history,
     init,
     logs,
     migrate,

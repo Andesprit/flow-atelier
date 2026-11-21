@@ -265,7 +265,13 @@ class FilesystemStore(StoreBase):
         if not self._safe_flow_id(flow_id):
             raise ValueError(f"unsafe flow id: {flow_id!r}")
         if project is None and (journal := self.journal(flow_id)):
-            project = Path(journal.header()["project"])
+            header = journal.header()
+            if "legacy_workspace_root" in header:
+                root = Path(header["store"]) / "workspaces" / flow_id
+                if root != root.resolve() or header["legacy_workspace_root"] != str(root):
+                    raise ValueError(f"{flow_id}: invalid legacy workspace root")
+                return root
+            project = Path(header["project"])
         base = project / ".atelier" if project is not None else self.base_dir
         return base / "workspaces" / flow_id
 

@@ -91,18 +91,16 @@ def _filename_for_name(name: str) -> str:
 class ScheduleStore:
     """YAML-backed CRUD for :class:`ScheduledJob` records.
 
-    :param atelier_dir: project ``.atelier/`` directory; created if missing
+    :param atelier_dir: store directory, created on first write
     """
 
     def __init__(self, atelier_dir: Path | str) -> None:
         """Initialise the store rooted at ``atelier_dir``.
 
-        :param atelier_dir: project ``.atelier/`` directory; created if missing
+        :param atelier_dir: store directory, created on first write
         """
         self.atelier_dir = Path(atelier_dir)
-        self.atelier_dir.mkdir(parents=True, exist_ok=True)
         self.schedules_dir = self.atelier_dir / "schedules"
-        self.schedules_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.atelier_dir / "scheduler_state.json"
 
     # --------------------------------------------------------------- internals
@@ -124,7 +122,7 @@ class ScheduleStore:
         :param schedule_id: schedule identifier
         :returns: ``(path, job)`` or ``None`` if no file matches
         """
-        for path in self.schedules_dir.glob("*.yaml"):
+        for path in self._job_files():
             job = self._load_file(path)
             if job is not None and job.id == schedule_id:
                 return path, job
@@ -158,17 +156,23 @@ class ScheduleStore:
         """
         if path is None:
             path = self._path_for_name(job.schedule.name)
+            path.parent.mkdir(parents=True, exist_ok=True)
         payload = job.model_dump(mode="json", exclude_none=True)
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
         tmp.write_text(yaml.safe_dump(payload, sort_keys=False))
         _atomic_replace(tmp, path)
 
+    def _job_files(self) -> list[Path]:
+        """Enumerate YAML files, treating only a missing directory as empty."""
+        try:
+            return [p for p in self.schedules_dir.iterdir() if p.match("*.yaml")]
+        except FileNotFoundError:
+            return []
+
     def _iter_jobs(self) -> list[ScheduledJob]:
         """Return every persisted schedule, sorted by ``created_at`` ascending."""
-        if not self.schedules_dir.exists():
-            return []
         jobs: list[ScheduledJob] = []
-        for path in self.schedules_dir.glob("*.yaml"):
+        for path in self._job_files():
             job = self._load_file(path)
             if job is not None:
                 jobs.append(job)
@@ -304,6 +308,7 @@ class ScheduleStore:
 
         :param data: full state payload to persist
         """
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(f".json.tmp.{uuid.uuid4().hex}")
         tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
         _atomic_replace(tmp, self.state_path)

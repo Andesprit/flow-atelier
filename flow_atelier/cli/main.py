@@ -10,7 +10,7 @@ import sys
 
 import click
 import typer
-from typer.core import TyperCommand
+from typer.core import TyperCommand, TyperGroup
 
 from flow_atelier.cli._shared import cli_error
 
@@ -69,6 +69,18 @@ def _usage_error(exc: click.UsageError) -> typer.Exit:
     )
 
 
+class AtelierGroup(TyperGroup):
+    """Report inaccessible paths for leaf commands and group defaults alike."""
+
+    def invoke(self, ctx: click.Context) -> object:
+        try:
+            return super().invoke(ctx)
+        except (PermissionError, NotADirectoryError) as exc:
+            raise cli_error(
+                "filesystem_error", str(exc), json_mode=ctx.meta.get("json_mode", False)
+            ) from exc
+
+
 class AtelierCommand(TyperCommand):
     """Format usage errors on both sides of Click's argument parser."""
 
@@ -87,6 +99,7 @@ class AtelierCommand(TyperCommand):
             raise
 
     def invoke(self, ctx: click.Context) -> object:
+        ctx.meta["json_mode"] = bool(ctx.params.get("json_mode"))
         try:
             return super().invoke(ctx)
         except click.UsageError as exc:
@@ -126,6 +139,7 @@ class AtelierTyper(typer.Typer):
 
 
 app = AtelierTyper(
+    cls=AtelierGroup,
     help=(
         "Workflows and loops, configured in one YAML file. The steps are shell "
         "commands, AI coding agents, and human approvals."
@@ -149,6 +163,7 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def _root(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False,
         "--version",
@@ -156,13 +171,23 @@ def _root(
         is_eager=True,
         help="Show the flow-atelier version and exit.",
     ),
+    require_read_only_stores: bool = typer.Option(
+        False, "--require-read-only-stores", hidden=True,
+        help="Require a CLI whose check and show can inspect missing stores without writing.",
+    ),
 ) -> None:
     """Root callback hosting global options.
 
     :param version: eager flag handled by :func:`_version_callback`.
     """
-    # The update tip would add prose to help output or a JSON error on stderr.
-    if "--help" in sys.argv or "--json" in sys.argv:
+    # Older CLIs reject this option during parsing, before opening any store.
+    if require_read_only_stores and ctx.invoked_subcommand not in {"check", "show"}:
+        raise typer.BadParameter("--require-read-only-stores applies to check and show")
+    # The updater writes a throttle stamp. Run it only for mutating commands.
+    if ctx.invoked_subcommand not in {
+        "add", "ask", "compose", "create", "init", "install", "remove", "rm", "run",
+        "serve", "stop", "uninstall", "update",
+    } or "--help" in sys.argv or "--json" in sys.argv:
         return
 
     from flow_atelier.cli.updater import start_background_update_check

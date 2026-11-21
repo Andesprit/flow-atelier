@@ -42,15 +42,20 @@ def store(tmp_path):
     return s
 
 
-def test_global_conduits_dir_created_lazily(tmp_path):
-    """Verify the global conduits dir is created lazily on store init.
+def test_missing_stores_created_on_first_write(tmp_path):
+    from flow_atelier.schemas.conduit import Conduit
 
-    :param tmp_path: pytest temp directory fixture.
-    """
-    global_dir = tmp_path / "g_atelier"
-    FilesystemStore(tmp_path / ".atelier", global_dir=global_dir)
-    assert (global_dir / "conduits").is_dir()
-    assert not (global_dir / "flows").exists()
+    store = FilesystemStore(tmp_path / "local", global_dir=tmp_path / "global")
+    assert store.list_conduits() == store.list_flows() == []
+    assert list(tmp_path.iterdir()) == []
+
+    conduit = Conduit.model_validate(yaml.safe_load(CONDUIT_YAML))
+    store.write_conduit_global(conduit)
+    assert store.conduit_source("hello") == "global"
+    assert not store.base_dir.exists()
+    store.write_conduit(conduit)
+    assert store.conduit_source("hello") == "project"
+    assert not (store.base_dir / "flows").exists()
 
 
 def test_global_dir_none_is_allowed(tmp_path):

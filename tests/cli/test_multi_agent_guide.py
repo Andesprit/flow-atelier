@@ -28,12 +28,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GUIDE = _REPO_ROOT / "docs" / "multi-agent-workflow.md"
 _FAKE_AGENT = _REPO_ROOT / "tests" / "fixtures" / "fake_acp_agent.py"
 _BASH_BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.MULTILINE | re.DOTALL)
-# prerequisites, workspace, compose, inspect, run, read back, compose the
-# panel, run the panel.
-_EXPECTED_BLOCKS = 8
+_EXPECTED_BLOCKS = 4
 
-CLAUDE_SAID = "CLAUDE_REPLY: move it onto the scheduler."
-CODEX_SAID = "CODEX_REPLY: the retry window is wrong."
+CLAUDE_SAID = "Claim: overlap (incident.txt:1-3). Duration unknown."
+CODEX_SAID = "Memo: overlap supported. Causation unsupported. Measure duration."
 
 
 def _guide_script() -> str:
@@ -44,7 +42,8 @@ def _guide_script() -> str:
 
     :returns: one shell script.
     """
-    blocks = [m.group(1) for m in _BASH_BLOCK.finditer(_GUIDE.read_text(encoding="utf-8"))]
+    text = _GUIDE.read_text(encoding="utf-8").split("## Build a change")[0]
+    blocks = _BASH_BLOCK.findall(text)
     assert len(blocks) == _EXPECTED_BLOCKS, (
         f"expected {_EXPECTED_BLOCKS} bash blocks in {_GUIDE.name}, got {len(blocks)}"
     )
@@ -64,6 +63,9 @@ def _agent_env(record_dir: Path, text: str) -> str:
     """
     record_dir.mkdir(parents=True, exist_ok=True)
     script = {"turns": [{"chunks": [text]}], "record_path": str(record_dir)}
+    script["modes"] = {"current": "read-only", "available": [
+        {"id": "read-only", "name": "Read Only"},
+    ]}
     return json.dumps([sys.executable, str(_FAKE_AGENT), "--script", json.dumps(script)])
 
 
@@ -80,9 +82,14 @@ def guide_env(tmp_path, request):
     bin_dir.mkdir()
     guard = (
         'if [ "$1" = harness ]; then echo "INJECTED agent unreachable" >&2; exit 1; fi\n'
-        if getattr(request, "param", False)
+        if getattr(request, "param", False) is True
         else ""
     )
+    if getattr(request, "param", None) == "panel-failure":
+        guard = (
+            'if [ "$1 $2" = "run panel" ]; then\n'
+            '  export ATELIER_CODEX_LAUNCH_CMD="$BROKEN_LAUNCH"\nfi\n'
+        )
     write_shim(bin_dir, guard)
     marker = tmp_path / "workspace-path"
     records = {name: tmp_path / f"{name}-prompts" for name in ("claude", "codex")}
@@ -92,6 +99,9 @@ def guide_env(tmp_path, request):
     env["ATELIER_NO_UPDATE_CHECK"] = "1"
     env["ATELIER_CLAUDE_LAUNCH_CMD"] = _agent_env(records["claude"], CLAUDE_SAID)
     env["ATELIER_CODEX_LAUNCH_CMD"] = _agent_env(records["codex"], CODEX_SAID)
+    broken = json.loads(env["ATELIER_CODEX_LAUNCH_CMD"])
+    broken[-1] = json.dumps({"fail_session": "temporary outage"})
+    env["BROKEN_LAUNCH"] = json.dumps(broken)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
     env["WORKSPACE_MARKER"] = to_bash_path(marker)
     yield env, marker, records
@@ -121,7 +131,8 @@ def test_readme_points_at_a_guide_that_exists():
     assert _GUIDE.is_file()
 
 
-def test_the_guide_runs_end_to_end_and_claims_only_what_happens(guide_env, tmp_path):
+@pytest.mark.parametrize("guide_env", [False, "panel-failure"], indirect=True)
+def test_the_guide_runs_end_to_end_and_claims_only_what_happens(guide_env, tmp_path, request):
     """Execute the published commands, then verify the saved runs."""
     env, marker, records = guide_env
     run = run_script(
@@ -133,7 +144,7 @@ def test_the_guide_runs_end_to_end_and_claims_only_what_happens(guide_env, tmp_p
     # The guide's stated intermediate observations, as the commands printed them.
     assert '"required_inputs": [\n      "brief"\n    ]' in out
     # Both saved results were read back by flow id, not by `latest`.
-    assert out.count(CLAUDE_SAID) >= 2 and out.count(CODEX_SAID) >= 1
+    assert CLAUDE_SAID in out and CODEX_SAID in out
 
     workspace = Path(marker.read_text().strip())
     assert " " in workspace.name, "the workspace path should contain a space"
@@ -144,6 +155,9 @@ def test_the_guide_runs_end_to_end_and_claims_only_what_happens(guide_env, tmp_p
     assert len(triage) == 1 and len(panel) == 1
     assert store.read_progress(triage[0]).status.value == "completed"
     assert store.read_progress(panel[0]).status.value == "completed"
+    first_attempt = json.loads((workspace / "panel.json").read_text())
+    expected = "failed" if request.node.callspec.params["guide_env"] == "panel-failure" else "completed"
+    assert first_attempt == {"flow_id": panel[0], "status": expected}
 
     # The chain handed work along; the panel's reviewers did not see each other.
     assert store.read_outputs(triage[0]) == {
@@ -159,9 +173,18 @@ def test_the_guide_runs_end_to_end_and_claims_only_what_happens(guide_env, tmp_p
     assert "--- BEGIN RESULT FROM step_1 (harness:claude-code) ---" in chain_review
     assert CLAUDE_SAID in chain_review
     panel_review = next(p for p in codex_prompts if "RESULT FROM" not in p)
-    assert "security risks" in panel_review and CLAUDE_SAID not in panel_review
+    assert "test coverage" in panel_review and CLAUDE_SAID not in panel_review
+    assert "file:line, impact, verification" in panel_review
+    assert "unsupported claims" in chain_review
+    assert any(
+        "incident and policy" in p for p in _prompts(records["claude"])
+    )
+    revision = store.read_input(panel[0])["brief"].split()[-1].rstrip(".")
+    assert re.fullmatch(r"[0-9a-f]{40,64}", revision)
+    assert revision in panel_review
 
     synthesis = [p for p in _prompts(records["claude"]) if "RESULT FROM" in p]
+    assert len(_prompts(records["claude"])) == 3
     assert len(synthesis) == 1
     assert "--- BEGIN RESULT FROM step_1 (harness:claude-code) ---" in synthesis[0]
     assert "--- BEGIN RESULT FROM step_2 (harness:codex) ---" in synthesis[0]
@@ -290,3 +313,25 @@ def test_the_readme_quickstart_stops_when_the_name_is_taken(guide_env, tmp_path)
     assert not marker.exists() and GLOBAL_RAN not in run.stdout
     assert list((workspace / ".atelier").glob("flows/*")) == []
     assert _prompts(records["claude"]) == [] and _prompts(records["codex"]) == []
+
+
+def test_documented_fix_loop_uses_independent_test(guide_env, tmp_path):
+    env, marker, records = guide_env
+    text = _GUIDE.read_text()
+    setup = _BASH_BLOCK.findall(text)[0]
+    build, = _BASH_BLOCK.findall(text.split("## Build a change")[1])
+    fake = json.loads(env["ATELIER_CLAUDE_LAUNCH_CMD"])
+    script = json.loads(fake[-1])
+    script["turns"][0]["write"] = {"path": "duration.txt", "text": "18 minutes\n"}
+    fake[-1] = json.dumps(script)
+    env["ATELIER_CLAUDE_LAUNCH_CMD"] = json.dumps(fake)
+    run = run_script(
+        setup + record_path("work_dir", "WORKSPACE_MARKER") + build,
+        tmp_path / "build.sh", tmp_path, env, 90,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    result = json.loads(run.stdout.splitlines()[-1])
+    store = FilesystemStore(Path(marker.read_text().strip()) / ".atelier")
+    assert result["status"] == "completed"
+    assert "TESTS PASSED" in store.read_outputs(result["flow_id"])["fix_until_green"]
+    assert len(_prompts(records["claude"])) == 4

@@ -53,6 +53,7 @@ check.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Andesprit/flow-atelier/main/install.sh | bash
+export PATH="$HOME/.atelier/bin:$PATH"
 ```
 
 **Windows (PowerShell):**
@@ -64,7 +65,7 @@ irm https://raw.githubusercontent.com/Andesprit/flow-atelier/main/install.ps1 | 
 Prebuilt binaries are published for **Linux x86_64**, **macOS arm64
 (Apple Silicon)**, and **Windows x86_64**. Intel Macs are not supported
 (no Rosetta fallback exists for an arm64 binary). Open a new terminal
-after installing so the updated `PATH` takes effect.
+after installing on Windows so the updated `PATH` takes effect.
 
 ### Install with uv (for Python users)
 
@@ -246,7 +247,7 @@ atelier list flows --conduit hello          # lists previous runs
 
 `atelier init` writes a one-line `hello` conduit that only runs a
 shell command, so this works end-to-end before you install any AI
-tool. When it finds an agent CLI on your `PATH` (`claude`, `codex`,
+tool. Look for `hello world` and a flow ID. When it finds an agent CLI on your `PATH` (`claude`, `codex`,
 `gemini`, `cursor-agent`, `opencode` or `copilot`), it also writes
 `explain` and `pair`. In `explain`, the first available agent in the order
 listed above reads the project and writes a brief for a newcomer. In `pair`,
@@ -260,8 +261,15 @@ prompt and reports `permissions read-only cannot be enforced` with the reason.
 Run `atelier init` again after installing an agent to add any missing starters.
 Existing recipes keep their contents.
 
-Ready for a real one? [Your first workflow: run it, break it, recover
-it](first-workflow.md) is a 5-minute Bash-only exercise that builds a
+For the first agent run, start `atelier serve --no-scheduler` in one
+terminal. In another terminal in the same project, run
+`atelier check pair --probe && atelier run pair`. Follow the printed run-page link.
+
+Give one agent its skills, a goal and one checkable result. Split for clean
+context, parallel work, an independent test or review, or a different permission
+level or agent. [Ask one agent or compose one repeatable task](first-workflow.md).
+
+The [first workflow guide](first-workflow.md#try-failure-and-recovery-with-bash) includes a Bash exercise that builds a
 three-step conduit, fails it on purpose, diagnoses it from saved history, and
 shows what `--resume` keeps that `--again` redoes.
 
@@ -317,13 +325,14 @@ name already taken stops here instead of running something else:
 ```bash
 atelier harness check claude-code || exit 1
 atelier harness check codex || exit 1
-atelier compose triage \
+atelier compose triage --permissions read-only \
   -s "claude-code=Propose one concrete fix. Say what you would change and why." \
   -s "codex=Review the proposal above. Name what breaks, or say it is sound." \
   || exit 1
 atelier check triage || exit 1
-atelier run triage --input brief="The nightly billing job is late." || exit 1
-atelier outputs latest --task step_2 || exit 1
+atelier run triage --input brief="The nightly billing job is late." --json > triage.json || exit 1
+flow_id=$(python3 -c 'import json; print(json.load(open("triage.json"))["flow_id"])') || exit 1
+atelier outputs "$flow_id" --task step_2 || exit 1
 ```
 
 `harness check` opens a session and closes it without sending a prompt, so it
@@ -651,7 +660,11 @@ of matching IDs. An invalid choice can include an `allowed` array.
 For `rm --json`, supply `--yes` to confirm deletion.
 
 A nonzero exit can also accompany a result on stdout. `check --json` returns
-its report even when a conduit fails validation. `wait --json` returns the
+its report even when a conduit fails validation. Read each row's advisory
+`warnings` when present; a serial agent handoff or a loop marker an agent can
+print may warrant a change even when `ok` is true. An allocated `run --json`
+returns `{"flow_id":"…","status":"failed"}` on failure, so the caller can
+diagnose that exact run. `wait --json` returns the
 observed terminal status for failed, stopped and crashed flows. A wait that
 times out exits 124 with a `wait_timeout` error on stderr.
 
@@ -1584,9 +1597,9 @@ flow folder under `.atelier/flows/` in the current working directory.
 atelier init
 atelier create <name> [--description <text>] [--template hello|code-review|fix-loop]
                                                        # scaffold a starter conduit
-atelier compose <name> --step <harness>=<prompt> --step ... [--parallel]
-                       [--synthesize <harness>=<prompt>] [--description <text>]
-                                                       # write a multi-agent conduit: a handoff chain,
+atelier compose <name> --step <harness>=<prompt> [--step ...] [--parallel]
+                       [--synthesize <harness>=<prompt>] [--description <text>] [--permissions <level>]
+                                                       # write one task, a handoff chain,
                                                        # or parallel workers plus one synthesis step
                                                        # see docs/multi-agent-workflow.md
 atelier check [<conduit>] [--json] [--recursive]        # validate conduit(s) without running
@@ -1598,9 +1611,11 @@ atelier schema                                         # print the conduit.yaml 
 # <flow_id> below accepts a unique prefix, or 'latest' for the most recently started flow
 # running
 atelier run <conduit> [--input key=value ...] [--input-file key=path ...]
-                      [--show-steps/--hide-steps]
+                      [--show-steps/--hide-steps] [--json]
                                                        # --input-file loads a UTF-8 text file into one input
 atelier ask <query> --path <directory> [--harness <name>] [--permissions <level>]   # interactive agent session (default: claude-code)
+atelier ask <query> --path <directory> --json [--timeout <seconds>]   # one bounded turn
+atelier ask <flow_id> --json [--answer <text> --request-id <id> | --cancel]
 atelier run --resume <flow_id>                         # resume a failed/crashed flow
 atelier run --again <flow_id>                          # fresh run reusing a past flow's inputs
 atelier stop <flow_id>                                 # gracefully halt a running flow
@@ -1609,7 +1624,8 @@ atelier stop <flow_id>                                 # gracefully halt a runni
 atelier status <flow_id>
 atelier diagnose <flow_id> [--json]                    # post-mortem: what failed, what is kept, what to do next
 atelier wait <flow_id> [--timeout 60]                  # block until it finishes; exit 0 only if it did
-atelier logs <flow_id> [--task <name>] [--follow] [--json]
+atelier logs <flow_id> [--task <name>] [--json]         # saved text or JSON array
+atelier logs <flow_id> --jsonl [--follow]               # one record per line
 atelier outputs <flow_id> [--task <name>] [--json]    # read back a finished flow's results
 atelier timing <flow_id> [--json]                      # wall time, per-task duration and agent startup
 atelier list conduits

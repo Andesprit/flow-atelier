@@ -74,16 +74,24 @@ def test_old_and_new_long_project_names(tmp_path, monkeypatch):
     assert store.journal(run).path == journal.path
 
 
-def test_cached_id_detects_new_duplicate_and_disappearance(tmp_path, monkeypatch):
+def test_journal_detects_duplicates_with_unchanged_folder_mtime(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     store = Atelier().store
     run = store.create_flow("demo", {}, project=tmp_path / "a")
     first = store.journal(run)
     store.create_flow("demo", {}, flow_id=run, project=tmp_path / "b")
+    folder = first.path.parent
+    times = (1_700_000_000, 1_700_000_000)
+    os.utime(folder, times)
     with pytest.raises(AmbiguousFlowId):
         store.journal(run)
     first.path.unlink()
+    os.utime(folder, times)
     assert store.journal(run).header()["project"] == str(tmp_path / "b")
+    store.create_flow("demo", {}, flow_id=run, project=tmp_path / "a")
+    os.utime(folder, times)
+    with pytest.raises(AmbiguousFlowId):
+        store.journal(run)
 
 
 def test_exclusive_create_without_hardlinks(tmp_path, monkeypatch):

@@ -4,6 +4,10 @@ __pycache__/
 *.py[oc]
 build/
 /dist/
+/site/
+/docs/reference/cli.md
+/docs/reference/http-api.md
+/docs/reference/openapi.json
 wheels/
 *.egg-info
 *.spec

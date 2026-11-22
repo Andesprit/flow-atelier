@@ -60,6 +60,21 @@ def test_existing_public_history_gets_private_ancestor(tmp_path):
     assert store.read_input(side.name) == {"private": "input"}
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_migration_preview_leaves_legacy_permissions_untouched(tmp_path):
+    root = tmp_path.resolve()
+    base = root / ".atelier"
+    home = root / "user"
+    store = FilesystemStore(base)
+    run = store.create_flow("demo", {})
+    store.write_progress(run, Progress(status="completed"))
+    history = base / "flows"
+    history.chmod(0o755)
+    assert migrate_tree(FilesystemStore(base), home, run, dry_run=True) == [run]
+    assert stat.S_IMODE(history.stat().st_mode) == 0o755
+    assert not home.exists()
+
+
 def journal(home, project, run, parent, inputs, progress, *events):
     folder = home / "projects" / project_folder(project)
     folder.mkdir(parents=True, exist_ok=True)

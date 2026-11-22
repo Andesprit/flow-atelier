@@ -111,11 +111,10 @@ class FilesystemStore(StoreBase):
         """
         self.base_dir = Path(base_dir)
         self.global_dir: Path | None = Path(global_dir) if global_dir else None
-        # Protect existing records with one private ancestor, without rewriting history.
-        roots = [self.base_dir / "flows"]
+        # Protect existing global records with one private ancestor. Leave legacy
+        # roots alone here so migration can inspect them without applying changes.
         if self.global_dir is not None:
-            roots.append(self.global_dir / "projects")
-        for root in roots:
+            root = self.global_dir / "projects"
             if not root.is_symlink() and root.is_dir():
                 private_dir(root)
         self._conduit_defaults = conduit_defaults or {}

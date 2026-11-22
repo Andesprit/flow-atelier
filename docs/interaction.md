@@ -108,7 +108,7 @@ OS sandbox and cannot intercept operations that the harness executes without
 requesting permission.
 
 A task's `permissions` level (`full`, `edits` or `read-only`, see
-[Security](guide.md#security)) is applied before any policy. A request the
+[Security](configuration/security.md)) is applied before any policy. A request the
 level does not allow is rejected without asking a human or the supervisor.
 With `edits` or `read-only`, Atelier also picks a read-only harness mode when
 one is offered, so the human or the supervisor is still asked about edits.

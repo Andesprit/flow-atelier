@@ -1,5 +1,10 @@
 import { BASE_URL, USE_MOCK, getApiToken, setApiToken } from "@/config/env";
-import { CONDUIT_INPUTS_STORAGE_KEY, DRAFT_CONDUIT_STORAGE_KEY } from "@/constants/dashboard";
+import {
+  CONDUIT_INPUTS_STORAGE_KEY,
+  CONDUIT_RUN_PATHS_STORAGE_KEY,
+  DRAFT_CONDUIT_STORAGE_KEY,
+} from "@/constants/dashboard";
+import { TASKS_KEY } from "@/constants/kanban";
 import { toCamelCase, toSnakeCase } from "./transforms";
 
 let login: Promise<boolean> | undefined;
@@ -37,7 +42,9 @@ export async function forgetToken(): Promise<void> {
   } catch { /* Storage may be disabled. */ }
   try {
     window.localStorage.removeItem(CONDUIT_INPUTS_STORAGE_KEY);
+    window.localStorage.removeItem(CONDUIT_RUN_PATHS_STORAGE_KEY);
     window.localStorage.removeItem(DRAFT_CONDUIT_STORAGE_KEY);
+    window.localStorage.removeItem(TASKS_KEY);
   } catch { /* Storage may be disabled. */ }
   window.location.reload();
 }

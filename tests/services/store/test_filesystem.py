@@ -1,5 +1,7 @@
 """Filesystem store tests."""
 import json
+import os
+import stat
 from unittest import mock
 
 import pytest
@@ -65,6 +67,29 @@ def test_global_dir_none_is_allowed(tmp_path):
     """
     s = FilesystemStore(tmp_path / ".atelier")
     assert s.list_conduits() == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs POSIX file modes")
+@pytest.mark.parametrize(("initial_mode", "owner_mode"), [(0o755, 0o700), (0o555, 0o500)])
+def test_existing_global_history_is_private_without_nofollow_chmod(
+    tmp_path, monkeypatch, initial_mode, owner_mode
+):
+    global_dir = tmp_path / "global"
+    root = global_dir / "projects"
+    root.mkdir(parents=True)
+    root.chmod(initial_mode)
+    chmod = os.chmod
+
+    def chmod_without_nofollow(path, mode, *, follow_symlinks=True):
+        if not follow_symlinks:
+            raise NotImplementedError
+        chmod(path, mode)
+
+    monkeypatch.setattr(os, "chmod", chmod_without_nofollow)
+    store = FilesystemStore(tmp_path / "local", global_dir=global_dir)
+
+    assert stat.S_IMODE(root.stat().st_mode) == owner_mode
+    assert store.list_conduits() == []
 
 
 def test_read_conduit(store):

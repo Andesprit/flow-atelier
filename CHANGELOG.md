@@ -33,9 +33,12 @@
 
 - On Unix, new run history files use owner-only permissions (`0600`), and
   run history directories use `0700`.
-- **Forget token** clears saved conduit inputs and Designer drafts in the
-  browser as well as the saved token. Saved inputs and drafts expire after
-  seven days and are removed when the dashboard reads them.
+- History from 0.14.1 in `<project>/.atelier/flows/` keeps its existing
+  permissions. To protect it, run `atelier migrate runs` or
+  `chmod go-rwx .atelier/flows` from that project.
+- **Forget token** clears the browser's saved token, conduit inputs, run paths,
+  Kanban task history, and Designer drafts. Saved inputs and drafts expire
+  after seven days and are removed when the dashboard reads them.
 - The Vite development server accepts `VITE_API_TOKEN`. Production builds
   ignore it. Sign in at runtime using the server's API token in the browser.
 - The mobile launcher hides **Enable completion notifications** when Web

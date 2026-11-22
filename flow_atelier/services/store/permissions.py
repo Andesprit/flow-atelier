@@ -22,7 +22,22 @@ def private_dir(path: Path) -> None:
     # An existing read-only history directory must stay read-only.
     owner_mode = 0o700 if created else current & 0o700
     if current != owner_mode:
-        path.chmod(owner_mode, follow_symlinks=False)
+        try:
+            path.chmod(owner_mode, follow_symlinks=False)
+        except NotImplementedError:
+            # Older libc versions cannot chmod a path without following symlinks.
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            except PermissionError:
+                # The owner can chmod a directory even without read access.
+                if not stat.S_ISDIR(path.lstat().st_mode):
+                    raise NotADirectoryError(path) from None
+                os.chmod(path, owner_mode)
+            else:
+                try:
+                    os.fchmod(fd, owner_mode)
+                finally:
+                    os.close(fd)
 
 
 def private_opener(path: str, flags: int) -> int:

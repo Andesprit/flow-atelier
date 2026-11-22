@@ -1944,9 +1944,9 @@ Open the dashboard and enter the server's token when the browser prompts you
 to sign in. The Vite development server accepts `VITE_API_TOKEN` for local
 development. Production builds ignore it.
 
-Choose **Forget token** to clear the browser's saved token, conduit inputs
-and Designer drafts. Saved inputs and drafts expire after seven days. The
-dashboard removes expired data when it reads it.
+Choose **Forget token** to clear the browser's saved token, conduit inputs,
+run paths, Kanban task history, and Designer drafts. Saved inputs and drafts
+expire after seven days. The dashboard removes expired data when it reads it.
 
 The mobile launcher at `/launch` offers **Enable completion notifications**
 when the browser and server support Web Push.

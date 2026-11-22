@@ -55,7 +55,10 @@ atelier schedule migrate
 atelier schedule rm <id-or-name>
 atelier schedule run-now <id-or-name>
 atelier schedule history <id-or-name>
-atelier schedule daemon [--reload-interval 30] [--log-level INFO]
+atelier schedule daemon [--reload-interval 30] [--log-level INFO] [--wait-for-lease]
+atelier schedule service install                       # start the scheduler at login
+atelier schedule service status
+atelier schedule service uninstall
 
 # HTTP + WebSocket server
 atelier serve [--host 127.0.0.1] [--port 8000] \

@@ -24,6 +24,50 @@ reports the owner's PID and exits with an error. Another `serve` reports the
 PID and serves its dashboard and API without dispatching jobs. Use
 `atelier serve --no-scheduler` to open a dashboard explicitly in that mode.
 
+## Starting the scheduler at login
+
+Schedules fire only while a scheduler runs. To keep one running after you
+close every terminal, install the scheduler service once:
+
+```bash
+atelier schedule service install
+```
+
+The service starts now and at every login:
+
+- On macOS it is a launchd agent in `~/Library/LaunchAgents`. launchd
+  restarts it after a crash.
+- On Linux it is a systemd user unit in `~/.config/systemd/user`. systemd
+  restarts it after a crash. The unit stops when you log out unless
+  lingering is on (`loginctl enable-linger`).
+- On Windows it is a Task Scheduler task named **Flow Atelier Scheduler**
+  that starts when you log on. It runs in a hidden console, so no window
+  opens for the scheduler or the agents it starts.
+
+The service runs the schedule directory that `atelier list schedules` shows
+when you install it. Run `install` again after you move the Atelier
+installation or change `ATELIER_GLOBAL_ATELIER_DIR`.
+
+On macOS and Linux, login services do not read your shell profile. The
+service saves the `PATH` of the shell where you run `install`, so the agents
+you can run there are found at login. Run `install` again after you add an
+agent in a new directory or change `PATH`. API keys exported in your profile
+are not saved. Use each agent's own login instead. On Windows the task uses
+your Windows user environment variables, including `PATH`.
+
+The service waits while `atelier serve` or another `schedule daemon` holds the
+scheduler lease, and takes over when that process stops. On macOS and Windows
+its output goes to `~/.atelier/scheduler.log`. On Linux use
+`journalctl --user -u atelier-scheduler.service`.
+
+```bash
+atelier schedule service status      # installed, running, process ID, logs
+atelier schedule service uninstall   # stop it and remove it from login
+```
+
+`uninstall` warns when a scheduler still holds the lease afterwards, for
+example a running `atelier serve`.
+
 To register a schedule, write a YAML file like the one below and run
 `atelier schedule add <file>`:
 

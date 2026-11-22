@@ -31,22 +31,6 @@ describe("runtime API token", () => {
     vi.unstubAllEnvs();
   });
 
-  it("uses the injected desktop token for the first API request and WebSocket", async () => {
-    vi.resetModules();
-    vi.stubEnv("VITE_API_TOKEN", "dev-fallback");
-    sessionStorage.setItem("atelier:api-token", "desktop/token");
-    const request = vi.fn().mockResolvedValue(Response.json([]));
-    const socket = vi.fn();
-    vi.stubGlobal("fetch", request);
-    vi.stubGlobal("WebSocket", socket);
-    const { BASE_URL, fetchJson } = await import("@/services/client");
-    const { RunConduitSocket } = await import("@/services/api/run-conduit");
-    await fetchJson(BASE_URL + "/conduits", undefined, { method: "GET" });
-    new RunConduitSocket();
-    expect(request.mock.calls[0][1].headers.Authorization).toBe("Bearer desktop/token");
-    expect(socket).toHaveBeenCalledWith(BASE_URL.replace(/^http/, "ws") + "/ws/run-conduit?token=desktop%2Ftoken");
-  });
-
   it("accepts VITE_API_TOKEN in development", async () => {
     vi.resetModules();
     vi.stubEnv("DEV", true);
@@ -64,7 +48,6 @@ describe("runtime API token", () => {
 
   it("removes saved inputs, run paths, task history and drafts when forgetting a token", async () => {
     setApiToken("session-token");
-    sessionStorage.setItem("atelier:api-token", "desktop-token");
     saveConduitInputs("deploy", { token: "saved-input" });
     saveRunPath("deploy", "/project/worktree");
     saveDraftConduit({ name: "draft", description: "local draft", inputs: {}, tasks: [] });
@@ -85,7 +68,6 @@ describe("runtime API token", () => {
       headers: expect.objectContaining({ Authorization: "Bearer session-token" }),
     }));
     expect(getApiToken()).toBe("");
-    expect(sessionStorage.getItem("atelier:api-token")).toBeNull();
     expect(localStorage.getItem(CONDUIT_INPUTS_STORAGE_KEY)).toBeNull();
     expect(localStorage.getItem(TASKS_KEY)).toBeNull();
     expect(localStorage.getItem(CONDUIT_RUN_PATHS_STORAGE_KEY)).toBeNull();

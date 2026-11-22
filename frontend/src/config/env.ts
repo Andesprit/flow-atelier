@@ -8,14 +8,8 @@ export const USE_MOCK = import.meta.env.VITE_USE_MOCK_API === "true";
 // the frontend in sync with any `atelier serve --port` automatically.
 // VITE_BACKEND_URL overrides this (e.g. a dev server on a separate port).
 export const BASE_URL = import.meta.env.VITE_BACKEND_URL ?? window.location.origin;
-// The bundled SPA gets its token through runtime sign-in or desktop injection.
+// The bundled SPA gets its token through runtime sign-in.
 let bearer = import.meta.env.DEV ? (import.meta.env.VITE_API_TOKEN ?? "") : "";
-if (window.location.protocol === "http:" && BASE_URL === window.location.origin) {
-  // The desktop window injects its sidecar token before the bundled app loads.
-  try {
-    bearer = window.sessionStorage.getItem("atelier:api-token") ?? bearer;
-  } catch { /* Browser storage may be disabled. */ }
-}
 
 export function getApiToken(): string {
   return bearer;

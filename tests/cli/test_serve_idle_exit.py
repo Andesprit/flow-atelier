@@ -75,10 +75,10 @@ def test_serve_waits_for_a_running_flow_then_stops_when_idle(tmp_path) -> None:
     assert "idle for 0.01 minutes, stopping" in out
 
 
-@pytest.mark.skipif(os.name != "posix", reason="macOS desktop stdin pipe and process groups")
-async def test_desktop_parent_death_stops_server_and_active_shell(tmp_path, monkeypatch):
+@pytest.mark.skipif(os.name != "posix", reason="parent stdin pipe and process groups")
+async def test_parent_death_stops_server_and_active_shell(tmp_path, monkeypatch):
     """Kill the pipe owner during an HTTP run and check its independent shell session."""
-    monkeypatch.setenv("ATELIER_API_TOKEN", "desktop-test-token")
+    monkeypatch.setenv("ATELIER_API_TOKEN", "parent-test-token")
     tools = tmp_path / "bin"
     tools.mkdir()
     for name in ("bash", "sleep"):
@@ -94,8 +94,7 @@ async def test_desktop_parent_death_stops_server_and_active_shell(tmp_path, monk
     )
     log = tmp_path / "server.log"
     marker = tmp_path / "shell.pid"
-    bundled = os.environ.get("ATELIER_TEST_DESKTOP_SIDECAR")
-    cli = [bundled] if bundled else [sys.executable, "-u", "-c", CLI]
+    cli = [sys.executable, "-u", "-c", CLI]
     with log.open("w") as output:
         parent = subprocess.Popen(
             [sys.executable, "-c", parent_code, *cli,
@@ -114,10 +113,10 @@ async def test_desktop_parent_death_stops_server_and_active_shell(tmp_path, monk
             with pytest.raises(InvalidStatus):
                 async with connect(ws_url):
                     pass
-            async with connect(ws_url + "?token=desktop-test-token") as ws:
+            async with connect(ws_url + "?token=parent-test-token") as ws:
                 await ws.send("{}")
                 assert '"error"' in await ws.recv()
-            client.headers["Authorization"] = "Bearer desktop-test-token"
+            client.headers["Authorization"] = "Bearer parent-test-token"
             assert (await client.get("/flows")).status_code == 200
             run = asyncio.create_task(client.post("/tasks/run", json={
                 "name": "sleep", "tool": "tool:bash", "run_path": str(tmp_path),

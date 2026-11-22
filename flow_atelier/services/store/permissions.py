@@ -6,13 +6,23 @@ from pathlib import Path
 
 
 def private_dir(path: Path) -> None:
-    path.mkdir(mode=0o700, exist_ok=True)
-    if os.name == "posix":
-        mode = path.stat(follow_symlinks=False).st_mode
-        if not stat.S_ISDIR(mode):
-            raise NotADirectoryError(path)
-        if stat.S_IMODE(mode) != 0o700:
-            path.chmod(0o700, follow_symlinks=False)
+    if os.name != "posix":
+        path.mkdir(exist_ok=True)
+        return
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        created = False
+    else:
+        created = True
+    mode = path.stat(follow_symlinks=False).st_mode
+    if not stat.S_ISDIR(mode):
+        raise NotADirectoryError(path)
+    current = stat.S_IMODE(mode)
+    # An existing read-only history directory must stay read-only.
+    owner_mode = 0o700 if created else current & 0o700
+    if current != owner_mode:
+        path.chmod(owner_mode, follow_symlinks=False)
 
 
 def private_opener(path: str, flags: int) -> int:

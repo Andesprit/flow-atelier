@@ -49,15 +49,19 @@ async def test_run_history_created_with_owner_only_permissions(tmp_path, storage
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
-def test_existing_public_history_gets_private_ancestor(tmp_path):
+@pytest.mark.parametrize("mode", [0o755, 0o555])
+def test_existing_public_history_gets_private_ancestor(tmp_path, mode):
     project = tmp_path.resolve()
     home = project / "user"
     side = journal(home, project, "20260101_deadbeef_demo", None, {"private": "input"}, Progress())
     root = home / "projects"
-    root.chmod(0o755)
-    store = FilesystemStore(project / ".atelier", global_dir=home)
-    assert root.stat().st_mode & 0o777 == 0o700
-    assert store.read_input(side.name) == {"private": "input"}
+    root.chmod(mode)
+    try:
+        store = FilesystemStore(project / ".atelier", global_dir=home)
+        assert root.stat().st_mode & 0o777 == mode & 0o700
+        assert store.read_input(side.name) == {"private": "input"}
+    finally:
+        root.chmod(0o700)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")

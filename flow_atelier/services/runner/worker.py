@@ -40,8 +40,8 @@ class Worker:
             print(f"Cannot save last error: {type(store_error).__name__}", file=sys.stderr,
                   flush=True)
 
-    def _cleanup(self, after: int) -> None:
-        cutoff = time.time() - self.cleanup_days * DAY_SECONDS
+    def _cleanup(self, after: int, days: int) -> None:
+        cutoff = time.time() - days * DAY_SECONDS
         with self.local.db() as db:
             db.execute("DELETE FROM records WHERE sequence<=? AND created<=?", (after, cutoff))
         runs = self.local.root / "runs"
@@ -147,9 +147,9 @@ class Worker:
             finished, self.active = self.active, None
             finished.result()
         reply = await asyncio.to_thread(self.local.poll, self.client, claim=self.active is None)
-        if time.monotonic() >= self.next_cleanup:
+        if self.cleanup_days is not None and time.monotonic() >= self.next_cleanup:
             try:
-                await asyncio.to_thread(self._cleanup, reply.after)
+                await asyncio.to_thread(self._cleanup, reply.after, self.cleanup_days)
             except (OSError, sqlite3.Error) as error:
                 self.next_cleanup = time.monotonic() + DAY_SECONDS
                 self._record_error("Runner cleanup", error)

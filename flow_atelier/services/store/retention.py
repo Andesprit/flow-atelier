@@ -87,8 +87,10 @@ def cleanup_lock(root: Path) -> AbstractContextManager[bool]:
     return file_lock(lease, wait=False)
 
 
-def cleanup_runs(home: Path, days: int) -> None:
+def cleanup_runs(home: Path, days: int | None) -> None:
     """Keep a whole tree until every member has finished outside the retention window."""
+    if days is None:
+        return
     if days < 0:
         raise ValueError("cleanup period must be non-negative")
     now = _now()
@@ -159,7 +161,11 @@ def cleanup_runs(home: Path, days: int) -> None:
 
 
 @asynccontextmanager
-async def daily_cleanup(home: Path, days: int) -> AsyncIterator[None]:
+async def daily_cleanup(home: Path, days: int | None) -> AsyncIterator[None]:
+    if days is None:
+        yield
+        return
+
     async def sweep() -> None:
         try:
             await asyncio.to_thread(cleanup_runs, home, days)

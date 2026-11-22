@@ -15,6 +15,24 @@ from flow_atelier.services.store import retention
 from flow_atelier.services.store.filesystem import FilesystemStore
 
 
+@pytest.mark.parametrize("configured", [False, True], ids=["missing", "null"])
+async def test_unset_retention_keeps_old_history(tmp_path, monkeypatch, configured):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ATELIER_CLEANUP_PERIOD_DAYS", raising=False)
+    home = AtelierSettings().global_atelier_dir
+    if configured:
+        (home / "settings.json").write_text('{"cleanupPeriodDays":null}')
+    atlas = Atelier()
+    fid = atlas.store.create_flow("old", {}, project=tmp_path)
+    atlas.store.write_progress(
+        fid, Progress(status="completed", finished_at="2000-01-01T00:00:00Z")
+    )
+    api = FastApiServer().create_app(atlas)
+    retention.cleanup_runs(home, atlas.settings.cleanup_period_days)
+    async with api.router.lifespan_context(api):
+        assert atlas.store.list_project_flows() == [fid]
+
+
 @pytest.mark.parametrize("service", ["server", "scheduler"])
 async def test_retention_at_startup_and_again_next_day(tmp_path, monkeypatch, service):
     monkeypatch.chdir(tmp_path)

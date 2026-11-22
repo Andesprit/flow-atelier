@@ -13,17 +13,19 @@
   run trees to the global store. Migration keeps run IDs and worktrees and
   archives the original records under `.atelier/migrated-runs/`.
 - Automatic cleanup is off by default. Set `cleanupPeriodDays` in
-  `~/.atelier/settings.json` or `ATELIER_CLEANUP_PERIOD_DAYS` in the shell
-  environment. A positive value keeps eligible run trees for that many days.
+  `~/.atelier/settings.json`. `ATELIER_CLEANUP_PERIOD_DAYS` in the process
+  environment overrides that setting. With a positive value, each run in an
+  eligible tree must be at least that many days old before the tree expires.
   Use `0` to expire all eligible run history at the next sweep. To disable
   cleanup, leave the environment variable unset and omit the JSON setting or
   set it to `null`.
 - Run `atelier init` again to add read-only permissions to `pair` and
   `explain` files that exactly match the stock 0.14.1 starters, with either
-  LF or CRLF line endings. Atelier preserves the agents and layout and
-  reports the upgrade. If an edited starter has writable agent tasks,
-  Atelier keeps it unchanged and asks you to add or set
-  `permissions: read-only` on every agent task.
+  LF or CRLF line endings. Atelier preserves the agents and layout and prints
+  `upgraded .atelier/conduits/<name>/conduit.yaml to read-only`. If an edited
+  starter has writable agent tasks, Atelier keeps the file and prints
+  `warning .atelier/conduits/<name>/conduit.yaml has writable agent tasks.`
+  Add or set `permissions: read-only` on every agent task in that file.
 - The desktop app is outside the scope of 0.15.0. The release includes the
   Python package and standalone CLI builds.
 

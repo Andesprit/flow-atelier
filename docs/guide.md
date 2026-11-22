@@ -279,7 +279,7 @@ preserves the agents, layout and line endings (LF or CRLF) and prints
 `upgraded .atelier/conduits/<name>/conduit.yaml to read-only`. If an edited
 starter has writable agent tasks, Atelier keeps the file and prints
 `warning .atelier/conduits/<name>/conduit.yaml has writable agent tasks.`
-Add or set `permissions: read-only` on every agent task in that file.
+It follows with `Add or set 'permissions: read-only' on every agent task in this file.`
 
 For the first agent run, start `atelier serve --no-scheduler` in one
 terminal. In another terminal in the same project, run
@@ -1993,9 +1993,10 @@ to these keys. Launch commands, `ATELIER_HARNESSES`, `ATELIER_ATELIER_DIR`, `ATE
 Atelier names each rejected file setting on stderr and omits its value.
 
 Automatic cleanup is off by default. To enable it, set `cleanupPeriodDays` in
-`~/.atelier/settings.json` (for example, `{"cleanupPeriodDays": 30}`) or set
-`ATELIER_CLEANUP_PERIOD_DAYS` in the shell environment. The server and
-scheduler then sweep global run history at startup and every 24 hours.
+`~/.atelier/settings.json` (for example, `{"cleanupPeriodDays": 30}`).
+`ATELIER_CLEANUP_PERIOD_DAYS` in the process environment overrides that setting.
+The scheduler sweeps global run history at startup and every 24 hours. A server
+running without its own scheduler performs the sweep on the same interval.
 To disable cleanup, leave the environment variable unset and omit
 `cleanupPeriodDays` or set it to `null` in user settings.
 

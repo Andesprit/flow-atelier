@@ -1,4 +1,5 @@
 import { BASE_URL, USE_MOCK, getApiToken, setApiToken } from "@/config/env";
+import { CONDUIT_INPUTS_STORAGE_KEY, DRAFT_CONDUIT_STORAGE_KEY } from "@/constants/dashboard";
 import { toCamelCase, toSnakeCase } from "./transforms";
 
 let login: Promise<boolean> | undefined;
@@ -34,6 +35,10 @@ export async function forgetToken(): Promise<void> {
   try {
     window.sessionStorage.removeItem("atelier:api-token");
   } catch { /* Storage may be disabled. */ }
+  try {
+    window.localStorage.removeItem(CONDUIT_INPUTS_STORAGE_KEY);
+    window.localStorage.removeItem(DRAFT_CONDUIT_STORAGE_KEY);
+  } catch { /* Storage may be disabled. */ }
   window.location.reload();
 }
 
@@ -64,6 +69,12 @@ function readableError(text: string): string {
     // Not JSON: the text is already what the server said.
   }
   return text;
+}
+
+export class ApiError extends Error {
+  constructor(readonly status: number, detail: string) {
+    super(`API error ${status}: ${detail}`);
+  }
 }
 
 export async function fetchJson<TResponse>(
@@ -120,7 +131,7 @@ export async function fetchJson<TResponse>(
   }
   if (!res.ok) {
     const errorText = await res.text();
-    throw new Error(`API error ${res.status}: ${readableError(errorText)}`);
+    throw new ApiError(res.status, readableError(errorText));
   }
   // A successful call may have no body (e.g. a 204 DELETE). Parsing an empty
   // string as JSON throws, so a successful delete would surface as an error.

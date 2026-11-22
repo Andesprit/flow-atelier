@@ -1,19 +1,35 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { BASE_URL, fetchJson } from "@/services/client";
+import { ApiError, BASE_URL, fetchJson } from "@/services/client";
+
+async function fetchPushKey(): Promise<string | null> {
+  try {
+    const { key } = await fetchJson<{ key: string }>(`${BASE_URL}/push/key`, undefined, { method: "GET" });
+    return key;
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 503) return null;
+    throw e;
+  }
+}
 
 export function PushToggle() {
   const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
   const [device, setDevice] = useState<PushSubscription | null>(null);
+  const [pushKey, setPushKey] = useState<string | null>();
   const [busy, setBusy] = useState(supported);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
     if (!supported) return;
-    navigator.serviceWorker.getRegistration().then((reg) => reg?.pushManager.getSubscription())
-      .then((subscription) => setDevice(subscription ?? null))
-      .catch(() => setMessage("Could not read this device’s notification settings."))
-      .finally(() => setBusy(false));
+    let active = true;
+    const subscription = navigator.serviceWorker.getRegistration().then((reg) => reg?.pushManager.getSubscription())
+      .then((current) => { if (active) setDevice(current ?? null); })
+      .catch(() => { if (active) setMessage("Could not read this device’s notification settings."); });
+    const key = fetchPushKey()
+      .then((current) => { if (active) setPushKey(current); })
+      .catch(() => { /* Retry the key request if the user enables notifications. */ });
+    void Promise.all([subscription, key]).then(() => { if (active) setBusy(false); });
+    return () => { active = false; };
   }, [supported]);
 
   useEffect(() => {
@@ -49,7 +65,9 @@ export function PushToggle() {
         setMessage("Notifications are off. If blocked in your browser settings, enable them there.");
         return;
       }
-      const { key } = await fetchJson<{ key: string }>(`${BASE_URL}/push/key`, undefined, { method: "GET" });
+      const key = pushKey ?? await fetchPushKey();
+      setPushKey(key);
+      if (key === null) return;
       await navigator.serviceWorker.register("/sw.js");
       const registration = await navigator.serviceWorker.ready;
       const subscription = await registration.pushManager.subscribe({
@@ -69,6 +87,8 @@ export function PushToggle() {
       setBusy(false);
     }
   }
+
+  if (supported && !device && pushKey === null) return null;
 
   return (
     <section className="grid gap-2 border-t border-border pt-4">

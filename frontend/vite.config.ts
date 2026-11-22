@@ -5,15 +5,13 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
-export default defineConfig(({ command }) => {
+const publicEnvPrefixes = ["VITE_BACKEND_URL", "VITE_USE_MOCK_API"];
+
+export default defineConfig(({ command, mode }) => {
   // Mirror the env resolution in src/config/env.ts. A build warns loudly when it
   // would ship mock data or pin the backend to localhost, since either silently
   // breaks a real deployment.
-  const env = loadEnv(
-    command === "build" ? "production" : "development",
-    process.cwd(),
-    "VITE_",
-  );
+  const env = loadEnv(mode, process.cwd(), publicEnvPrefixes);
   const useMock = (env.VITE_USE_MOCK_API ?? "false") === "true";
   // An unset VITE_BACKEND_URL means same-origin (the SPA is served by the
   // backend), which is correct for a deployed build — so only warn when an
@@ -38,6 +36,8 @@ export default defineConfig(({ command }) => {
   }
 
   return {
+    // Only expose the public settings in bundles, regardless of the build mode.
+    envPrefix: command === "build" ? publicEnvPrefixes : "VITE_",
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {

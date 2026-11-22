@@ -38,8 +38,8 @@ fi
 echo "Latest release: ${TAG}"
 
 # --- Extract download URLs ---
-ASSET_URL="$(echo "$RELEASE_JSON" | grep "\"browser_download_url\"" | grep "${ASSET}" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
-SUMS_URL="$(echo "$RELEASE_JSON" | grep "\"browser_download_url\"" | grep "SHA256SUMS" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+ASSET_URL="$(echo "$RELEASE_JSON" | grep '"browser_download_url"' | grep -F "/${ASSET}\"" | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+SUMS_URL="$(echo "$RELEASE_JSON" | grep '"browser_download_url"' | grep -F '/SHA256SUMS"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
 
 if [ -z "$ASSET_URL" ] || [ -z "$SUMS_URL" ]; then
     echo "ERROR: could not find download URLs for ${ASSET}." >&2

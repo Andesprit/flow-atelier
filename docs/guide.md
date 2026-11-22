@@ -31,8 +31,9 @@ You write a conduit YAML file and put it in
   ran, what each task printed, whether it succeeded, when it
    finished.
 
-Every AI harness uses that tool's **own login** that lives on your
-machine. flow-atelier never sees, stores, or proxies any credentials.
+AI harnesses use their own logins. Dashboard chat can copy an existing login
+into a private temporary adapter profile. See [AI harnesses](#optional-ai-harnesses)
+for the credential handling details.
 
 ## Install
 
@@ -85,10 +86,24 @@ Either way, you end up with an `atelier` command on your `PATH`.
 You only need the AI tools you actually plan to use. If you never use AI
 in your conduits, you can skip this entire section.
 
-**flow-atelier does not install agents and does not manage their logins.**
-You install the agent you want and log into it with its own CLI; then you
-point flow-atelier at its command, either by name or by argv. There is no
-bundled installer, no download manager, and no credential handling here.
+Install the agent and sign in with its own CLI, then point Atelier at its
+command by name or argv.
+
+For sandboxed dashboard chat, Atelier copies an existing Codex `auth.json`
+from `$CODEX_HOME` (default `~/.codex`) to `.codex/auth.json` in the chat
+session's private temporary directory before starting the adapter. Claude chat
+passes `CLAUDE_CODE_OAUTH_TOKEN` to the adapter when set. On Linux, if that
+token is unset, Atelier copies an existing `.credentials.json` from
+`$CLAUDE_CONFIG_DIR` (default `~/.claude`) to `.claude/.credentials.json` in
+the same temporary directory.
+
+After the adapter exits, Atelier writes a changed copy back only if the
+temporary login is a regular file with one hard link and no symlink, its
+contents parse as a JSON object, and the original login still resolves to
+the same path and contains the bytes Atelier first read. Atelier removes the
+temporary directory when the chat session closes. The Dictaria integration
+reads the configured account's token from the OS keychain and uses it as a
+bearer token for Dictaria requests.
 
 What flow-atelier does do is run the command you selected, exactly as that
 agent documents it. For agents distributed through `npx` or `uvx`, the
@@ -258,7 +273,13 @@ Every task in both starters declares `permissions: read-only`. By default,
 if a harness cannot enforce that level, the task stops before sending the
 prompt and reports `permissions read-only cannot be enforced` with the reason.
 Run `atelier init` again after installing an agent to add any missing starters.
-Existing recipes keep their contents.
+When upgrading from 0.14.1, `atelier init` adds read-only permissions to
+`explain` and `pair` if they match the stock 0.14.1 files exactly. It
+preserves the agents, layout and line endings (LF or CRLF) and prints
+`upgraded .atelier/conduits/<name>/conduit.yaml to read-only`. If an edited
+starter has writable agent tasks, Atelier keeps the file and prints
+`warning .atelier/conduits/<name>/conduit.yaml has writable agent tasks.`
+Add or set `permissions: read-only` on every agent task in that file.
 
 For the first agent run, start `atelier serve --no-scheduler` in one
 terminal. In another terminal in the same project, run
@@ -1588,6 +1609,8 @@ then the global folder. A project-level conduit silently overrides a
 global one with the same name.
 
 Each new run gets an event file under `~/.atelier/projects/<project>/`.
+On Unix, Atelier creates run history files with mode `0600` and directories
+with mode `0700`.
 Open the dashboard from any project to see global history. Choose a target
 directory in the project filter, or use `atelier list flows --project .`.
 The API accepts the same filter at `GET /flows?project=<directory>`.
@@ -1595,8 +1618,9 @@ Older records remain readable from the original project’s `.atelier/flows/` di
 From that project, run `atelier migrate runs --dry-run` to verify its run trees,
 then `atelier migrate runs` to publish the verified journals. Migration archives
 each verified source under `.atelier/migrated-runs/` and preserves its worktrees.
-Migrated runs retain their last heartbeat and finish time. The next cleanup can
-expire an already-old finished tree. Its source archive stays in the project.
+Migrated runs retain their last heartbeat and finish time. If you enable
+automatic cleanup, the next sweep can expire an already-old finished tree.
+Its source archive stays in the project.
 
 ### Dashboard chat
 
@@ -1861,8 +1885,9 @@ it starts.
 
 ## Agent logins and provider terms
 
-Flow Atelier starts each agent's own CLI, and that CLI uses the login it
-already has. Flow Atelier does not store or proxy your keys or tokens.
+Flow Atelier starts each agent's own CLI with its existing login. See
+[AI harnesses](#optional-ai-harnesses) for how sandboxed dashboard chat copies
+and can refresh login files.
 
 Each provider has its own terms for automated or unattended use, and for use
 through third-party tools. Some consumer subscriptions restrict this. Check
@@ -1914,9 +1939,17 @@ users share the machine, or when a program you do not trust runs there.
 
 **Anywhere else.** Before binding to a non-loopback address, set
 `ATELIER_API_TOKEN`. Every REST request then needs
-`Authorization: Bearer <token>` and WebSocket connections need `?token=<token>`;
-build the UI with a matching `VITE_API_TOKEN` so it can reach the authenticated
-API.
+`Authorization: Bearer <token>` and WebSocket connections need `?token=<token>`.
+Open the dashboard and enter the server's token when the browser prompts you
+to sign in. The Vite development server accepts `VITE_API_TOKEN` for local
+development. Production builds ignore it.
+
+Choose **Forget token** to clear the browser's saved token, conduit inputs
+and Designer drafts. Saved inputs and drafts expire after seven days. The
+dashboard removes expired data when it reads it.
+
+The mobile launcher at `/launch` offers **Enable completion notifications**
+when the browser and server support Web Push.
 
 `atelier serve` **refuses to start** on a non-loopback host when
 `ATELIER_API_TOKEN` is unset. This used to be a warning that scrolled past in
@@ -1950,7 +1983,7 @@ Both JSON files also accept the equivalent snake_case names.
 
 See [Receive signed application errors](error-webhooks.md) to set up the separate error receiver and HTTPS relay.
 
-Use user settings for `cleanupPeriodDays` (default 30), `webhookSources`
+Use user settings for `cleanupPeriodDays`, `webhookSources`
 (source ID to configuration), `webhookSecrets` (source ID to secret),
 `errorPrProjects`, `deploymentTargets`, `meetingRepositories`, `draftCiDisabledRepositories`,
 `notificationRecipient`, `notificationProvider`, `dictariaAccount`, `dictariaUrl`, `dictariaAliases` and
@@ -1959,13 +1992,20 @@ to these keys. Launch commands, `ATELIER_HARNESSES`, `ATELIER_ATELIER_DIR`, `ATE
 `ATELIER_API_TOKEN` and `ATELIER_SERVE_URL` require the shell environment.
 Atelier names each rejected file setting on stderr and omits its value.
 
-The server and scheduler clean global run history on startup and every 24 hours.
-A run tree becomes eligible when every member has finished or crashed and all
-are at least `cleanupPeriodDays` old. Finished runs use their finish time.
-Crashed runs use their last heartbeat, falling back to the start time. A value
-of `0` makes a finished or crashed tree eligible at the next sweep. Negative values are rejected.
-Cleanup removes journal records, tool steps and saved outputs. Active writers,
-pending questions, unmigrated project records and project worktrees are kept.
+Automatic cleanup is off by default. To enable it, set `cleanupPeriodDays` in
+`~/.atelier/settings.json` (for example, `{"cleanupPeriodDays": 30}`) or set
+`ATELIER_CLEANUP_PERIOD_DAYS` in the shell environment. The server and
+scheduler then sweep global run history at startup and every 24 hours.
+To disable cleanup, leave the environment variable unset and omit
+`cleanupPeriodDays` or set it to `null` in user settings.
+
+A run tree becomes eligible when every member has finished or crashed and
+all are at least that many days old. Finished runs use their finish time.
+Crashed runs use their last heartbeat, falling back to the start time. A
+value of `0` expires all eligible run history at the next sweep.
+Negative values are rejected. Cleanup removes journal records, tool steps and
+saved outputs. Active writers, pending questions, unmigrated project records
+and project worktrees are kept.
 
 **Agent and shell steps.** Each agent and each shell step runs in its own
 process group on Linux and macOS. When a step is stopped or times out, Atelier

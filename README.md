@@ -33,8 +33,12 @@ and its code-review skill installed, ask for a result you can check.
 atelier ask "Use your code-review skill on the last commit. Give one regression with file, line and a way to reproduce it, or say no finding." --path . --harness codex --permissions read-only
 ```
 
-If `init` found an installed agent CLI, it also created `pair` for proposals
-with independent review. In one terminal, open the dashboard for this project.
+If `init` found Claude Code or Codex, it also created the read-only `pair`
+starter for proposals with review. When upgrading from 0.14.1, run
+`atelier init` again to update stock `pair` and `explain` starters. If Atelier
+warns that an edited starter has writable agent tasks, add or set
+`permissions: read-only` on every agent task in that file before running it.
+In one terminal, open the dashboard for this project.
 
 ```bash
 atelier serve --no-scheduler
@@ -67,7 +71,8 @@ Agents run with full permissions by default. The read-only examples request a
 restricted mode explicitly. See [security and agent permissions](https://github.com/Andesprit/flow-atelier/blob/main/docs/guide.md#security)
 and the [command reference](https://github.com/Andesprit/flow-atelier/blob/main/docs/guide.md#commands).
 
-See the [platform roadmap](docs/roadmap.md) for planned features and how each will be tested.
+See the [roadmap](https://github.com/Andesprit/flow-atelier/blob/main/docs/roadmap.md)
+for the current state of the project.
 
 ## Contributing and license
 

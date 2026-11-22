@@ -5,17 +5,19 @@ the invoking user's home directory: ``curl`` is replaced by a stub on ``PATH``
 that serves a synthetic release from disk, and ``HOME`` points at a tmp dir.
 Nothing here downloads software or writes to the caller's shell config.
 
-Covers the two fixes that shipped with this branch:
+Covers:
 
 - shell detection keys off the login shell (``$SHELL``), not the interpreter,
   so ``curl … | bash`` on macOS no longer writes to a ``~/.bashrc`` that zsh
   never reads;
 - SHA-256 verification falls back across ``sha256sum`` / ``shasum`` /
-  ``openssl`` rather than being skipped on the platform missing one.
+  ``openssl`` rather than being skipped on the platform missing one;
+- release assets are selected by basename even when similar names are present.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -59,10 +61,22 @@ done
 url="${args[0]:-}"
 case "$url" in
     *releases/latest) cat "$FIXTURE_DIR/release.json" ;;
-    *SHA256SUMS)      cp "$FIXTURE_DIR/SHA256SUMS" "$out" ;;
-    *)                cp "$FIXTURE_DIR/binary" "$out" ;;
+    */SHA256SUMS)     cp "$FIXTURE_DIR/SHA256SUMS" "$out" ;;
+    */SHA256SUMS-desktop|*-debug) cp "$FIXTURE_DIR/other-asset" "$out" ;;
+    *)               cp "$FIXTURE_DIR/binary" "$out" ;;
 esac
 """
+
+
+def _write_release(fixture: Path, assets: tuple[str, ...]) -> None:
+    release = {
+        "tag_name": "v9.9.9",
+        "assets": [
+            {"name": name, "browser_download_url": f"https://example.invalid/{name}"}
+            for name in assets
+        ],
+    }
+    (fixture / "release.json").write_text(json.dumps(release, indent=2))
 
 
 @pytest.fixture
@@ -78,16 +92,7 @@ def sandbox(tmp_path):
     (fixture / "SHA256SUMS").write_text(
         "".join(f"{DIGEST}  {name}\n" for name in ASSETS)
     )
-    # One URL per line, as GitHub's pretty-printed JSON has it: the script
-    # extracts with `grep | sed`, and a greedy sed on a single line would take
-    # the last URL on it regardless of which asset was asked for.
-    urls = "\n".join(
-        f'    "browser_download_url": "https://example.invalid/{n}",'
-        for n in (*ASSETS, "SHA256SUMS")
-    )
-    (fixture / "release.json").write_text(
-        '{\n  "tag_name": "v9.9.9",\n  "assets": [\n' + urls + "\n  ]\n}\n"
-    )
+    _write_release(fixture, (*ASSETS, "SHA256SUMS"))
 
     stub_dir = tmp_path / "stub"
     stub_dir.mkdir()
@@ -230,6 +235,23 @@ def test_checksum_mismatch_aborts_before_install(sandbox) -> None:
     assert result.returncode != 0
     assert "SHA-256 mismatch" in result.stderr
     assert not (home / ".atelier" / "bin" / "atelier").exists()
+
+
+@pytest.mark.parametrize(
+    "manifests",
+    [("SHA256SUMS", "SHA256SUMS-desktop"), ("SHA256SUMS-desktop", "SHA256SUMS")],
+    ids=["cli-first", "desktop-first"],
+)
+def test_selects_exact_release_assets(sandbox, manifests) -> None:
+    home, env = sandbox
+    fixture = Path(env["FIXTURE_DIR"])
+    (fixture / "other-asset").write_text(f"{DIGEST}  Flow-Atelier.dmg\n")
+    _write_release(fixture, (*(f"{name}-debug" for name in ASSETS), *ASSETS, *manifests))
+
+    result = _run(env, SHELL="/bin/zsh")
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert (home / ".atelier" / "bin" / "atelier").read_bytes() == BINARY
 
 
 @pytest.mark.parametrize("available", ["sha256sum", "shasum", "openssl"])

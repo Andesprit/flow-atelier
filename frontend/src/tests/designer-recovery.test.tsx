@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { DRAFT_CONDUIT_STORAGE_KEY } from "@/constants/dashboard";
+import { loadDraftConduit, saveDraftConduit } from "@/services/storage/draft-conduit";
 import type { Conduit, CreateConduitRequest } from "@/types/conduit";
 import { toast } from "sonner";
 
@@ -148,6 +149,27 @@ function previewYaml() {
 }
 
 describe("Designer recovery", () => {
+  it("discards an expired draft when reopening the designer", async () => {
+    vi.setSystemTime(0);
+    saveDraftConduit(saved);
+    vi.setSystemTime(8 * 24 * 60 * 60 * 1000);
+
+    await mountDesigner();
+
+    expect(screen.queryByTestId("task-node")).toBeNull();
+    expect(localStorage.getItem(DRAFT_CONDUIT_STORAGE_KEY)).toBeNull();
+  });
+
+  it("recovers a legacy draft and expires it seven days after its first read", () => {
+    vi.setSystemTime(0);
+    localStorage.setItem(DRAFT_CONDUIT_STORAGE_KEY, JSON.stringify(saved));
+    expect(loadDraftConduit()).toEqual(saved);
+
+    vi.setSystemTime(8 * 24 * 60 * 60 * 1000);
+    expect(loadDraftConduit()).toBeNull();
+    expect(localStorage.getItem(DRAFT_CONDUIT_STORAGE_KEY)).toBeNull();
+  });
+
   it("undoes an edit immediately and keeps the draft in step", async () => {
     await mountDesigner();
     openSaved();

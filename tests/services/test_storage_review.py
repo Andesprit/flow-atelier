@@ -103,6 +103,8 @@ def test_exclusive_create_without_hardlinks(tmp_path, monkeypatch):
 
     monkeypatch.setattr(events.os, "link", unsupported)
     run = store.create_flow("demo", {"one": 1}, project=tmp_path)
+    if os.name == "posix":
+        assert store.journal(run).path.stat().st_mode & 0o777 == 0o600
     with pytest.raises(FileExistsError):
         store.create_flow("demo", {}, flow_id=run, project=tmp_path)
     assert store.read_input(run) == {"one": 1}

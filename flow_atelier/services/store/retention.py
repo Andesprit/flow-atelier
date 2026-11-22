@@ -15,6 +15,7 @@ from flow_atelier.modules.liveness import is_crashed
 from flow_atelier.schemas.progress import FlowStatus, Progress
 from flow_atelier.services.store.claims import expire_claim
 from flow_atelier.services.store.events import RunJournal, RunRecordError, file_lock
+from flow_atelier.services.store.permissions import private_dir
 
 logger = logging.getLogger(__name__)
 DAY_SECONDS = 24 * 60 * 60
@@ -59,7 +60,7 @@ def _expire_tree(tree: list[RunJournal], now: datetime, days: int) -> None:
         for journal in tree:
             if journal.side.is_symlink():
                 raise RunRecordError(f"linked run directory: {journal.side}")
-            journal.side.mkdir(exist_ok=True)
+            private_dir(journal.side)
             for name in (".writer.lock", ".ask.lock", ".notify.lock"):
                 path = journal.side / name
                 if path.is_symlink() or (path.exists() and not path.is_file()):

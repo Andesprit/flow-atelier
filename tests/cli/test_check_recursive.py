@@ -28,9 +28,9 @@ from flow_atelier.services.store.filesystem import FilesystemStore
 from tests._shell import record_path, run_script, write_shim
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_GUIDE = _REPO_ROOT / "docs" / "guide.md"
-_SECTION = "### Checking a workflow that calls other workflows"
-_BINDINGS = "#### The call's arguments, not only the child's name"
+_GUIDE = _REPO_ROOT / "docs" / "guides" / "validation.md"
+_SECTION = "## Checking a workflow that calls other workflows"
+_BINDINGS = "### The call's arguments, not only the child's name"
 _BASH_BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 # One scan over every fence, so a closing ``` can never be read as an opening
 # one: `finditer` resumes after the block it just consumed.
@@ -1020,7 +1020,7 @@ def _binding_docs() -> tuple[dict[str, str], list[str]]:
     :returns: ``({conduit name: yaml}, [diagnostic, ...])`` exactly as published.
     """
     body = _GUIDE.read_text(encoding="utf-8").split(_BINDINGS, 1)[1]
-    body = body.split("\n### ", 1)[0]
+    body = body.split("\n## ", 1)[0]
     blocks = [(m.group(1), m.group(2)) for m in _FENCE.finditer(body)]
     docs = [text for kind, text in blocks if kind == "yaml"]
     says = [text.strip() for kind, text in blocks if kind == ""]

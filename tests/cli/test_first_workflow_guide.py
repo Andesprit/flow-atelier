@@ -83,10 +83,10 @@ def _log_shape(store: FilesystemStore, flow_id: str) -> list[tuple[str, bool]]:
     return [(e.task, e.exit_code == 0) for e in store.read_logs(flow_id)]
 
 
-def test_readme_points_at_a_guide_that_exists():
+def test_quickstart_points_at_a_guide_that_exists():
     """The discovery link beside the quickstart resolves to this file."""
-    guide = (_REPO_ROOT / "docs" / "guide.md").read_text(encoding="utf-8")
-    assert "(first-workflow.md)" in guide
+    quickstart = _REPO_ROOT / "docs" / "getting-started" / "quickstart.md"
+    assert "(../first-workflow.md)" in quickstart.read_text(encoding="utf-8")
     assert _GUIDE.is_file()
 
 

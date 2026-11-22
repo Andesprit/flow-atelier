@@ -1,5 +1,37 @@
 # Recovering a failed workflow
 
+`atelier diagnose <flow_id>` reads a finished or broken run back from what it
+saved, and keeps evidence apart from advice:
+
+```bash
+atelier diagnose latest            # what failed, what is kept, what to do next
+atelier diagnose <flow_id> --json  # the same report as one object, for a script
+```
+
+It names the task that actually failed, with a bounded tail of its own output,
+and lists a cancelled downstream task apart from it rather than as a second
+failure — while never calling that cancellation work that never ran, because a
+task can be cancelled mid-flight with its changes already on disk. It shows the work that completed, the agent that produced it —
+attributed from the log entry that proves what ran, from the run's saved choice,
+or called `unknown`, never guessed from the current recipe — and whether its
+result is still saved. Every suggested command carries the run's full id and is
+printed for you to run: diagnose starts no agent and writes nothing.
+
+A runner saves a heartbeat every 15 seconds while it owns the run, including
+while a tool is silent or waiting for a person. A dead local PID or a heartbeat
+at least two minutes old shows as *crashed*. After a machine wakes, its next beat
+restores *running*. A saved agent question shows as *needs input* between turns.
+Resume requires the writer lock. Older records without heartbeats still use the
+local PID check. A stopped run is pointed at `atelier run --again`
+instead, and a completed one is told there is nothing to recover. Resume re-reads the conduit file as it stands
+now, so the report names any task that file has gained or lost since the run
+rather than promising the old shape will run again.
+
+The [walkthrough](#walkthrough) covers the whole path: break a run, read it back, repair it, and finish it without paying
+for the completed agent work twice.
+
+## Walkthrough
+
 A run across several agents fails on its third task. Twenty minutes of agent
 work is already saved, the terminal that printed the error is gone, and the
 question is not "what broke" but "what do I still have, and what will it cost
@@ -14,7 +46,7 @@ agent work twice.
 You should have done [Orchestrating several agents in one
 workflow](multi-agent-workflow.md) first.
 
-## Before you start
+### Before you start
 
 One agent you are logged into. The guide uses `claude-code`; any name from
 `atelier list harnesses` works if you change it in both places below.
@@ -27,7 +59,7 @@ The blocks below are Bash — macOS, Linux, WSL or Git Bash. They quote every
 path and gate every line, so you can paste them into a script without adding
 error handling of your own.
 
-## 1. A workflow with something to lose
+### 1. A workflow with something to lose
 
 ```bash
 work_dir="$(mktemp -d)/incident work" || exit 1
@@ -64,7 +96,7 @@ YAML
 `analyse` costs a real agent turn. `verify` fails until a file exists.
 `conclude` needs both, so it never starts.
 
-## 2. Break it
+### 2. Break it
 
 ```bash
 atelier run triage
@@ -76,7 +108,7 @@ command, `atelier diagnose <flow-id>`. Both `run` and `wait` print the exact
 ID so you can inspect the same run even if another one starts. This exercise
 uses `latest` because its workspace contains just one run.
 
-## 3. Ask what you have
+### 3. Ask what you have
 
 ```bash
 atelier diagnose latest || exit 1
@@ -111,7 +143,7 @@ a person:
 atelier diagnose latest --json | head -30 || exit 1
 ```
 
-### Observing a flow from a script
+#### Observing a flow from a script
 
 `atelier wait <flow-id> --json` writes one terminal result to stdout, for
 example `{"flow_id":"20260101_aaaaaaaa_triage","status":"failed"}`. The exit
@@ -129,7 +161,7 @@ An ambiguous prefix reports `ambiguous_flow_id` and the full list of
 `allowed` values or numeric bound. A timeout exits 124 with `wait_timeout`.
 Interrupting the wait exits 130 with `interrupted`. Both leave the runner active.
 
-## 4. Repair, then finish
+### 4. Repair, then finish
 
 The report named the missing file. Create it, then run the resume line it
 printed:
@@ -149,7 +181,7 @@ atelier diagnose latest || exit 1
 
 The second report now says *completed*, with nothing to recover.
 
-## Loops that finish without meeting their condition
+### Loops that finish without meeting their condition
 
 By default, reaching `repeat` without meeting `until` or `while` completes
 the task when its last try exited 0. Dependents can then run on its last
@@ -172,7 +204,7 @@ recovery command is `atelier run --resume <parent-flow-id>`; use
 agent for the unfinished work. The child's raw traceback remains available in
 `atelier logs <child-flow-id> --show all`.
 
-## What diagnose will not tell you
+### What diagnose will not tell you
 
 - **Which tasks a resume will run.** It reports what completed and what did
   not, separately. Resume re-reads the conduit file as it stands *now*, so if

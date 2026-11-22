@@ -26,6 +26,7 @@ from tests._shell import record_path, run_script, write_shim
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GUIDE = _REPO_ROOT / "docs" / "multi-agent-workflow.md"
+_QUICKSTART = _REPO_ROOT / "docs" / "getting-started" / "quickstart.md"
 _FAKE_AGENT = _REPO_ROOT / "tests" / "fixtures" / "fake_acp_agent.py"
 _BASH_BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 _EXPECTED_BLOCKS = 4
@@ -124,10 +125,9 @@ def _prompts(record_dir: Path) -> list[str]:
     ]
 
 
-def test_readme_points_at_a_guide_that_exists():
+def test_quickstart_points_at_a_guide_that_exists():
     """The discovery link beside the compose quickstart resolves to this file."""
-    reference = (_REPO_ROOT / "docs" / "guide.md").read_text(encoding="utf-8")
-    assert "(multi-agent-workflow.md)" in reference
+    assert "(../multi-agent-workflow.md)" in _QUICKSTART.read_text(encoding="utf-8")
     assert _GUIDE.is_file()
 
 
@@ -210,8 +210,7 @@ def test_a_failed_prerequisite_stops_before_anything_runs(guide_env, tmp_path):
 
 # ------------------------------------- the reference guide quickstart, as a real shell
 
-_REFERENCE = _REPO_ROOT / "docs" / "guide.md"
-_REFERENCE_SECTION = "### Your first multi-agent workflow: chain or panel"
+_QUICKSTART_SECTION = "## Your first multi-agent workflow: chain or panel"
 GLOBAL_RAN = "GLOBAL_RECIPE_RAN"
 
 
@@ -220,8 +219,8 @@ def _readme_script() -> str:
 
     :returns: one shell script, with no error handling the reference guide omits.
     """
-    body = _REFERENCE.read_text(encoding="utf-8").split(_REFERENCE_SECTION, 1)[1]
-    body = body.split("\n### ", 1)[0]
+    body = _QUICKSTART.read_text(encoding="utf-8").split(_QUICKSTART_SECTION, 1)[1]
+    body = body.split("\n## ", 1)[0]
     blocks = [m.group(1) for m in _BASH_BLOCK.finditer(body)]
     assert len(blocks) == 1, f"expected 1 bash block in the section, got {len(blocks)}"
     assert "atelier compose triage" in blocks[0]

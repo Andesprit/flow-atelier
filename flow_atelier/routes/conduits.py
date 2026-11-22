@@ -123,7 +123,7 @@ async def update_conduit(
     return ConduitDTO.from_conduit(conduit, _default_run_path(atelier))
 
 
-@router.delete("/{name}")
+@router.delete("/{name}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_conduit(name: str, atelier: Atelier = Depends(get_atelier)) -> Response:
     """Delete a conduit by name, returning 204 on success or 404 if missing.
 

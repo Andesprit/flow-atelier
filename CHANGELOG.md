@@ -4,6 +4,7 @@
 
 ### Upgrading
 
+<!-- --8<-- [start:upgrade-0-15-0] -->
 - New run history is stored in `~/.atelier/projects/<project>/<flow_id>.jsonl`.
   Existing runs stay in the original project's `.atelier/flows/` directory
   and remain readable from that project. Use `atelier list flows` there to
@@ -28,7 +29,9 @@
   Add or set `permissions: read-only` on every agent task in that file.
 - The desktop app is outside the scope of 0.15.0. The release includes the
   Python package and standalone CLI builds.
+<!-- --8<-- [end:upgrade-0-15-0] -->
 
+<!-- --8<-- [start:privacy-0-15-0] -->
 ### Privacy and credentials
 
 - On Unix, new run history files use owner-only permissions (`0600`), and
@@ -48,5 +51,6 @@
   adapter exits, Atelier writes back a refreshed copy only if the original
   login is still current. Claude chat can use an environment token or an
   existing login file, and the Dictaria integration reads its bearer token
-  from the OS keychain. See [agent credentials](docs/guide.md#optional-ai-harnesses)
+  from the OS keychain. See [agent credentials](https://flow-atelier.andesprit.com/docs/configuration/agent-logins/#optional-ai-harnesses)
   for the exact copy and write-back behavior.
+<!-- --8<-- [end:privacy-0-15-0] -->

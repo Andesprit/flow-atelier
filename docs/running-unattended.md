@@ -4,7 +4,7 @@ A conduit that runs overnight with no one at the keyboard needs three
 things a laptop provides for free: a logged-in Claude Code and Codex, a
 checkout to work in, and somewhere to keep the run's history. This guide
 sets up all three as a Cloud Run job. The image and entry point it uses are
-in [`examples/cloud-run/`](examples/cloud-run/).
+in [`examples/cloud-run/`](https://github.com/Andesprit/flow-atelier/tree/main/docs/examples/cloud-run).
 
 ## How the pieces fit
 
@@ -20,7 +20,7 @@ In this setup, the entry point prepares the logins and each agent reads
 its own login from the environment or its configured home directory.
 Before you run agents on a schedule, check each provider's terms for
 unattended use: see
-[Agent logins and provider terms](guide.md#agent-logins-and-provider-terms).
+[Agent logins and provider terms](configuration/agent-logins.md).
 
 ## 1. Create the logins
 
@@ -110,7 +110,7 @@ agent said and exits non-zero.
 
 A subscription limit reached mid-run does not fail the job. The task waits
 for the reset and tries the same turn again; see
-[When an agent runs out of usage](guide.md#when-an-agent-runs-out-of-usage).
+[When an agent runs out of usage](reference/conduit-yaml.md#when-an-agent-runs-out-of-usage).
 Set the job's `--task-timeout` long enough to cover a wait, or the
 container is stopped while the run is waiting.
 

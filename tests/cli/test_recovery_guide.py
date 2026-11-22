@@ -21,7 +21,6 @@ from tests._shell import bash, host_path, run_script, write_shim
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GUIDE = _REPO_ROOT / "docs" / "recovering-a-failed-workflow.md"
-_REFERENCE = _REPO_ROOT / "docs" / "guide.md"
 _FAKE_AGENT = _REPO_ROOT / "tests" / "fixtures" / "fake_acp_agent.py"
 _BASH_BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 # version, workspace + conduit, the failing run, diagnose, diagnose --json,
@@ -31,11 +30,13 @@ AGENT_SAID = "CLAUDE_REPLY: a retry storm without jitter."
 
 
 def _blocks() -> list[str]:
-    """Return the guide's bash blocks, in document order.
+    """Return the walkthrough's bash blocks, in document order.
 
     :returns: one entry per published block.
     """
-    found = [m.group(1) for m in _BASH_BLOCK.finditer(_GUIDE.read_text(encoding="utf-8"))]
+    text = _GUIDE.read_text(encoding="utf-8")
+    walkthrough = text.split("\n## Walkthrough\n", 1)[1].split("\n## ", 1)[0]
+    found = [m.group(1) for m in _BASH_BLOCK.finditer(walkthrough)]
     assert len(found) == _EXPECTED_BLOCKS, (
         f"expected {_EXPECTED_BLOCKS} bash blocks in {_GUIDE.name}, got {len(found)}"
     )
@@ -194,8 +195,10 @@ def test_the_report_is_read_before_the_repair(guide):
     assert len(guide.prompts()) == 1
 
 
-def test_the_readme_points_at_the_guide():
-    """The reference guide documents the command and links the walkthrough."""
-    reference = _REFERENCE.read_text(encoding="utf-8")
-    assert "atelier diagnose" in reference
-    assert "(recovering-a-failed-workflow.md)" in reference
+def test_the_docs_list_the_command_and_link_the_guide():
+    """The command overview lists diagnose and the quickstart links the walkthrough."""
+    docs = _REPO_ROOT / "docs"
+    overview = docs / "reference" / "command-overview.md"
+    quickstart = docs / "getting-started" / "quickstart.md"
+    assert "atelier diagnose" in overview.read_text(encoding="utf-8")
+    assert "(../recovering-a-failed-workflow.md)" in quickstart.read_text(encoding="utf-8")

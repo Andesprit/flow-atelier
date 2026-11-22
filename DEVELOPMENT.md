@@ -2,7 +2,7 @@
 
 This document covers how to set up a development environment, run the
 tests, and find your way around the codebase. For what flow-atelier is
-and how to use it, see [README.md](./README.md).
+and how to use it, see the [documentation home](https://flow-atelier.andesprit.com/docs/).
 
 ## Prerequisites
 
@@ -17,7 +17,7 @@ Unit tests do not require any harness installed.
 ## Setup
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/Andesprit/flow-atelier.git
 cd flow-atelier
 uv sync                       # create .venv and install runtime + dev deps
 uv run pre-commit install     # wire the pre-commit (lint) hook

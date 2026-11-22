@@ -5,7 +5,8 @@ changes and the legal terms under which contributions are accepted.
 
 ## License of contributions
 
-flow-atelier is open source under the [Apache License, Version 2.0](LICENSE).
+flow-atelier is open source under the
+[Apache License, Version 2.0](https://github.com/Andesprit/flow-atelier/blob/main/LICENSE).
 The Project is also developed as an open-core product: some editions or
 companion services may be offered under commercial terms. To keep both models
 possible, contributions are accepted under a Contributor License Agreement.
@@ -13,7 +14,8 @@ possible, contributions are accepted under a Contributor License Agreement.
 ## Contributor License Agreement (CLA)
 
 Before your contribution can be merged, you must sign the
-[Contributor License Agreement](CLA.md). The CLA confirms you have the right to
+[Contributor License Agreement](https://github.com/Andesprit/flow-atelier/blob/main/CLA.md).
+The CLA confirms you have the right to
 submit your work and grants the Owner the rights needed to distribute it as open
 source and, where applicable, under commercial terms. You keep the copyright to
 your contributions.
@@ -50,4 +52,4 @@ Open an issue on GitHub. For bugs, include the flow-atelier version, your OS,
 the conduit or command you ran, and the full output.
 
 Do not open a public issue for a security problem. See
-[SECURITY.md](SECURITY.md) to report it privately.
+[SECURITY.md](https://github.com/Andesprit/flow-atelier/blob/main/SECURITY.md) to report it privately.

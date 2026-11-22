@@ -223,7 +223,7 @@ def test_recursive_checking_names_the_unknown_field_in_a_child(workdir):
 
 # --- the published example ---------------------------------------------------
 
-_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "guide.md"
+_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "guides" / "validation.md"
 
 
 def _readme_typo_demo() -> str:

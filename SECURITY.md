@@ -36,8 +36,8 @@ is what it is for. So these are not vulnerabilities:
   files;
 - an agent does what its prompt and its own settings allow, settings and hooks
   that a checked-out project ships (such as its `.claude/settings.json`)
-  included: a `permissions` level does not stop them (see the guide's
-  [Security section](docs/guide.md#security));
+  included: a `permissions` level does not stop them (see
+  [Agent permissions](https://flow-atelier.andesprit.com/docs/configuration/security/#agent-permissions));
 - someone who can already run `atelier` on your machine, or who has your
   `ATELIER_API_TOKEN`, uses it.
 
@@ -51,5 +51,5 @@ These are, and we want to hear about them:
 - the installer or `atelier self-update` installs a binary whose checksum does
   not match the release.
 
-The [Security section of the guide](docs/guide.md#security) explains how the
-API is protected.
+The [Server access](https://flow-atelier.andesprit.com/docs/configuration/security/#server-access)
+section explains how the API is protected.

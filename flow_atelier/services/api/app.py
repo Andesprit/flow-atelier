@@ -30,6 +30,7 @@ from flow_atelier.services.api.base import (
     origin_permitted,
     require_token,
 )
+from flow_atelier.services.api.run_inputs import RunInputs
 from flow_atelier.services.store.events import AmbiguousFlowId, RunRecordError
 from flow_atelier.services.store.retention import daily_cleanup
 from flow_atelier.services.web_push import WebPush
@@ -229,6 +230,7 @@ class FastApiServer(ApiServerBase):
         allowed_hosts = list(allowed_hosts or LOOPBACK_HOSTS)
         app.state.local_history = set(allowed_hosts).issubset(LOOPBACK_HOSTS)
         app.state.chats = {}
+        app.state.run_inputs = RunInputs()
         app.state.atelier = atelier
         app.state.api_token = api_token or ""
         app.state.session_key = secrets.token_hex(32).encode()

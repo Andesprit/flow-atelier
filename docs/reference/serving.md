@@ -66,4 +66,26 @@ as that agent's own CLI under your existing login for it, so an
 interactive conversation over the WebSocket needs no LLM API key —
 exactly as on the terminal.
 
+## Runs the server owns
+
+`POST /mobile/runs` starts a run that belongs to the server instead of a
+socket, so it keeps going when the page that started it closes. It still
+stops when `atelier serve` stops. A launch with `"interactive": true` tells
+the server the client can answer people's input: each `tool:hitl` step and
+each question from an interactive agent then waits for an answer, and
+`GET /flows` lists the run as `needs_input` while it waits. Without the flag,
+a conduit with a `tool:hitl` step is refused as before.
+
+| Method | Path | Notes |
+| ------ | ---- | ----- |
+| `GET`  | `/mobile/inputs?flow_id=<id>` | What runs are waiting for, oldest first; `flow_id` is optional |
+| `POST` | `/mobile/runs/:flow_id/inputs/:request_id` | Answer one request: `{"answers": {...}}` for a form, `{"answer": "..."}` for a question |
+
+Each request has a `kind` of `form` (a `tool:hitl` step, with its `fields`)
+or `question` (an agent's question, in `prompt`). `flow_id` is the run as
+`GET /flows` lists it; `sub_flow_id` names a nested conduit's run when that
+is where the question came from. An answer to a request that is no longer
+waiting returns 404, and a form answer without every field returns 422.
+Waiting requests live in the server's memory, so they end with their run.
+
 See the [HTTP API reference](http-api.md) for the endpoint definitions and [Dashboard and run pages](../guides/dashboard.md) for the live run view.

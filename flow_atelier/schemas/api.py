@@ -495,3 +495,41 @@ class PriorFlow(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
     status: str
+
+
+class InputField(BaseModel):
+    """One value a ``tool:hitl`` step asks a person for."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str = ""
+
+
+class InputRequest(BaseModel):
+    """A server-owned run waiting for a person: a form or an agent's question.
+
+    ``flow_id`` is the run as ``GET /flows`` lists it. When a nested conduit
+    asked, ``sub_flow_id`` names that sub-run.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    flow_id: str
+    sub_flow_id: str | None = None
+    task: str
+    kind: Literal["form", "question"]
+    prompt: str
+    fields: list[InputField] = Field(default_factory=list)
+    asked_at: str
+
+
+class InputAnswer(BaseModel):
+    """Body for answering an :class:`InputRequest`: ``answers`` for a form,
+    ``answer`` for a question."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str | None = None
+    answers: dict[str, Any] | None = None

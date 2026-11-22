@@ -98,7 +98,7 @@ atelier list schedules --json
 
 Schedules live in the shared `~/.atelier/schedules/` store. Use one scheduler for that store and
 `atelier serve --no-scheduler` for a dashboard that only watches.
-[Schedule file and registration](guide.md#running-on-a-schedule)
+[Schedule file and registration](guides/schedules.md)
 
 ## Try failure and recovery with Bash
 

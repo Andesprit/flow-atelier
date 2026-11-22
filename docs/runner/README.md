@@ -48,7 +48,7 @@ URL, filesystem path, command, environment, recipe, or credential override comes
 | result | Result | Ack | Record owner-only job state. Repeat of the same final result is idempotent. |
 | records | Records | Ack | Commit a contiguous batch for this runner. Deduplicate on runner ID and sequence. |
 
-See the [JSON Schema](v1/messages.schema.json) and [example messages](v1/samples.json).
+See the [JSON Schema](v1/messages.schema.json){ download } and [example messages](v1/samples.json){ download }.
 Validate each HTTP body against its named definition, for example
 `messages.schema.json#/$defs/Poll`. The sample file groups bodies by type.
 A server authenticates every request. Derive the tenant and runner from the bearer, never a payload.
@@ -108,7 +108,7 @@ On each poll the runner sends up to 100 rows after the server's contiguous curso
 checks the owner and folder of each job, rejects gaps, and commits the batch atomically. Retries of
 previously committed sequence numbers do not create additional records. A tenant view reads
 these rows in sequence order. It displays `online` and the last heartbeat from the runner's most
-recent authenticated poll. See the [test reference peer](../../tests/runner/plane.py).
+recent authenticated poll. See the [test reference peer](https://github.com/Andesprit/flow-atelier/blob/main/tests/runner/plane.py).
 
 If you set `cleanupPeriodDays`, the runner applies it at startup on its first successful poll
 and daily thereafter. It removes expired verified conduit copies while idle and expires buffered

@@ -5,11 +5,13 @@
 Run a shell command, hand a job to a coding agent, or save a repeatable workflow
 in YAML. Each run keeps its inputs, task results and logs on your machine.
 
+[Documentation](https://flow-atelier.andesprit.com/docs/)
+
 ## First run
 
 In your project directory on macOS (Apple Silicon) or Linux (x86_64), install
 Atelier and add it to the current shell. Windows and Python installs are in the
-[install guide](https://github.com/Andesprit/flow-atelier/blob/main/docs/guide.md#install).
+[install guide](https://flow-atelier.andesprit.com/docs/getting-started/install/).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Andesprit/flow-atelier/main/install.sh | bash
@@ -59,23 +61,23 @@ or review, or a different permission level or agent.
 
 | What you need | Where to start |
 | --- | --- |
-| One answer now, or the same check every week | [Ask one read-only agent or save a one-step conduit](https://github.com/Andesprit/flow-atelier/blob/main/docs/first-workflow.md) |
-| A code change with a reproducible test | [Plan and build in one task, run a shell test, then review the diff](https://github.com/Andesprit/flow-atelier/blob/main/docs/loop-agents-graph.md) |
-| A decision backed by evidence | [Have a second reader check each claim against its source](https://github.com/Andesprit/flow-atelier/blob/main/docs/multi-agent-workflow.md) |
-| Independent reviews of one commit | [Run a read-only panel and combine its findings](https://github.com/Andesprit/flow-atelier/blob/main/docs/multi-agent-workflow.md#review-one-commit-in-parallel) |
-| Two competing implementations | [Run the same fixture in each writer’s checkout](https://github.com/Andesprit/flow-atelier/blob/main/docs/parallel-agents-in-separate-checkouts.md) |
+| One answer now, or the same check every week | [Ask one read-only agent or save a one-step conduit](https://flow-atelier.andesprit.com/docs/first-workflow/) |
+| A code change with a reproducible test | [Plan and build in one task, run a shell test, then review the diff](https://flow-atelier.andesprit.com/docs/loop-agents-graph/) |
+| A decision backed by evidence | [Have a second reader check each claim against its source](https://flow-atelier.andesprit.com/docs/multi-agent-workflow/) |
+| Independent reviews of one commit | [Run a read-only panel and combine its findings](https://flow-atelier.andesprit.com/docs/multi-agent-workflow/#review-one-commit-in-parallel) |
+| Two competing implementations | [Run the same fixture in each writer’s checkout](https://flow-atelier.andesprit.com/docs/parallel-agents-in-separate-checkouts/) |
 
 ![Dashboard](https://raw.githubusercontent.com/Andesprit/flow-atelier/main/docs/img/dashboard.jpg)
 
 Agents run with full permissions by default. The read-only examples request a
-restricted mode explicitly. See [security and agent permissions](https://github.com/Andesprit/flow-atelier/blob/main/docs/guide.md#security)
-and the [command reference](https://github.com/Andesprit/flow-atelier/blob/main/docs/guide.md#commands).
+restricted mode explicitly. See [security and agent permissions](https://flow-atelier.andesprit.com/docs/configuration/security/)
+and the [command reference](https://flow-atelier.andesprit.com/docs/reference/cli/).
 
-See the [roadmap](https://github.com/Andesprit/flow-atelier/blob/main/docs/roadmap.md)
+See the [roadmap](https://flow-atelier.andesprit.com/docs/roadmap/)
 for the current state of the project.
 
 ## Contributing and license
 
-To contribute, see [CONTRIBUTING.md](https://github.com/Andesprit/flow-atelier/blob/main/CONTRIBUTING.md) and
-[DEVELOPMENT.md](https://github.com/Andesprit/flow-atelier/blob/main/DEVELOPMENT.md). To report a security problem in private,
+To contribute, see [Contributing](https://flow-atelier.andesprit.com/docs/contributing/) and
+[Development](https://flow-atelier.andesprit.com/docs/contributing/development/). To report a security problem in private,
 see [SECURITY.md](https://github.com/Andesprit/flow-atelier/blob/main/SECURITY.md). Licensed under [Apache 2.0](https://github.com/Andesprit/flow-atelier/blob/main/LICENSE).

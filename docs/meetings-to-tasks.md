@@ -57,7 +57,7 @@ meeting with its original task IDs.
 Use a Linux or macOS runner with the supported Codex OS sandbox, an authenticated
 GitHub CLI, and the fixed-recipient WhatsApp sender. The repository path in
 `meetingRepositories` must match the checkout's resolved path and its GitHub
-origin. Set up notifications in user settings. [WhatsApp sender setup](guide.md#send-a-whatsapp-run-summary)
+origin. Set up notifications in user settings. [WhatsApp sender setup](guides/whatsapp.md)
 
 Workers start as assignments arrive. The default machine-wide limit is two.
 Each task gets a separate scratch branch containing the files tracked on local

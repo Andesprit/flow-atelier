@@ -1,0 +1,153 @@
+[project]
+site_name = "Flow Atelier"
+site_description = "Run repeatable workflows with shell commands, coding agents, and human approvals."
+site_url = "https://flow-atelier.andesprit.com/docs/"
+repo_url = "https://github.com/Andesprit/flow-atelier"
+repo_name = "Andesprit/flow-atelier"
+edit_uri = "edit/main/docs/"
+docs_dir = "docs"
+site_dir = "site"
+dev_addr = "127.0.0.1:8101"
+strict = true
+
+# GitHub renders this contents page. The site serves redirects at its old URL.
+exclude_docs = "guide.md"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Getting started" = [
+    { "Install" = "getting-started/install.md" },
+    { "Quickstart" = "getting-started/quickstart.md" },
+    { "How a conduit runs" = "getting-started/how-a-conduit-runs.md" },
+    { "Your first workflow" = "first-workflow.md" },
+  ] },
+  { "Guides" = [
+    { "Authoring conduits" = "guides/authoring.md" },
+    { "Validating conduits" = "guides/validation.md" },
+    { "Interaction policies" = "interaction.md" },
+    { "Multi-agent workflows" = [
+      { "A fix loop with agent reviews" = "loop-agents-graph.md" },
+      { "Check the team before a run" = "checking-the-team-before-a-run.md" },
+      { "Reuse a workflow with other agents" = "reusing-a-workflow-with-other-agents.md" },
+      { "Parallel agents in separate checkouts" = "parallel-agents-in-separate-checkouts.md" },
+      { "When to add a second agent" = "multi-agent-workflow.md" },
+    ] },
+    { "Recover a failed workflow" = "recovering-a-failed-workflow.md" },
+    { "Run on a schedule" = "guides/schedules.md" },
+    { "Run unattended on Cloud Run" = "running-unattended.md" },
+    { "Packages and platform recipes" = "guides/packages.md" },
+    { "Dashboard and run pages" = "guides/dashboard.md" },
+    { "Integrations and deployment" = [
+      { "Dictaria meetings" = "meetings-to-tasks.md" },
+      { "Continuous improvement" = "continuous-improvement.md" },
+      { "Error webhooks" = "error-webhooks.md" },
+      { "WhatsApp run summaries" = "guides/whatsapp.md" },
+      { "Product deployment on Cloud Run" = "product-deployment.md" },
+    ] },
+  ] },
+  { "Reference" = [
+    { "CLI" = "reference/cli.md" },
+    { "Command overview" = "reference/command-overview.md" },
+    { "HTTP API" = "reference/http-api.md" },
+    { "Server and WebSocket behavior" = "reference/serving.md" },
+    { "Runner wire contract" = "runner/README.md" },
+    { "Conduit YAML" = "reference/conduit-yaml.md" },
+  ] },
+  { "Configuration" = [
+    { "Where conduits live and folder layout" = "configuration/locations.md" },
+    { "Settings and environment variables" = "configuration/settings.md" },
+    { "Agent logins and credentials" = "configuration/agent-logins.md" },
+    { "Security" = "configuration/security.md" },
+  ] },
+  { "Upgrading" = [
+    { "Upgrade notes" = "upgrading.md" },
+    { "Roadmap" = "roadmap.md" },
+  ] },
+  { "Contributing" = [
+    { "How to contribute" = "contributing/index.md" },
+    { "Development" = "contributing/development.md" },
+  ] },
+]
+
+[project.theme]
+language = "en"
+features = [
+  "content.action.edit",
+  "content.code.copy",
+  "navigation.footer",
+  "navigation.path",
+  "navigation.tabs",
+  "navigation.top",
+  "search.highlight",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[project.plugins.search]
+
+[project.plugins.redirects.redirect_maps]
+"guide.md" = "index.md"
+"guide.md#how-a-conduit-runs" = "getting-started/how-a-conduit-runs.md"
+"guide.md#install" = "getting-started/install.md"
+"guide.md#one-command-install-no-python-needed" = "getting-started/install.md#one-command-install-no-python-needed"
+"guide.md#install-with-uv-for-python-users" = "getting-started/install.md#install-with-uv-for-python-users"
+"guide.md#agent-logins-and-provider-terms" = "configuration/agent-logins.md"
+"guide.md#optional-ai-harnesses" = "configuration/agent-logins.md#optional-ai-harnesses"
+"guide.md#picking-a-model" = "configuration/agent-logins.md#picking-a-model"
+"guide.md#picking-a-reasoning-effort" = "configuration/agent-logins.md#picking-a-reasoning-effort"
+"guide.md#checking-a-harness-before-you-use-it" = "configuration/agent-logins.md#checking-a-harness-before-you-use-it"
+"guide.md#quickstart" = "getting-started/quickstart.md"
+"guide.md#your-first-ai-workflow-review-what-you-staged" = "getting-started/quickstart.md#your-first-ai-workflow-review-what-you-staged"
+"guide.md#your-first-multi-agent-workflow-chain-or-panel" = "getting-started/quickstart.md#your-first-multi-agent-workflow-chain-or-panel"
+"guide.md#running-one-workflow-with-different-agents" = "getting-started/quickstart.md#running-one-workflow-with-different-agents"
+"guide.md#checking-the-whole-agent-team-before-a-run" = "getting-started/quickstart.md#checking-the-whole-agent-team-before-a-run"
+"guide.md#two-coding-agents-changing-the-same-code-at-once" = "getting-started/quickstart.md#two-coding-agents-changing-the-same-code-at-once"
+"guide.md#recovering-a-failed-workflow" = "recovering-a-failed-workflow.md"
+"guide.md#reading-a-conduit-before-you-run-it" = "guides/authoring.md#reading-a-conduit-before-you-run-it"
+"guide.md#passing-a-file-as-an-input" = "guides/authoring.md#passing-a-file-as-an-input"
+"guide.md#writing-a-conduit-with-your-editors-help" = "guides/authoring.md#writing-a-conduit-with-your-editors-help"
+"guide.md#examples" = "guides/authoring.md#examples"
+"guide.md#a-simple-conduit-hello" = "guides/authoring.md#a-simple-conduit-hello"
+"guide.md#a-bigger-conduit-deploy_pipeline" = "guides/authoring.md#a-bigger-conduit-deploy_pipeline"
+"guide.md#waiting-for-a-run-from-another-terminal-or-agent" = "guides/authoring.md#waiting-for-a-run-from-another-terminal-or-agent"
+"guide.md#a-field-atelier-does-not-know-is-an-error" = "guides/validation.md#a-field-atelier-does-not-know-is-an-error"
+"guide.md#reading-json-command-errors" = "guides/validation.md#reading-json-command-errors"
+"guide.md#checking-conduits-from-a-script-or-an-agent" = "guides/validation.md#checking-conduits-from-a-script-or-an-agent"
+"guide.md#checking-a-workflow-that-calls-other-workflows" = "guides/validation.md#checking-a-workflow-that-calls-other-workflows"
+"guide.md#the-calls-arguments-not-only-the-childs-name" = "guides/validation.md#the-calls-arguments-not-only-the-childs-name"
+"guide.md#conduit-reference" = "reference/conduit-yaml.md"
+"guide.md#templating" = "reference/conduit-yaml.md#templating"
+"guide.md#values-in-shell-steps" = "reference/conduit-yaml.md#values-in-shell-steps"
+"guide.md#conditional-dependencies" = "reference/conduit-yaml.md#conditional-dependencies"
+"guide.md#loops-repeat-until-while" = "reference/conduit-yaml.md#loops-repeat-until-while"
+"guide.md#loops-repeat--until--while" = "reference/conduit-yaml.md#loops-repeat-until-while"
+"guide.md#retries-and-per-task-timeout" = "reference/conduit-yaml.md#retries-and-per-task-timeout"
+"guide.md#when-an-agent-runs-out-of-usage" = "reference/conduit-yaml.md#when-an-agent-runs-out-of-usage"
+"guide.md#continuing-an-agents-conversation-session" = "reference/conduit-yaml.md#continuing-an-agents-conversation-session"
+"guide.md#asking-a-human-toolhitl" = "reference/conduit-yaml.md#asking-a-human-toolhitl"
+"guide.md#approving-an-exact-patch" = "reference/conduit-yaml.md#approving-an-exact-patch"
+"guide.md#long-ai-conversations-interactive-true" = "reference/conduit-yaml.md#long-ai-conversations-interactive-true"
+"guide.md#conduit-wide-human-and-supervisor-policies" = "reference/conduit-yaml.md#conduit-wide-human-and-supervisor-policies"
+"guide.md#http-api-atelier-serve" = "reference/serving.md"
+"guide.md#interactive-turns-over-the-websocket" = "reference/serving.md#interactive-turns-over-the-websocket"
+"guide.md#where-conduits-live" = "configuration/locations.md"
+"guide.md#folder-layout" = "configuration/locations.md#folder-layout"
+"guide.md#dashboard-chat" = "guides/dashboard.md#dashboard-chat"
+"guide.md#commands" = "reference/command-overview.md"
+"guide.md#installing-conduit-packages" = "guides/packages.md"
+"guide.md#install-the-platform-recipe-bundle" = "guides/packages.md#install-the-platform-recipe-bundle"
+"guide.md#idea-to-product" = "guides/packages.md#idea-to-product"
+"guide.md#running-on-a-schedule" = "guides/schedules.md"
+"guide.md#running-unattended" = "guides/schedules.md#running-unattended"
+"guide.md#security" = "configuration/security.md"
+"guide.md#send-a-whatsapp-run-summary" = "guides/whatsapp.md"

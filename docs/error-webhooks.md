@@ -90,7 +90,7 @@ publication. Reopen a failed error claim and submit the signed report again.
 The regression command receives the new test's relative path as a separate argument.
 Use a runner that exits 1 for a failing regression and 0 for success. Both commands must
 work offline from a fresh checkout of committed files. Set up the local GitHub CLI
-login for the configured repository and the [WhatsApp sender](guide.md#send-a-whatsapp-run-summary).
+login for the configured repository and the [WhatsApp sender](guides/whatsapp.md).
 The repository must be private and its `origin` must match the configured GitHub destination.
 
 Before adding a repository to `draftCiDisabledRepositories`, configure every CI system,

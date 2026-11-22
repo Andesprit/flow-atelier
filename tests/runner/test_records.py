@@ -78,10 +78,12 @@ async def test_replay_batches_and_updated_local_redactions(tmp_path):
     assert [r["sequence"] for r in records] == list(range(1, 105))
     assert "wasPublic" not in json.dumps(plane.traffic)
 
-async def test_retention_keeps_unacknowledged_records_and_sequence(tmp_path):
+@pytest.mark.parametrize("cleanup_days", [None, 0])
+async def test_retention_keeps_unacknowledged_records_and_sequence(tmp_path, cleanup_days):
     plane = Plane()
     local, fid = prepared(tmp_path, plane, "user")
-    (local.user_dir / "settings.json").write_text('{"cleanupPeriodDays": 0}')
+    if cleanup_days is not None:
+        (local.user_dir / "settings.json").write_text('{"cleanupPeriodDays": 0}')
     rid = local.identity()["id"]
     jid = plane.enqueue("one", {rid: fid}, "run")
     worker = Worker(local, plane)
@@ -93,8 +95,10 @@ async def test_retention_keeps_unacknowledged_records_and_sequence(tmp_path):
     await Worker(local, plane).tick()
     await Worker(local, plane).tick()
     with local.db() as db:
-        assert db.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 0
-    assert not bundle.exists()
+        assert db.execute("SELECT COUNT(*) FROM records").fetchone()[0] == (
+            3 if cleanup_days is None else 0
+        )
+    assert bundle.is_dir() == (cleanup_days is None)
     assert len(plane.records_for("one", rid)) == 3
     plane.enqueue("one", {rid: fid}, "run")
     restarted = Worker(local, plane)

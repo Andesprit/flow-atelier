@@ -1,14 +1,20 @@
 """`atelier init` command."""
 from __future__ import annotations
 
+import hashlib
+import re
 import shutil
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 import yaml
+from pydantic import ValidationError
 
 from flow_atelier.cli._shared import console
+from flow_atelier.cli.commands._legacy_starters import STOCK_STARTER_SHA256
 from flow_atelier.cli.commands.create import starter_conduit_yaml
 from flow_atelier.cli.main import app
+from flow_atelier.schemas.conduit import Conduit
 
 # Both AI starters need a harness that can enforce read-only permissions.
 READ_ONLY_CLIS = (
@@ -157,6 +163,50 @@ def pair_conduit_yaml(harnesses: list[str]) -> str:
     return yaml.dump(doc, Dumper=_PromptDumper, sort_keys=False, width=100)
 
 
+def _upgrade_stock_starter(path: Path, content: bytes) -> bool:
+    """Add task permissions to an exact stock file, preserving its agents and layout."""
+    normalized = content.replace(b"\r\n", b"\n")
+    if (
+        path.is_symlink()
+        or content not in (normalized, normalized.replace(b"\n", b"\r\n"))
+        or hashlib.sha256(normalized).hexdigest() not in STOCK_STARTER_SHA256[path.parent.name]
+    ):
+        return False
+    # In stock YAML the supervisor's tool appears before the tasks section.
+    preamble, marker, tasks = content.partition(b"\ntasks:")
+    updated = preamble + marker + re.sub(
+        rb"(?m)^(    tool: harness:[^\r\n]+)(\r?\n)",
+        rb"\1\2    permissions: read-only\2",
+        tasks,
+    )
+    with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        pending = Path(stream.name)
+        try:
+            stream.write(updated)
+            stream.close()
+            if path.is_symlink() or path.read_bytes() != content:
+                return False
+            shutil.copymode(path, pending)
+            pending.replace(path)
+        finally:
+            stream.close()
+            pending.unlink(missing_ok=True)
+    return True
+
+
+def _has_writable_agent_tasks(content: bytes) -> bool:
+    try:
+        conduit = Conduit.model_validate(yaml.safe_load(content))
+    except (ValidationError, yaml.YAMLError):
+        return False
+    tasks = list(conduit.tasks)
+    for task in tasks:
+        if task.tool.startswith("harness:") and task.permissions != "read-only":
+            return True
+        tasks.extend(task.tasks or [])
+    return False
+
+
 @app.command(
     "init",
     help=(
@@ -166,33 +216,48 @@ def pair_conduit_yaml(harnesses: list[str]) -> str:
 )
 def init_cmd() -> None:
     """Scaffold ``.atelier/`` with starter conduits; idempotent."""
-    conduits = Path.cwd() / ".atelier" / "conduits"
+    project = Path.cwd()
+    conduits = project / ".atelier" / "conduits"
     hello = conduits / "hello" / "conduit.yaml"
-    explain = conduits / "explain" / "conduit.yaml"
-    pair = conduits / "pair" / "conduit.yaml"
     harnesses = installed_harnesses()
 
     written = []
+    upgraded = False
+    unsafe_starter = False
     if not hello.exists():
         hello.parent.mkdir(parents=True, exist_ok=True)
         hello.write_text(starter_conduit_yaml("hello", "Say hello"))
         written.append(hello)
-    if harnesses and not explain.exists():
-        explain.parent.mkdir(parents=True, exist_ok=True)
-        explain.write_text(explain_conduit_yaml(harnesses))
-        written.append(explain)
-    if harnesses and not pair.exists():
-        pair.parent.mkdir(parents=True, exist_ok=True)
-        pair.write_text(pair_conduit_yaml(harnesses))
-        written.append(pair)
+    for name, render in (("explain", explain_conduit_yaml), ("pair", pair_conduit_yaml)):
+        path = conduits / name / "conduit.yaml"
+        if path.is_file():
+            content = path.read_bytes()
+            label = path.relative_to(project).as_posix()
+            if _upgrade_stock_starter(path, content):
+                console.print(f"[green]upgraded[/green] {label} to read-only")
+                upgraded = True
+            elif _has_writable_agent_tasks(content):
+                unsafe_starter = True
+                console.print(
+                    f"[yellow]warning[/yellow] {label} has writable agent tasks.\n"
+                    "Add or set 'permissions: read-only' on every agent task in this file."
+                )
+        elif harnesses and not path.exists() and not path.is_symlink():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("x", encoding="utf-8") as stream:
+                stream.write(render(harnesses))
+            written.append(path)
 
     if not written:
-        console.print("[yellow]atelier is already set up in this project[/yellow]")
+        if not upgraded:
+            console.print("[yellow]atelier is already set up in this project[/yellow]")
         if harnesses:
             return
     else:
         console.print(f"[green]initialized[/green] {conduits.parent}")
     if harnesses:
+        if unsafe_starter:
+            return
         console.print(
             f"Have {harnesses[0]} explain this project:\n"
             "  [bold]atelier serve --no-scheduler[/bold]  # in a second terminal, to watch live\n"

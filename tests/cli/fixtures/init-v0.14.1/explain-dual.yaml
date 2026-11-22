@@ -1,0 +1,46 @@
+name: explain
+description: Ask your AI agents what this project is
+tasks:
+- look_claude_code:
+    description: claude-code describes this project
+    task: |
+      Look around the current directory and work out what this project is.
+
+      Reply in plain language a newcomer can follow:
+      - what it does, in one sentence
+      - who it is for
+      - three things it does well
+      - the three spots most likely to confuse or break, with file paths
+
+      Read only: do not edit files, install anything, or run commands that change state.
+    tool: harness:claude-code
+    depends_on: []
+- look_codex:
+    description: codex describes this project
+    task: |
+      Look around the current directory and work out what this project is.
+
+      Reply in plain language a newcomer can follow:
+      - what it does, in one sentence
+      - who it is for
+      - three things it does well
+      - the three spots most likely to confuse or break, with file paths
+
+      Read only: do not edit files, install anything, or run commands that change state.
+    tool: harness:codex
+    depends_on: []
+- merge:
+    description: claude-code merges both answers
+    task: |
+      Two agents looked at the same project. Merge their notes into one short brief:
+      where they agree, where they disagree, and the single most useful next step.
+
+      --- claude-code ---
+      {{look_claude_code.output}}
+
+      --- codex ---
+      {{look_codex.output}}
+    tool: harness:claude-code
+    depends_on:
+    - look_claude_code
+    - look_codex

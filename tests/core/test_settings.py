@@ -23,6 +23,7 @@ def test_defaults(tmp_path, monkeypatch):
     s = AtelierSettings(_env_file=None)
     assert s.default_timeout == 3600
     assert s.default_max_concurrency == 3
+    assert s.cleanup_period_days is None
     assert s.claude_launch_cmd == []
     assert s.codex_launch_cmd == []
     assert s.done_marker == "[ATELIER_DONE]"
@@ -40,6 +41,7 @@ def test_env_override(tmp_path, monkeypatch):
     :param monkeypatch: pytest monkeypatch fixture.
     """
     monkeypatch.setenv("ATELIER_DEFAULT_TIMEOUT", "42")
+    monkeypatch.setenv("ATELIER_CLEANUP_PERIOD_DAYS", "0")
     monkeypatch.setenv(
         "ATELIER_CLAUDE_LAUNCH_CMD", '["npx","-y","custom-claude-acp"]'
     )
@@ -49,6 +51,7 @@ def test_env_override(tmp_path, monkeypatch):
     )
     s = AtelierSettings(_env_file=None)
     assert s.default_timeout == 42
+    assert s.cleanup_period_days == 0
     assert s.claude_launch_cmd == ["npx", "-y", "custom-claude-acp"]
     assert s.atelier_dir == Path(tmp_path / "somewhere")
     assert s.global_atelier_dir == Path(tmp_path / "global_here")

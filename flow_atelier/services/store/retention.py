@@ -15,6 +15,7 @@ from flow_atelier.modules.liveness import is_crashed
 from flow_atelier.schemas.progress import FlowStatus, Progress
 from flow_atelier.services.store.claims import expire_claim
 from flow_atelier.services.store.events import RunJournal, RunRecordError, file_lock
+from flow_atelier.services.store.permissions import private_dir
 
 logger = logging.getLogger(__name__)
 DAY_SECONDS = 24 * 60 * 60
@@ -59,7 +60,7 @@ def _expire_tree(tree: list[RunJournal], now: datetime, days: int) -> None:
         for journal in tree:
             if journal.side.is_symlink():
                 raise RunRecordError(f"linked run directory: {journal.side}")
-            journal.side.mkdir(exist_ok=True)
+            private_dir(journal.side)
             for name in (".writer.lock", ".ask.lock", ".notify.lock"):
                 path = journal.side / name
                 if path.is_symlink() or (path.exists() and not path.is_file()):
@@ -87,8 +88,10 @@ def cleanup_lock(root: Path) -> AbstractContextManager[bool]:
     return file_lock(lease, wait=False)
 
 
-def cleanup_runs(home: Path, days: int) -> None:
+def cleanup_runs(home: Path, days: int | None) -> None:
     """Keep a whole tree until every member has finished outside the retention window."""
+    if days is None:
+        return
     if days < 0:
         raise ValueError("cleanup period must be non-negative")
     now = _now()
@@ -159,7 +162,11 @@ def cleanup_runs(home: Path, days: int) -> None:
 
 
 @asynccontextmanager
-async def daily_cleanup(home: Path, days: int) -> AsyncIterator[None]:
+async def daily_cleanup(home: Path, days: int | None) -> AsyncIterator[None]:
+    if days is None:
+        yield
+        return
+
     async def sweep() -> None:
         try:
             await asyncio.to_thread(cleanup_runs, home, days)

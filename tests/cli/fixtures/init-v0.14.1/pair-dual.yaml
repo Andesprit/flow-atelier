@@ -1,0 +1,54 @@
+name: pair
+description: One agent drafts a change, another answers its questions and reviews it
+inputs:
+  goal:
+    description: What to change
+    default: the smallest change that would most help a new contributor
+interaction:
+  questions: hybrid
+  supervisor:
+    tool: harness:codex
+    instructions: |
+      Answer the worker's questions from the code and the project's conventions.
+      Escalate to the human anything about product direction or scope.
+tasks:
+- draft:
+    description: claude-code proposes a change
+    task: |
+      Goal: {{inputs.goal}}
+
+      Read the code this goal touches, then reply with a short plan and the exact
+      diff you would apply. If something is unclear, ask before you answer.
+
+      Read only: do not edit files, install anything, or run commands that change state.
+    tool: harness:claude-code
+    session: worker
+    depends_on: []
+- review:
+    description: codex reviews the proposal
+    task: |
+      Another agent proposed this change for the goal "{{inputs.goal}}":
+
+      {{draft.output}}
+
+      Check it against the code. List what must change, most important first,
+      or reply LGTM if nothing must.
+
+      Read only: do not edit files, install anything, or run commands that change state.
+    tool: harness:codex
+    depends_on:
+    - draft
+- revise:
+    description: claude-code revises, remembering its draft
+    task: |
+      The reviewer replied:
+
+      {{review.output}}
+
+      Revise your proposal. Reply with the final plan and diff.
+
+      Read only: do not edit files, install anything, or run commands that change state.
+    tool: harness:claude-code
+    session: worker
+    depends_on:
+    - review

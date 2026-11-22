@@ -1,10 +1,10 @@
 [project]
 name = "flow-atelier"
-version = "0.14.1"
+version = "0.15.0"
 description = "CLI tool and async workflow engine for running reproducible DAG workflows (conduits)."
 readme = "README.md"
 license = "Apache-2.0"
-license-files = ["LICENSE", "NOTICE"]
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/frontend/*.txt"]
 requires-python = ">=3.13"
 dependencies = [
     "typer>=0.19.0",
@@ -29,6 +29,12 @@ push = ["pywebpush>=2.5.0"]
 
 [project.scripts]
 atelier = "flow_atelier.main:app"
+
+[project.urls]
+Homepage = "https://github.com/Andesprit/flow-atelier"
+Repository = "https://github.com/Andesprit/flow-atelier"
+Issues = "https://github.com/Andesprit/flow-atelier/issues"
+Changelog = "https://github.com/Andesprit/flow-atelier/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 build = ["pyinstaller>=6.10"]

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 import yaml
@@ -9,6 +10,8 @@ from typer.testing import CliRunner
 
 from flow_atelier.cli import app
 from flow_atelier.schemas.conduit import Conduit
+
+V0141_STARTERS = Path(__file__).parent / "fixtures" / "init-v0.14.1"
 
 
 @pytest.fixture
@@ -59,6 +62,54 @@ def test_init_preserves_existing_starters(workdir, monkeypatch):
     assert result.exit_code == 0
     assert "already set up" in result.stdout
     assert all(path.read_text() == "# customized\n" for path in paths)
+
+
+@pytest.mark.parametrize(("variant", "newline", "clis"), [
+    ("codex", b"\n", ()),
+    ("dual", b"\r\n", ("claude", "codex")),
+])
+def test_init_upgrades_stock_v0141_starters(workdir, monkeypatch, variant, newline, clis):
+    _fake_clis(workdir, monkeypatch, *clis)
+    originals = {}
+    for name in ("explain", "pair"):
+        stock = (V0141_STARTERS / f"{name}-{variant}.yaml").read_text(encoding="ascii")
+        path = _conduit_file(workdir).parents[1] / name / "conduit.yaml"
+        path.parent.mkdir(parents=True)
+        originals[path] = stock.encode("ascii").replace(b"\n", newline)
+        path.write_bytes(originals[path])
+
+    result = CliRunner().invoke(app, ["init"])
+    assert result.exit_code == 0, result.output
+    for path, original in originals.items():
+        updated = path.read_bytes()
+        assert updated.replace(b"    permissions: read-only" + newline, b"") == original
+        conduit = Conduit.model_validate(yaml.safe_load(updated))
+        assert all(task.permissions == "read-only" for task in conduit.tasks)
+        assert f"upgraded {path.relative_to(workdir).as_posix()} to read-only" in result.output
+    repeated = CliRunner().invoke(app, ["init"])
+    assert repeated.exit_code == 0
+    assert "already set up" in repeated.output
+    assert "warning" not in repeated.output
+
+
+@pytest.mark.parametrize("name", ["explain", "pair"])
+def test_init_keeps_edited_v0141_starter_and_warns(workdir, monkeypatch, name):
+    _fake_clis(workdir, monkeypatch, "codex")
+    stock = (V0141_STARTERS / f"{name}-codex.yaml").read_bytes()
+    path = _conduit_file(workdir).parents[1] / name / "conduit.yaml"
+    path.parent.mkdir(parents=True)
+    edited = b"# Keep my custom comment\n" + stock
+    path.write_bytes(edited)
+
+    result = CliRunner().invoke(app, ["init"])
+    assert result.exit_code == 0, result.output
+    assert path.read_bytes() == edited
+    assert f"warning {path.relative_to(workdir).as_posix()}" in result.output
+    assert (
+        "Add or set 'permissions: read-only' on every agent task in this file."
+        in " ".join(result.output.split())
+    )
+    assert f"atelier run {name}" not in result.output
 
 
 def _fake_clis(tmp_path, monkeypatch, *names):

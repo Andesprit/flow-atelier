@@ -44,7 +44,8 @@ Each result links to a private `tasks.json` under `~/.atelier/meetings/`. Its
 `tasks` array contains validated assignments matching the account or an alias,
 ignoring case and surrounding whitespace. Its `review` array lists tasks whose
 owner was unclear. The adjacent `meeting.json` holds the complete local transcript.
-Daily cleanup removes raw transcripts after `cleanupPeriodDays` (default 30).
+If you set `cleanupPeriodDays`, daily cleanup removes raw transcripts after
+that many days. Automatic cleanup is off by default.
 Invalid or unsuccessful extractions are retried once per poll for three attempts.
 The summary records the meeting ID and reason while other meetings continue.
 After the third failure the intake marks that meeting failed. The extractor's validated decisions

@@ -1,6 +1,8 @@
 """Replay parity between project-local records and the versioned journal."""
 
 import json
+import os
+import stat
 
 import pytest
 
@@ -8,6 +10,73 @@ from flow_atelier.schemas.log import IntermediateStep, LogEntry, StepRecord
 from flow_atelier.schemas.progress import PendingAsk, Progress, TaskProgress
 from flow_atelier.services.store.events import project_folder
 from flow_atelier.services.store.filesystem import FilesystemStore
+from flow_atelier.services.store.migrate import migrate_tree
+
+
+def assert_private_tree(root):
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    for path in root.rglob("*"):
+        assert stat.S_IMODE(path.stat().st_mode) == (0o700 if path.is_dir() else 0o600), path
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+@pytest.mark.parametrize("storage", ["global", "local", "migrated"])
+async def test_run_history_created_with_owner_only_permissions(tmp_path, storage):
+    project = tmp_path.resolve()
+    base = project / ".atelier"
+    home = project / "user"
+    mask = os.umask(0)
+    try:
+        store = FilesystemStore(base, global_dir=home if storage == "global" else None)
+        run = store.create_flow("demo", {"private": "input"}, project=project)
+        with store.lock_writer(run) as acquired:
+            assert acquired
+            store.write_progress(run, Progress(status="completed"))
+            store.write_outputs(run, {"task": "x" * 100_001})
+            store.write_sessions(run, {"task": {"id": "s"}})
+            store.append_input(run, "another", "input")
+            await store.append_log(
+                run, LogEntry(task="task", tool="tool:bash", started_at="a", finished_at="b")
+            )
+            await store.append_step(
+                run, StepRecord(task="task", step=IntermediateStep(kind="tool_call"))
+            )
+        if storage == "migrated":
+            assert migrate_tree(store, home, run, dry_run=False) == [run]
+    finally:
+        os.umask(mask)
+    assert_private_tree(base / "flows" if storage == "local" else home / "projects")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+@pytest.mark.parametrize("mode", [0o755, 0o555])
+def test_existing_public_history_gets_private_ancestor(tmp_path, mode):
+    project = tmp_path.resolve()
+    home = project / "user"
+    side = journal(home, project, "20260101_deadbeef_demo", None, {"private": "input"}, Progress())
+    root = home / "projects"
+    root.chmod(mode)
+    try:
+        store = FilesystemStore(project / ".atelier", global_dir=home)
+        assert root.stat().st_mode & 0o777 == mode & 0o700
+        assert store.read_input(side.name) == {"private": "input"}
+    finally:
+        root.chmod(0o700)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_migration_preview_leaves_legacy_permissions_untouched(tmp_path):
+    root = tmp_path.resolve()
+    base = root / ".atelier"
+    home = root / "user"
+    store = FilesystemStore(base)
+    run = store.create_flow("demo", {})
+    store.write_progress(run, Progress(status="completed"))
+    history = base / "flows"
+    history.chmod(0o755)
+    assert migrate_tree(FilesystemStore(base), home, run, dry_run=True) == [run]
+    assert stat.S_IMODE(history.stat().st_mode) == 0o755
+    assert not home.exists()
 
 
 def journal(home, project, run, parent, inputs, progress, *events):

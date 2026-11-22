@@ -16,8 +16,8 @@ in [`examples/cloud-run/`](examples/cloud-run/).
 | Flow history | Global journals and side files copied from `~/.atelier/projects/` (or the configured global store) to `$STATE_DIR/projects/` after the run |
 | Agent adapters | installed into the image with `atelier harness install`, so no task waits on npx |
 
-flow-atelier never handles these credentials. It passes its environment to
-each agent, and each agent reads its own login, exactly as on a laptop.
+In this setup, the entry point prepares the logins and each agent reads
+its own login from the environment or its configured home directory.
 Before you run agents on a schedule, check each provider's terms for
 unattended use: see
 [Agent logins and provider terms](guide.md#agent-logins-and-provider-terms).

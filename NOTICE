@@ -7,6 +7,8 @@ flow-atelier contributors.
 Licensed under the Apache License, Version 2.0. See the LICENSE file for the
 full license text.
 
+See THIRD_PARTY_NOTICES.md for the licenses of the bundled dashboard assets.
+
 "flow-atelier" and the flow-atelier logo are trademarks of Guillermo Angarita.
 Use of these marks is subject to the project's trademark guidelines and is not
 granted by the Apache License, Version 2.0 (see Section 6 of the License).

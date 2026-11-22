@@ -1,6 +1,15 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { getApiToken, setApiToken } from "@/config/env";
-import { fetchJson, resetTokenPrompt } from "@/services/client";
+import { BASE_URL, fetchJson, forgetToken, resetTokenPrompt } from "@/services/client";
+import {
+  CONDUIT_INPUTS_STORAGE_KEY,
+  CONDUIT_RUN_PATHS_STORAGE_KEY,
+  DRAFT_CONDUIT_STORAGE_KEY,
+} from "@/constants/dashboard";
+import { TASKS_KEY } from "@/constants/kanban";
+import { saveConduitInputs } from "@/services/api/conduit-inputs";
+import { saveRunPath } from "@/services/api/conduit-run-path";
+import { saveDraftConduit } from "@/services/storage/draft-conduit";
 
 /**
  * The token is read at runtime, not compiled in: the SPA that ships in the
@@ -10,6 +19,7 @@ import { fetchJson, resetTokenPrompt } from "@/services/client";
  */
 describe("runtime API token", () => {
   beforeEach(() => {
+    localStorage.clear();
     sessionStorage.clear();
     setApiToken("");
     resetTokenPrompt();
@@ -37,11 +47,51 @@ describe("runtime API token", () => {
     expect(socket).toHaveBeenCalledWith(BASE_URL.replace(/^http/, "ws") + "/ws/run-conduit?token=desktop%2Ftoken");
   });
 
+  it("accepts VITE_API_TOKEN in development", async () => {
+    vi.resetModules();
+    vi.stubEnv("DEV", true);
+    vi.stubEnv("VITE_API_TOKEN", "dev-fallback");
+    const { getApiToken } = await import("@/config/env");
+    expect(getApiToken()).toBe("dev-fallback");
+  });
+
   it("keeps fallback bearer credentials in memory", () => {
     expect(getApiToken()).toBe("");
     setApiToken("s3cret");
     expect(getApiToken()).toBe("s3cret");
     expect(sessionStorage.length).toBe(0);
+  });
+
+  it("removes saved inputs, run paths, task history and drafts when forgetting a token", async () => {
+    setApiToken("session-token");
+    sessionStorage.setItem("atelier:api-token", "desktop-token");
+    saveConduitInputs("deploy", { token: "saved-input" });
+    saveRunPath("deploy", "/project/worktree");
+    saveDraftConduit({ name: "draft", description: "local draft", inputs: {}, tasks: [] });
+    localStorage.setItem(TASKS_KEY, JSON.stringify({
+      state: { tasks: [{ name: "finished-task", column: "done" }] },
+      version: 1,
+    }));
+    localStorage.setItem("other-app", "keep");
+    const request = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    const reload = vi.fn();
+    vi.stubGlobal("fetch", request);
+    vi.stubGlobal("window", { localStorage, sessionStorage, location: { reload } });
+
+    await forgetToken();
+
+    expect(request).toHaveBeenCalledWith(BASE_URL + "/session", expect.objectContaining({
+      method: "DELETE",
+      headers: expect.objectContaining({ Authorization: "Bearer session-token" }),
+    }));
+    expect(getApiToken()).toBe("");
+    expect(sessionStorage.getItem("atelier:api-token")).toBeNull();
+    expect(localStorage.getItem(CONDUIT_INPUTS_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(TASKS_KEY)).toBeNull();
+    expect(localStorage.getItem(CONDUIT_RUN_PATHS_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(DRAFT_CONDUIT_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem("other-app")).toBe("keep");
+    expect(reload).toHaveBeenCalledOnce();
   });
 
   it("sends no Authorization header when no token is set", async () => {

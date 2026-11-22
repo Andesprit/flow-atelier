@@ -110,7 +110,7 @@ previously committed sequence numbers do not create additional records. A tenant
 these rows in sequence order. It displays `online` and the last heartbeat from the runner's most
 recent authenticated poll. See the [test reference peer](../../tests/runner/plane.py).
 
-The runner applies the user setting `cleanupPeriodDays` at startup on its first successful poll
+If you set `cleanupPeriodDays`, the runner applies it at startup on its first successful poll
 and daily thereafter. It removes expired verified conduit copies while idle and expires buffered
 records after the server acknowledges their sequence. Unacknowledged records stay available for
 replay. Sequence numbers continue across cleanup, and job mappings continue to prevent reruns.

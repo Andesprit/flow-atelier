@@ -50,6 +50,7 @@ from flow_atelier.services.store.events import (
     project_folder,
     project_folders,
 )
+from flow_atelier.services.store.permissions import private_dir, private_opener, write_private_text
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,12 @@ class FilesystemStore(StoreBase):
         """
         self.base_dir = Path(base_dir)
         self.global_dir: Path | None = Path(global_dir) if global_dir else None
+        # Protect existing global records with one private ancestor. Leave legacy
+        # roots alone here so migration can inspect them without applying changes.
+        if self.global_dir is not None:
+            root = self.global_dir / "projects"
+            if not root.is_symlink() and root.is_dir():
+                private_dir(root)
         self._conduit_defaults = conduit_defaults or {}
         # Both caches grow with distinct flow ids and are never pruned;
         # entries are tiny and bounded by process lifetime, so that's fine.
@@ -577,7 +584,10 @@ class FilesystemStore(StoreBase):
         if project is not None and self.global_dir is not None:
             if parent_flow_id is not None and not self.journal(parent_flow_id):
                 self._flow_dir(parent_flow_id)
-            folder = self.global_dir / "projects" / project_folder(project)
+            self.global_dir.mkdir(parents=True, exist_ok=True)
+            projects = self.global_dir / "projects"
+            private_dir(projects)
+            folder = projects / project_folder(project)
             journal = RunJournal(folder / f"{flow_id}.jsonl")
             progress = Progress(
                 started_at=datetime.now(UTC).isoformat(), runner_pid=os.getpid(),
@@ -591,18 +601,21 @@ class FilesystemStore(StoreBase):
             })
             return flow_id
         if parent_flow_id is None:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
             flow_dir = self.base_dir / "flows" / flow_id
         else:
             flow_dir = self._flow_dir(parent_flow_id) / "flows" / flow_id
-        flow_dir.mkdir(parents=True, exist_ok=True)
-        (flow_dir / "flows").mkdir(exist_ok=True)
+        private_dir(flow_dir.parent)
+        private_dir(flow_dir)
+        private_dir(flow_dir / "flows")
         self._flow_paths[flow_id] = flow_dir
         # input.yaml
-        (flow_dir / "input.yaml").write_text(_dump_flow_yaml(inputs))
+        write_private_text(flow_dir / "input.yaml", _dump_flow_yaml(inputs))
         # logs.jsonl (one JSON entry per line, appended as tasks run)
-        (flow_dir / "logs.jsonl").write_text("")
+        write_private_text(flow_dir / "logs.jsonl", "")
         # progress.json (empty shell; engine writes real content immediately)
-        (flow_dir / "progress.json").write_text(
+        write_private_text(
+            flow_dir / "progress.json",
             json.dumps(
                 {
                     "status": "running",
@@ -744,7 +757,7 @@ class FilesystemStore(StoreBase):
         line = json.dumps(entry.model_dump()) + "\n"
 
         def _write() -> None:
-            with path.open("a", encoding="utf-8") as f:
+            with open(path, "a", encoding="utf-8", opener=private_opener) as f:
                 f.write(line)
 
         async with self._lock_for(flow_id):
@@ -815,7 +828,7 @@ class FilesystemStore(StoreBase):
         line = json.dumps(record.model_dump()) + "\n"
 
         def _write() -> None:
-            with path.open("a", encoding="utf-8") as f:
+            with open(path, "a", encoding="utf-8", opener=private_opener) as f:
                 f.write(line)
 
         async with self._lock_for(flow_id):
@@ -889,7 +902,7 @@ class FilesystemStore(StoreBase):
 
     def _lock_dir(self, flow_id: str) -> Path:
         if journal := self.journal(flow_id):
-            journal.side.mkdir(exist_ok=True)
+            private_dir(journal.side)
             return journal.side
         return self._flow_dir(flow_id)
 
@@ -911,7 +924,9 @@ class FilesystemStore(StoreBase):
         path = self._flow_dir(flow_id) / "progress.json"
         tmp = path.with_suffix(f".json.tmp.{uuid.uuid4().hex}")
         # Pending questions may contain characters outside the local Windows code page.
-        tmp.write_text(json.dumps(progress.model_dump(mode="json"), indent=2), encoding="ascii")
+        write_private_text(
+            tmp, json.dumps(progress.model_dump(mode="json"), indent=2), encoding="ascii"
+        )
         _atomic_replace(tmp, path)
 
     def write_heartbeat(self, flow_id: str, progress: Progress) -> None:
@@ -959,7 +974,7 @@ class FilesystemStore(StoreBase):
             return
         path = self._flow_dir(flow_id) / "outputs.yaml"
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
-        tmp.write_text(_dump_flow_yaml(outputs), encoding="utf-8")
+        write_private_text(tmp, _dump_flow_yaml(outputs), encoding="utf-8")
         _atomic_replace(tmp, path)
 
     # ------------------------------------------------------------------ sessions.yaml
@@ -989,7 +1004,7 @@ class FilesystemStore(StoreBase):
             return
         path = self._flow_dir(flow_id) / "sessions.yaml"
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
-        tmp.write_text(_dump_flow_yaml(sessions))
+        write_private_text(tmp, _dump_flow_yaml(sessions))
         _atomic_replace(tmp, path)
 
     # ------------------------------------------------------------------ input.yaml
@@ -1025,5 +1040,5 @@ class FilesystemStore(StoreBase):
                 existing = loaded
         existing[key] = value
         tmp = path.with_suffix(f".yaml.tmp.{uuid.uuid4().hex}")
-        tmp.write_text(_dump_flow_yaml(existing))
+        write_private_text(tmp, _dump_flow_yaml(existing))
         _atomic_replace(tmp, path)

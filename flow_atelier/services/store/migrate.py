@@ -18,6 +18,7 @@ from flow_atelier.schemas.flow import parse_flow_id
 from flow_atelier.schemas.progress import FlowStatus
 from flow_atelier.services.store.events import RunJournal, file_lock, project_folder, publish_file
 from flow_atelier.services.store.filesystem import FilesystemStore, _load_flow_yaml
+from flow_atelier.services.store.permissions import private_dir, private_opener
 from flow_atelier.services.store.retention import cleanup_lock
 
 _LOCKS = (".writer.lock", ".ask.lock")
@@ -111,7 +112,10 @@ def _stage_tree(
             journal.append("log", log)
         steps = directory / "steps.jsonl"
         if steps.exists():
-            shutil.copyfile(steps, journal.side / "steps.jsonl")
+            with steps.open("rb") as src, open(
+                journal.side / "steps.jsonl", "xb", opener=private_opener
+            ) as dst:
+                shutil.copyfileobj(src, dst)
         if (
             journal.header() != header or journal.inputs() != inputs or journal.outputs() != outputs
             or journal.latest("sessions") != sessions or list(journal.logs()) != logs
@@ -187,7 +191,7 @@ def migrate_tree(old: FilesystemStore, home: Path, root: str, *, dry_run: bool) 
         if not dry_run:
             if projects.is_symlink():
                 raise ValueError(f"symlink conflict at {projects}")
-            projects.mkdir(parents=True, exist_ok=True)
+            private_dir(projects)
             if not locks.enter_context(cleanup_lock(projects)):
                 raise ValueError("run cleanup in progress; retry migration")
         records = []
@@ -219,7 +223,7 @@ def migrate_tree(old: FilesystemStore, home: Path, root: str, *, dry_run: bool) 
 
         if not dry_run:
             for journal, dest, payload in records:
-                dest.path.parent.mkdir(parents=True, exist_ok=True)
+                private_dir(dest.path.parent)
                 if not dest.side.exists():
                     journal.side.rename(dest.side)
                     _leases(dest.side, locks, False)
@@ -228,7 +232,7 @@ def migrate_tree(old: FilesystemStore, home: Path, root: str, *, dry_run: bool) 
                 if _digest(dest.path) != _digest(journal.path) or _side_bytes(dest.side) != payload:
                     raise ValueError(f"published bytes differ at {dest.path}")
             cleanup.close()
-            retired.parent.mkdir(exist_ok=True)
+            private_dir(retired.parent)
             if os.name == "nt":
                 # Windows cannot rename the source with its lease handles open.
                 # Published IDs already reject local writers as ambiguous.

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from flow_atelier.schemas.flow import parse_flow_id
+from flow_atelier.services.store.permissions import private_dir, private_opener
 
 
 class RunRecordError(ValueError):
@@ -66,7 +67,7 @@ def publish_file(source: Path, destination: Path) -> None:
             errno.EPERM,
         ) and getattr(exc, "winerror", None) not in (1, 50):
             raise
-        with source.open("rb") as src, destination.open("xb") as dst:
+        with source.open("rb") as src, open(destination, "xb", opener=private_opener) as dst:
             try:
                 shutil.copyfileobj(src, dst)
             except BaseException:
@@ -78,7 +79,7 @@ def publish_file(source: Path, destination: Path) -> None:
 @contextmanager
 def file_lock(path: Path, *, wait: bool) -> Iterator[bool]:
     """The OS releases the lease on close, including process death."""
-    with path.open("a+b") as lock:
+    with open(path, "a+b", opener=private_opener) as lock:
         try:
             if os.name == "nt":
                 lock.seek(0)
@@ -124,15 +125,20 @@ class RunJournal:
 
     def create(self, header: dict[str, Any]) -> None:
         """Publish a complete header without replacing an existing run."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        private_dir(self.path.parent)
         with tempfile.NamedTemporaryFile(dir=self.path.parent, delete_on_close=False) as tmp:
+            if os.name == "posix":
+                os.fchmod(tmp.fileno(), 0o600)
             tmp.write(_line("created", header))
             tmp.close()
             publish_file(Path(tmp.name), self.path)
 
     def append(self, kind: str, data: dict[str, Any]) -> None:
-        self.side.mkdir(exist_ok=True)
-        with file_lock(self.side / ".append.lock", wait=True), self.path.open("r+b") as stream:
+        private_dir(self.side)
+        with (
+            file_lock(self.side / ".append.lock", wait=True),
+            open(self.path, "r+b", opener=private_opener) as stream,
+        ):
             sequence = _repair_tail(stream)
             if not sequence:
                 raise RunRecordError(f"{self.path}: missing run header")
@@ -149,28 +155,29 @@ class RunJournal:
             task = data["task"] if kind == "log" else key
             if not task or not task.replace("_", "a").isalnum():
                 raise ValueError(f"invalid output task: {task!r}")
-            target = self.side / "outputs" / task
-            target.mkdir(parents=True, exist_ok=True)
+            outputs = self.side / "outputs"
+            private_dir(outputs)
+            target = outputs / task
+            private_dir(target)
             # Exclusive creation also skips orphaned blobs left by a killed writer.
             while True:
                 path = target / str(sequence)
                 sequence += 1
                 try:
-                    blob = path.open("xb")
+                    with open(path, "xb", opener=private_opener) as blob:
+                        blob.write(raw)
                 except FileExistsError:
                     continue
-                with blob:
-                    blob.write(raw)
                 break
             files[key] = path.relative_to(self.side).as_posix()
             del values[key]
         return {"values": values, "files": files}
 
     def append_step(self, line: bytes) -> None:
-        self.side.mkdir(exist_ok=True)
+        private_dir(self.side)
         with (
             file_lock(self.side / ".append.lock", wait=True),
-            (self.side / "steps.jsonl").open("a+b") as stream,
+            open(self.side / "steps.jsonl", "a+b", opener=private_opener) as stream,
         ):
             _repair_tail(stream)
             stream.write(line)

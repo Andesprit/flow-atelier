@@ -1,0 +1,17 @@
+name: explain
+description: Ask your AI agents what this project is
+tasks:
+- look:
+    description: codex describes this project
+    task: |
+      Look around the current directory and work out what this project is.
+
+      Reply in plain language a newcomer can follow:
+      - what it does, in one sentence
+      - who it is for
+      - three things it does well
+      - the three spots most likely to confuse or break, with file paths
+
+      Read only: do not edit files, install anything, or run commands that change state.
+    tool: harness:codex
+    depends_on: []

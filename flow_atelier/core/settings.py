@@ -147,7 +147,7 @@ class AtelierSettings(BaseSettings):
     vapid_subject: str | None = Field(
         default=None, pattern=r"^(mailto:[^\s@]+@[^\s@]+|https://[^\s/?#]+(?:/[^\s]*)?)$",
     )
-    cleanup_period_days: int = Field(default=30, ge=0)
+    cleanup_period_days: int | None = Field(default=None, ge=0)
     dictaria_account: str | None = None
     dictaria_aliases: list[str] = Field(default_factory=list)
     dictaria_url: str | None = None

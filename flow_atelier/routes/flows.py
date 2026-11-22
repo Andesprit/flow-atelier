@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from flow_atelier.core.atelier import Atelier
 from flow_atelier.schemas.api import (
@@ -20,14 +20,22 @@ router = APIRouter(prefix="/flows", tags=["flows"])
 
 @router.get("", response_model=list[PriorFlow])
 async def list_flows(
-    project: str | None = None, atelier: Atelier = Depends(get_atelier),
+    request: Request, project: str | None = None, atelier: Atelier = Depends(get_atelier),
 ) -> list[PriorFlow]:
     """List prior flow runs known to the facade.
+
+    A run this server owns that waits for an answer through
+    ``/mobile/runs/{flow_id}/inputs`` reads ``needs_input``.
 
     :param atelier: injected :class:`Atelier` facade.
     :returns: :class:`PriorFlow` entries for each prior flow.
     """
-    return atelier.list_prior_flows(Path(project) if project is not None else None)
+    flows = atelier.list_prior_flows(Path(project) if project is not None else None)
+    waiting = request.app.state.run_inputs.waiting_runs()
+    for flow in flows:
+        if flow.flow_id in waiting and flow.status == "running":
+            flow.status = "needs_input"
+    return flows
 
 
 @router.get("/{flow_id}/logs", response_model=FlowLogsOutput)

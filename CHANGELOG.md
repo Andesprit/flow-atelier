@@ -27,8 +27,11 @@
   starter has writable agent tasks, Atelier keeps the file and prints
   `warning .atelier/conduits/<name>/conduit.yaml has writable agent tasks.`
   Add or set `permissions: read-only` on every agent task in that file.
-- The desktop app is outside the scope of 0.15.0. The release includes the
-  Python package and standalone CLI builds.
+- The macOS desktop app is removed. Use the CLI, or the dashboard from
+  `atelier serve`, which your browser can install as an app. To keep
+  schedules firing without an open terminal, run
+  `atelier schedule service install` once. It starts the scheduler at login
+  on macOS, Linux and Windows. See [Running on a schedule](https://flow-atelier.andesprit.com/docs/guides/schedules/#starting-the-scheduler-at-login).
 <!-- --8<-- [end:upgrade-0-15-0] -->
 
 <!-- --8<-- [start:privacy-0-15-0] -->

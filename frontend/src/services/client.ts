@@ -38,9 +38,6 @@ export async function forgetToken(): Promise<void> {
   await fetchJson(BASE_URL + "/session", undefined, { method: "DELETE" });
   setApiToken("");
   try {
-    window.sessionStorage.removeItem("atelier:api-token");
-  } catch { /* Storage may be disabled. */ }
-  try {
     window.localStorage.removeItem(CONDUIT_INPUTS_STORAGE_KEY);
     window.localStorage.removeItem(CONDUIT_RUN_PATHS_STORAGE_KEY);
     window.localStorage.removeItem(DRAFT_CONDUIT_STORAGE_KEY);

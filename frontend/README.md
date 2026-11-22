@@ -66,12 +66,11 @@ through Caddy on the same machine:
 The launcher lists projects from this machine’s global run history. To use a
 different folder, enter its absolute path and confirm that its own recipes may
 run on this machine. Choose a conduit, fill in its inputs and tap **Launch**.
-Closing the phone app leaves the run going. Stopping Atelier, including quitting
-the serving desktop app, cancels its mobile runs. Use the interactive dashboard
-for live human-input steps. Offline, the app displays a connection message.
+Closing the phone app leaves the run going. Stopping Atelier cancels its mobile
+runs. Use the interactive dashboard for live human-input steps. Offline, the app displays a connection message.
 
 Tap **Enable completion notifications** to receive completions from every
-project on the machine, including CLI, scheduled and desktop runs. Keep the server
+project on the machine, including CLI and scheduled runs. Keep the server
 running for delivery. The default VAPID contact is the HTTPS origin used to
 subscribe. To set a contact explicitly, add `"vapidSubject": "mailto:ops@example.org"`
 to your user `~/.atelier/settings.json` and restart Atelier. Delivery errors appear

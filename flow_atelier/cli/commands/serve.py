@@ -329,7 +329,7 @@ def serve_cmd(
         # Wait for uvicorn to bind so we can print the actual port.
         loop = asyncio.get_running_loop()
         if exit_with_stdin:
-            # Desktop holds the only writer. EOF survives crashes and Force Quit.
+            # The parent process holds the only writer. EOF survives its crash or kill.
             fd = sys.stdin.fileno()
 
             def stdin_ready() -> None:

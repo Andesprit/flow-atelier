@@ -97,7 +97,7 @@ export function PushToggle() {
           {device ? "Disable completion notifications" : "Enable completion notifications"}
         </Button>
       ) : <p>Completion notifications require a supported secure browser or Home Screen app.</p>}
-      {supported && <p>Receive completions from every project on this machine, including CLI, scheduled and desktop runs.</p>}
+      {supported && <p>Receive completions from every project on this machine, including CLI and scheduled runs.</p>}
       {message && <p role="status" className="text-muted-foreground">{message}</p>}
     </section>
   );

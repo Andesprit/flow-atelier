@@ -35,7 +35,7 @@ _INLINE_NAME_RE = re.compile(r"^~inline~([A-Za-z0-9_-]+)~([A-Za-z0-9_]+)$")
 HARNESS_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # How much an agent may do without asking: everything (the default), read and
 # change files, or only read. Set per task, or for every task with
-# ATELIER_AGENT_PERMISSIONS. See docs/guide.md#security.
+# ATELIER_AGENT_PERMISSIONS. See docs/configuration/security.md#agent-permissions.
 AgentPermissions = Literal["full", "edits", "read-only"]
 
 

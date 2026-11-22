@@ -11,7 +11,7 @@ dev_addr = "127.0.0.1:8101"
 strict = true
 
 # GitHub renders this contents page. The site serves redirects at its old URL.
-exclude_docs = "guide.md"
+exclude_docs = "/guide.md"
 
 nav = [
   { "Home" = "index.md" },
@@ -70,6 +70,7 @@ nav = [
 ]
 
 [project.theme]
+custom_dir = "scripts/docs/overrides"
 language = "en"
 features = [
   "content.action.edit",
@@ -94,6 +95,10 @@ toggle.icon = "lucide/moon"
 toggle.name = "Switch to light mode"
 
 [project.plugins.search]
+
+# Enable local pymdownx.snippets includes alongside Zensical's default extensions.
+[project.plugins.include-markdown]
+include_from_url = false
 
 [project.plugins.redirects.redirect_maps]
 "guide.md" = "index.md"

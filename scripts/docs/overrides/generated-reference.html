@@ -1,0 +1,7 @@
+{% extends "main.html" %}
+
+{% block content %}
+  {% with features = features | reject("equalto", "content.action.edit") | list %}
+    {% include "partials/content.html" %}
+  {% endwith %}
+{% endblock %}

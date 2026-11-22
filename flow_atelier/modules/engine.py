@@ -115,7 +115,7 @@ PERMISSIONS_NOTICE = (
     "[flow-atelier] note: agents run with full permissions (they can edit files "
     "and run commands). Set permissions: edits or read-only on the task, or "
     "ATELIER_AGENT_PERMISSIONS for every run, to limit them; see "
-    "https://github.com/Andesprit/flow-atelier/blob/main/docs/guide.md#security"
+    "https://flow-atelier.andesprit.com/docs/configuration/security/#agent-permissions"
 )
 
 

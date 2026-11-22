@@ -3,6 +3,7 @@
 import re
 from collections.abc import Iterator
 from html import escape
+from inspect import unwrap
 
 from rich.markup import escape as escape_markup
 from rich.text import Text
@@ -29,14 +30,12 @@ def markdown_help(help_text: str) -> str:
     )
 
 
-def command_sections(ctx: Context, depth: int = 1) -> Iterator[str]:
+def command_sections(ctx: Context, depth: int) -> Iterator[str]:
     command = ctx.command
     path = ctx.command_path
     rich = getattr(command, "rich_markup_mode", None) == "rich"
     title = "CLI reference" if ctx.parent is None else f"`{path}`"
     yield f"{'#' * depth} {title}\n"
-    if command.hidden:
-        yield "**Hidden command**\n"
     if command.help:
         help_text = plain_help(command.help) if rich else command.help
         yield markdown_help(help_text) + "\n"
@@ -68,14 +67,44 @@ def command_sections(ctx: Context, depth: int = 1) -> Iterator[str]:
         epilog = plain_help(command.epilog) if rich else command.epilog
         yield markdown_help(epilog) + "\n"
 
+
+def command_contexts(
+    ctx: Context, depth: int = 1, hidden: bool = False
+) -> Iterator[tuple[Context, int, bool]]:
+    command = ctx.command
+    hidden = hidden or command.hidden
+    yield ctx, depth, hidden
     if isinstance(command, TyperGroup):
         for name in command.list_commands(ctx):
             child = command.get_command(ctx, name)
             assert child is not None
             child_context = child.context_class(child, info_name=name, parent=ctx)
-            yield from command_sections(child_context, depth + 1)
+            yield from command_contexts(child_context, depth + 1, hidden)
 
 
 def render_cli_reference() -> str:
     command = get_command(app)
-    return "\n".join(command_sections(command.context_class(command, info_name="atelier")))
+    root = command.context_class(command, info_name="atelier")
+    sections = []
+    public_paths = {}
+    hidden_paths = {}
+    for ctx, depth, hidden in command_contexts(root):
+        if not hidden:
+            sections.extend(command_sections(ctx, depth))
+        callback = ctx.command.callback
+        if callback is None or isinstance(ctx.command, TyperGroup):
+            continue
+        # Typer wraps each registration of the same callback independently.
+        if hidden:
+            hidden_paths[ctx.command_path] = unwrap(callback)
+        else:
+            public_paths.setdefault(unwrap(callback), ctx.command_path)
+
+    aliases = [
+        f"- `{path}` — same as `{public_paths[callback]}`"
+        for path, callback in hidden_paths.items()
+        if callback in public_paths
+    ]
+    if aliases:
+        sections.extend(["## Aliases and hidden commands\n", "\n".join(aliases) + "\n"])
+    return "\n".join(sections)

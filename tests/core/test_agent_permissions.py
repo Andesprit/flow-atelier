@@ -155,7 +155,7 @@ def test_notice_names_the_fix():
     # `atelier ask` has no task to set permissions on; the variable works there.
     assert "ATELIER_AGENT_PERMISSIONS" in PERMISSIONS_NOTICE
     # A binary install has no docs folder: the link must work from anywhere.
-    assert "https://github.com/Andesprit/flow-atelier/blob/main/docs/guide.md#security" in (
+    assert "https://flow-atelier.andesprit.com/docs/configuration/security/#agent-permissions" in (
         PERMISSIONS_NOTICE
     )
 

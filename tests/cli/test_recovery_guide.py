@@ -30,11 +30,13 @@ AGENT_SAID = "CLAUDE_REPLY: a retry storm without jitter."
 
 
 def _blocks() -> list[str]:
-    """Return the guide's bash blocks, in document order.
+    """Return the walkthrough's bash blocks, in document order.
 
     :returns: one entry per published block.
     """
-    found = [m.group(1) for m in _BASH_BLOCK.finditer(_GUIDE.read_text(encoding="utf-8"))]
+    text = _GUIDE.read_text(encoding="utf-8")
+    walkthrough = text.split("\n## Walkthrough\n", 1)[1].split("\n## ", 1)[0]
+    found = [m.group(1) for m in _BASH_BLOCK.finditer(walkthrough)]
     assert len(found) == _EXPECTED_BLOCKS, (
         f"expected {_EXPECTED_BLOCKS} bash blocks in {_GUIDE.name}, got {len(found)}"
     )
